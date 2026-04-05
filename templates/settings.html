@@ -1,0 +1,577 @@
+{% extends "base.html" %}
+
+{% block title %}条件設定 - シフト自動作成くん{% endblock %}
+
+{% block content %}
+<div class="mb-8">
+    <h1 class="text-3xl font-bold text-primary-800 mb-1">シフト条件設定</h1>
+    <p class="text-gray-600 text-lg">シフトを自動生成する際の条件を設定します。</p>
+</div>
+
+<div class="bg-white rounded-xl shadow-md p-8 max-w-3xl">
+    <form method="POST" action="{{ url_for('settings_update') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% set day_names = ['月', '火', '水', '木', '金', '土', '日'] %}
+
+        <!-- デイサービス最低配置人数 -->
+        <div class="mb-8 p-6 bg-blue-50 rounded-lg border border-blue-200">
+            <label for="min_day_service" class="block text-lg font-semibold text-gray-800 mb-2">
+                デイサービス 最低配置人数
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                デイサービスに1日あたり最低何名配置する必要があるかを設定します。
+            </p>
+            <div class="flex items-center gap-2">
+                <input type="number" id="min_day_service" name="min_day_service"
+                       min="1" max="20"
+                       value="{{ settings.min_day_service if settings else 4 }}"
+                       class="w-24 px-4 py-3 text-xl font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                <span class="text-lg text-gray-600">名</span>
+            </div>
+        </div>
+
+        <!-- デイサービス最大配置人数 -->
+        <div class="mb-8 p-6 bg-blue-50 rounded-lg border border-blue-200">
+            <label for="max_day_service" class="block text-lg font-semibold text-gray-800 mb-2">
+                デイサービス 最大配置人数
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                デイサービスに1日あたり最大何名まで配置するかを設定します。0の場合は最低人数と同じ値が適用されます。
+                人数が余る候補者を特定するために使用します。相談員ローテーションと兼務者を使う場合は、
+                昼帯の人数不足を避けるために最低人数より大きい値を設定してください。
+            </p>
+            <div class="flex items-center gap-2">
+                <input type="number" id="max_day_service" name="max_day_service"
+                       min="0" max="20"
+                       value="{{ settings.max_day_service if settings and settings.max_day_service else 0 }}"
+                       class="w-24 px-4 py-3 text-xl font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                <span class="text-lg text-gray-600">名（0 = 最低人数と同じ）</span>
+            </div>
+        </div>
+
+        <!-- 9時・15時 事業所最低在籍人数 -->
+        <div class="mb-8 p-6 bg-blue-50 rounded-lg border border-blue-200">
+            <label class="block text-lg font-semibold text-gray-800 mb-2">
+                事業所 最低在籍人数（9時・15時）
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                9時の時点・15時の時点で事業所に最低何名在籍する必要があるかを設定します。訪問外出中・休憩中・相談業務中の職員は含みません。看護師・PTも含みません。
+            </p>
+            <div class="flex flex-wrap items-center gap-4">
+                <div class="flex items-center gap-2">
+                    <span class="text-base font-medium text-gray-700">9時:</span>
+                    <input type="number" name="min_staff_at_9" min="1" max="20"
+                           value="{{ settings.min_staff_at_9 if settings and settings.min_staff_at_9 is not none else 4 }}"
+                           class="w-24 px-4 py-3 text-xl font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                    <span class="text-lg text-gray-600">名</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="text-base font-medium text-gray-700">15時:</span>
+                    <input type="number" name="min_staff_at_15" min="1" max="20"
+                           value="{{ settings.min_staff_at_15 if settings and settings.min_staff_at_15 is not none else 4 }}"
+                           class="w-24 px-4 py-3 text-xl font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                    <span class="text-lg text-gray-600">名</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 男性午前配置モード -->
+        <div class="mb-8 p-6 bg-blue-50 rounded-lg border border-blue-200">
+            <label class="block text-lg font-semibold text-gray-800 mb-2">
+                男性 午前配置
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                午前のデイサービスに男性を最低1名配置する制約のモードを選択します。
+            </p>
+            <div class="flex flex-wrap gap-3">
+                {% set male_mode = settings.male_am_constraint_mode if settings and settings.male_am_constraint_mode else 'hard' %}
+                <label class="inline-flex items-center cursor-pointer bg-white border border-gray-200 rounded-lg px-5 py-3 hover:bg-blue-100 hover:border-blue-400 transition-colors has-[:checked]:bg-blue-100 has-[:checked]:border-blue-500">
+                    <input type="radio" name="male_am_constraint_mode" value="hard"
+                           {% if male_mode == 'hard' %}checked{% endif %}
+                           class="w-5 h-5 text-blue-600 border-gray-300 focus:ring-blue-500">
+                    <span class="ml-2 text-base font-medium text-gray-700">ハード（必須）</span>
+                </label>
+                <label class="inline-flex items-center cursor-pointer bg-white border border-gray-200 rounded-lg px-5 py-3 hover:bg-yellow-100 hover:border-yellow-400 transition-colors has-[:checked]:bg-yellow-100 has-[:checked]:border-yellow-500">
+                    <input type="radio" name="male_am_constraint_mode" value="soft"
+                           {% if male_mode == 'soft' %}checked{% endif %}
+                           class="w-5 h-5 text-yellow-600 border-gray-300 focus:ring-yellow-500">
+                    <span class="ml-2 text-base font-medium text-gray-700">ソフト（努力目標）</span>
+                </label>
+                <label class="inline-flex items-center cursor-pointer bg-white border border-gray-200 rounded-lg px-5 py-3 hover:bg-gray-100 hover:border-gray-400 transition-colors has-[:checked]:bg-gray-200 has-[:checked]:border-gray-500">
+                    <input type="radio" name="male_am_constraint_mode" value="off"
+                           {% if male_mode == 'off' %}checked{% endif %}
+                           class="w-5 h-5 text-gray-600 border-gray-300 focus:ring-gray-500">
+                    <span class="ml-2 text-base font-medium text-gray-700">OFF</span>
+                </label>
+            </div>
+        </div>
+
+        <!-- 午前優先性別（旧設定・非表示） -->
+        <input type="hidden" name="am_preferred_gender" value="{{ settings.am_preferred_gender if settings else '' }}">
+
+        <!-- 訪問介護（午前）最低人数 -->
+        <div class="mb-8 p-6 bg-green-50 rounded-lg border border-green-200">
+            <label for="min_visit_am" class="block text-lg font-semibold text-gray-800 mb-2">
+                訪問介護（午前）最低人数
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                午前の訪問介護に最低何名必要かを設定します。
+            </p>
+            <div class="flex items-center gap-2">
+                <input type="number" id="min_visit_am" name="min_visit_am"
+                       min="0" max="10"
+                       value="{{ settings.min_visit_am if settings else 1 }}"
+                       class="w-24 px-4 py-3 text-xl font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                <span class="text-lg text-gray-600">名</span>
+            </div>
+        </div>
+
+        <!-- 訪問介護（午後）最低人数 -->
+        <div class="mb-8 p-6 bg-green-50 rounded-lg border border-green-200">
+            <label for="min_visit_pm" class="block text-lg font-semibold text-gray-800 mb-2">
+                訪問介護（午後）最低人数
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                午後の訪問介護に最低何名必要かを設定します。
+            </p>
+            <div class="flex items-center gap-2">
+                <input type="number" id="min_visit_pm" name="min_visit_pm"
+                       min="0" max="10"
+                       value="{{ settings.min_visit_pm if settings else 1 }}"
+                       class="w-24 px-4 py-3 text-xl font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                <span class="text-lg text-gray-600">名</span>
+            </div>
+        </div>
+
+        <!-- 訪問介護の営業曜日 -->
+        <div class="mb-8 p-6 bg-green-50 rounded-lg border border-green-200">
+            <label class="block text-lg font-semibold text-gray-800 mb-2">
+                訪問介護の営業曜日
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                訪問介護が営業する曜日を選択してください。
+            </p>
+            {% set visit_days = settings.visit_operating_days.split(',') if settings and settings.visit_operating_days else ['0','1','3','4'] %}
+            <div class="flex flex-wrap gap-3">
+                {% for i in range(7) %}
+                <label class="inline-flex items-center cursor-pointer bg-white border border-gray-200 rounded-lg px-4 py-3 hover:bg-green-100 hover:border-green-400 transition-colors has-[:checked]:bg-green-100 has-[:checked]:border-green-500">
+                    <input type="checkbox" name="visit_operating_days" value="{{ i }}"
+                           {% if i|string in visit_days %}checked{% endif %}
+                           class="w-5 h-5 text-green-600 border-gray-300 rounded focus:ring-green-500">
+                    <span class="ml-2 text-base font-medium
+                        {% if i == 5 %}text-blue-600{% elif i == 6 %}text-red-600{% else %}text-gray-700{% endif %}">
+                        {{ day_names[i] }}
+                    </span>
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- 毎日の兼務者最低人数 -->
+        <div class="mb-8 p-6 bg-purple-50 rounded-lg border border-purple-200">
+            <label for="min_dual_assignment" class="block text-lg font-semibold text-gray-800 mb-2">
+                毎日の兼務者 最低人数
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                1日あたり最低何名の職員をデイサービスと訪問介護の兼務に配置するかを設定します。
+            </p>
+            <div class="flex items-center gap-2">
+                <input type="number" id="min_dual_assignment" name="min_dual_assignment"
+                       min="0" max="10"
+                       value="{{ settings.min_dual_assignment if settings else 0 }}"
+                       class="w-24 px-4 py-3 text-xl font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                <span class="text-lg text-gray-600">名</span>
+            </div>
+        </div>
+
+        <!-- 休業曜日 -->
+        <div class="mb-8 p-6 bg-gray-50 rounded-lg border border-gray-200">
+            <label class="block text-lg font-semibold text-gray-800 mb-2">
+                休業曜日
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                事業所が休みの曜日を選択してください。
+            </p>
+            {% set closed = settings.closed_days.split(',') if settings and settings.closed_days else [] %}
+            <div class="flex flex-wrap gap-3">
+                {% for i in range(7) %}
+                <label class="inline-flex items-center cursor-pointer bg-white border border-gray-200 rounded-lg px-4 py-3 hover:bg-red-50 hover:border-red-300 transition-colors has-[:checked]:bg-red-100 has-[:checked]:border-red-400">
+                    <input type="checkbox" name="closed_days" value="{{ i }}"
+                           {% if i|string in closed %}checked{% endif %}
+                           class="w-5 h-5 text-red-500 border-gray-300 rounded focus:ring-red-400">
+                    <span class="ml-2 text-base font-medium
+                        {% if i == 5 %}text-blue-600{% elif i == 6 %}text-red-600{% else %}text-gray-700{% endif %}">
+                        {{ day_names[i] }}
+                    </span>
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- 調理スタッフ最低配置人数 -->
+        <div class="mb-8 p-6 bg-amber-50 rounded-lg border border-amber-200">
+            <label for="min_cooking_staff" class="block text-lg font-semibold text-gray-800 mb-2">
+                調理スタッフ 最低配置人数
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                調理部門に1日あたり最低何名配置する必要があるかを設定します。
+            </p>
+            <div class="flex items-center gap-2">
+                <input type="number" id="min_cooking_staff" name="min_cooking_staff"
+                       min="0" max="10"
+                       value="{{ settings.min_cooking_staff if settings and settings.min_cooking_staff is not none else 1 }}"
+                       class="w-24 px-4 py-3 text-xl font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                <span class="text-lg text-gray-600">名</span>
+            </div>
+        </div>
+
+        <!-- 調理スタッフ 引き継ぎ時間帯の重複人数 -->
+        <div class="mb-8 p-6 bg-amber-50 rounded-lg border border-amber-200">
+            <label for="min_cooking_overlap" class="block text-lg font-semibold text-gray-800 mb-2">
+                調理 引き継ぎ時間帯の重複人数
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                12:00〜13:00の引き継ぎ時間帯に最低何名必要かを設定します。
+            </p>
+            <div class="flex items-center gap-2">
+                <input type="number" id="min_cooking_overlap" name="min_cooking_overlap"
+                       min="1" max="10"
+                       value="{{ settings.min_cooking_overlap if settings and settings.min_cooking_overlap is not none else 2 }}"
+                       class="w-24 px-4 py-3 text-xl font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                <span class="text-lg text-gray-600">名</span>
+            </div>
+        </div>
+
+        <!-- 相談員事務ローテーション設定 -->
+        <div class="mb-8 p-6 bg-purple-50 rounded-lg border border-purple-200">
+            <h3 class="text-lg font-semibold text-gray-800 mb-4">相談員ローテーション</h3>
+
+            <div class="mb-4">
+                <label class="flex items-center cursor-pointer">
+                    <input type="checkbox" name="counselor_desk_enabled" value="1"
+                           {% if settings and settings.counselor_desk_enabled %}checked{% endif %}
+                           class="w-5 h-5 text-purple-500 border-gray-300 rounded focus:ring-purple-400">
+                    <span class="ml-3 text-base font-medium text-gray-700">相談員ローテーションを有効にする</span>
+                </label>
+                <p class="text-gray-600 text-sm mt-1 ml-8">
+                    有効にすると、相談員資格を持つ出勤者が交代で2時間の相談業務時間を確保します。
+                    デイ最低人数に相談人数を加算し、現場の人員を維持します。
+                </p>
+            </div>
+
+            <div class="mt-4">
+                <label for="counselor_desk_count" class="block text-base font-medium text-gray-700 mb-2">
+                    同時相談人数
+                </label>
+                <select id="counselor_desk_count" name="counselor_desk_count"
+                        class="w-48 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-400 focus:border-purple-400 bg-white">
+                    <option value="1" {% if not settings or (settings.counselor_desk_count is not none and settings.counselor_desk_count == 1) %}selected{% endif %}>1名</option>
+                    <option value="2" {% if settings and settings.counselor_desk_count == 2 %}selected{% endif %}>2名</option>
+                </select>
+                <p class="text-gray-600 text-sm mt-1">
+                    相談業務に入る人数分、デイ最低人数が自動で加算されます（例: デイ4名 + 相談1名 = 5名出勤）。
+                </p>
+            </div>
+        </div>
+
+        <!-- 電話当番設定 -->
+        <div class="mb-8 p-6 bg-red-50 rounded-lg border border-red-200">
+            <h3 class="text-lg font-semibold text-gray-800 mb-4">電話当番設定</h3>
+
+            <div class="mb-4">
+                <label class="flex items-center cursor-pointer">
+                    <input type="checkbox" name="phone_duty_enabled" value="1"
+                           {% if settings and settings.phone_duty_enabled %}checked{% endif %}
+                           class="w-5 h-5 text-red-500 border-gray-300 rounded focus:ring-red-400">
+                    <span class="ml-3 text-base font-medium text-gray-700">電話当番ローテーションを有効にする</span>
+                </label>
+                <p class="text-gray-600 text-sm mt-1 ml-8">
+                    有効にすると、電話当番対象者（★マーク・社員のみ）の中から毎日1名を自動でローテーション配置します。
+                </p>
+            </div>
+
+            <div class="mt-4">
+                <label for="phone_duty_max_consecutive" class="block text-base font-medium text-gray-700 mb-2">
+                    連続当番の上限
+                </label>
+                <select id="phone_duty_max_consecutive" name="phone_duty_max_consecutive"
+                        class="w-48 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-400 focus:border-red-400 bg-white">
+                    <option value="1" {% if not settings or settings.phone_duty_max_consecutive == 1 %}selected{% endif %}>連続禁止（1日まで）</option>
+                    <option value="2" {% if settings and settings.phone_duty_max_consecutive == 2 %}selected{% endif %}>2日まで</option>
+                    <option value="3" {% if settings and settings.phone_duty_max_consecutive == 3 %}selected{% endif %}>3日まで</option>
+                    <option value="0" {% if settings and settings.phone_duty_max_consecutive == 0 %}selected{% endif %}>制限なし</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- ボタン -->
+        <div class="flex items-center space-x-4 border-t border-gray-200 pt-6">
+            <button type="submit"
+                    class="bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 px-8 rounded-lg shadow transition-colors text-lg">
+                設定を保存
+            </button>
+            <a href="{{ url_for('index') }}"
+               class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-3 px-8 rounded-lg transition-colors text-lg">
+                戻る
+            </a>
+        </div>
+    </form>
+</div>
+
+<!-- ================================================================
+     配置ルール管理セクション
+     ================================================================ -->
+<div class="bg-white rounded-xl shadow-md p-8 max-w-3xl mt-8">
+    <h2 class="text-2xl font-bold text-primary-800 mb-4">配置ルール</h2>
+    <p class="text-gray-600 mb-6">
+        資格・性別ごとの最低配置人数ルールを管理します。
+        ソルバーがシフト生成時にこれらのルールを適用します。
+    </p>
+
+    <!-- 既存ルール一覧 -->
+    {% if placement_rules %}
+    <div class="space-y-3 mb-6">
+        {% for rule in placement_rules %}
+        <div class="flex items-center justify-between bg-gray-50 rounded-lg px-4 py-3 border border-gray-200">
+            <div class="flex items-center gap-3">
+                <label class="flex items-center cursor-pointer">
+                    <input type="checkbox" {% if rule.is_active %}checked{% endif %}
+                           onchange="togglePlacementRuleActive({{ rule.id }}, this.checked)"
+                           class="w-5 h-5 text-primary-600 border-gray-300 rounded focus:ring-primary-500">
+                </label>
+                <div>
+                    <span class="text-base font-medium text-gray-800">{{ rule.name }}</span>
+                    <span class="ml-2 text-xs px-2 py-0.5 rounded
+                        {% if rule.is_hard %}bg-red-100 text-red-700{% else %}bg-yellow-100 text-yellow-700{% endif %}">
+                        {% if rule.is_hard %}ハード{% else %}ソフト{% endif %}
+                    </span>
+                    <span class="ml-1 text-xs px-2 py-0.5 rounded bg-gray-200 text-gray-600">
+                        {% if rule.period == 'am' %}午前{% elif rule.period == 'pm' %}午後{% else %}終日{% endif %}
+                        / {{ rule.min_count }}名以上
+                    </span>
+                </div>
+            </div>
+            <button onclick="deletePlacementRule({{ rule.id }})"
+                    class="bg-red-100 hover:bg-red-200 text-red-700 font-medium py-1 px-3 rounded-lg transition-colors text-sm">
+                削除
+            </button>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-gray-400 text-sm mb-6">配置ルールはまだ登録されていません。</p>
+    {% endif %}
+
+    <!-- 新規ルール追加フォーム -->
+    <div class="p-4 bg-gray-50 rounded-lg border border-gray-200">
+        <h3 class="text-base font-semibold text-gray-700 mb-3">新しいルールを追加</h3>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">ルール名</label>
+                <input type="text" id="new-rule-name" placeholder="例: 相談員 常時1名"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">ルール種別</label>
+                <select id="new-rule-type" onchange="toggleRuleTypeFields()"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+                    <option value="qualification_min">資格別最低人数</option>
+                    <option value="gender_min">性別最低人数</option>
+                    <option value="headcount_min">全体最低人数</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- 資格選択（qualification_min時のみ） -->
+        <div id="new-rule-quals" class="mb-3">
+            <label class="block text-sm font-medium text-gray-600 mb-1">対象資格</label>
+            <div class="flex flex-wrap gap-2">
+                {% for q in qualifications %}
+                <label class="inline-flex items-center cursor-pointer bg-white border border-gray-200 rounded px-3 py-1.5 text-sm has-[:checked]:bg-primary-100 has-[:checked]:border-primary-500">
+                    <input type="checkbox" value="{{ q.id }}"
+                           class="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500">
+                    <span class="ml-1.5">{{ q.name }}</span>
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- 性別選択（gender_min時のみ） -->
+        <div id="new-rule-gender-wrap" class="mb-3" style="display:none;">
+            <label class="block text-sm font-medium text-gray-600 mb-1">対象性別</label>
+            <select id="new-rule-gender"
+                    class="w-48 px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+                <option value="male">男性</option>
+                <option value="female">女性</option>
+            </select>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">適用時間帯</label>
+                <select id="new-rule-period"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+                    <option value="all">終日</option>
+                    <option value="am">午前</option>
+                    <option value="pm">午後</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">最低人数</label>
+                <input type="number" id="new-rule-min-count" value="1" min="1" max="10"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+            </div>
+            <div class="flex items-end pb-1">
+                <label class="flex items-center cursor-pointer">
+                    <input type="checkbox" id="new-rule-is-hard" checked
+                           class="w-4 h-4 text-red-500 border-gray-300 rounded focus:ring-red-400">
+                    <span class="ml-2 text-sm font-medium text-gray-700">ハード制約</span>
+                </label>
+            </div>
+        </div>
+
+        <button type="button" onclick="addPlacementRule()"
+                class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-lg shadow transition-colors text-sm">
+            ルールを追加
+        </button>
+    </div>
+</div>
+
+<!-- ================================================================
+     調理組み合わせルール
+     ================================================================ -->
+{% if cooking_combo_rules %}
+<div class="bg-white rounded-xl shadow-md p-8 max-w-3xl mt-8">
+    <h2 class="text-2xl font-bold text-primary-800 mb-4">調理の組み合わせルール</h2>
+    <p class="text-gray-600 mb-6">
+        調理スタッフのシフトパターンの日単位組み合わせを管理します。
+    </p>
+
+    <div class="space-y-3">
+        {% for rule in cooking_combo_rules %}
+        <div class="flex items-center justify-between bg-amber-50 rounded-lg px-4 py-3 border border-amber-200">
+            <div class="flex items-center gap-3">
+                <label class="flex items-center cursor-pointer">
+                    <input type="checkbox" {% if rule.is_active %}checked{% endif %}
+                           onchange="toggleCookingComboActive({{ rule.id }}, this.checked)"
+                           class="w-5 h-5 text-amber-600 border-gray-300 rounded focus:ring-amber-500">
+                </label>
+                <div>
+                    <span class="text-base font-medium text-gray-800">{{ rule.name }}</span>
+                    <div class="text-xs text-gray-500 mt-1">
+                        {% set patterns = rule.allowed_patterns_json | default('[]', true) %}
+                        {% for p in patterns | tojson | default('[]') %}
+                        {% endfor %}
+                        パターン数: {{ (patterns | length) if patterns is iterable else 0 }}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- ================================================================
+     資格マスタ管理
+     ================================================================ -->
+<div class="bg-white rounded-xl shadow-md p-8 max-w-3xl mt-8">
+    <h2 class="text-2xl font-bold text-primary-800 mb-4">資格マスタ</h2>
+    <p class="text-gray-600 mb-6">
+        職員に紐付ける資格を管理します。配置ルールで使用されます。
+    </p>
+
+    {% if qualifications %}
+    <div class="space-y-2 mb-6">
+        {% for q in qualifications %}
+        <div class="flex items-center justify-between bg-gray-50 rounded-lg px-4 py-2 border border-gray-200">
+            <span class="text-base font-medium text-gray-700">{{ q.name }} <span class="text-xs text-gray-400">({{ q.code }})</span></span>
+            <button onclick="deleteQualification({{ q.id }}, '{{ q.name }}')"
+                    class="bg-red-100 hover:bg-red-200 text-red-700 font-medium py-1 px-3 rounded-lg transition-colors text-sm">
+                削除
+            </button>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="p-4 bg-gray-50 rounded-lg border border-gray-200">
+        <h3 class="text-base font-semibold text-gray-700 mb-3">資格を追加</h3>
+        <div class="flex flex-col sm:flex-row gap-3">
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">コード</label>
+                <input type="text" id="new-qual-code" placeholder="例: ot"
+                       class="px-3 py-2 border border-gray-300 rounded-lg text-sm w-36">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">資格名</label>
+                <input type="text" id="new-qual-name" placeholder="例: 作業療法士"
+                       class="px-3 py-2 border border-gray-300 rounded-lg text-sm w-48">
+            </div>
+            <div class="flex items-end">
+                <button type="button" onclick="addQualification()"
+                        class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow transition-colors text-sm">
+                    追加
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="max-w-3xl mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+    <p class="text-yellow-800 text-sm">
+        <strong>ヒント:</strong> 設定を変更した後は、シフトカレンダーから再度シフトを生成してください。
+        既に生成済みのシフトには自動では反映されません。
+    </p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleRuleTypeFields() {
+    const ruleType = document.getElementById('new-rule-type').value;
+    const qualsWrap = document.getElementById('new-rule-quals');
+    const genderWrap = document.getElementById('new-rule-gender-wrap');
+    if (qualsWrap) qualsWrap.style.display = ruleType === 'qualification_min' ? 'block' : 'none';
+    if (genderWrap) genderWrap.style.display = ruleType === 'gender_min' ? 'block' : 'none';
+}
+
+function deleteQualification(qualId, qualName) {
+    if (!confirm(`資格「${qualName}」を削除してもよろしいですか？\n関連する職員の資格情報も削除されます。`)) return;
+    fetchWithCsrf(`/api/qualifications/${qualId}`, { method: 'DELETE' })
+        .then(response => {
+            if (!response.ok) throw new Error('削除に失敗しました');
+            location.reload();
+        })
+        .catch(error => {
+            alert('削除に失敗しました: ' + error.message);
+        });
+}
+
+function addQualification() {
+    const code = document.getElementById('new-qual-code').value.trim();
+    const name = document.getElementById('new-qual-name').value.trim();
+    if (!code || !name) {
+        alert('コードと資格名を入力してください。');
+        return;
+    }
+    fetchWithCsrf('/api/qualifications', {
+        method: 'POST',
+        body: JSON.stringify({ code: code, name: name }),
+    })
+        .then(response => {
+            if (!response.ok) {
+                return response.json().then(err => { throw new Error(err.error || '追加に失敗しました'); });
+            }
+            location.reload();
+        })
+        .catch(error => {
+            alert('追加に失敗しました: ' + error.message);
+        });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    toggleRuleTypeFields();
+});
+</script>
+{% endblock %}

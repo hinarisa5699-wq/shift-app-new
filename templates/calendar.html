@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+
+{% block title %}シフトカレンダー - シフト自動作成くん{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-3xl font-bold text-primary-800 mb-1">シフトカレンダー</h1>
+    <p class="text-gray-600 text-lg">月ごとのシフトを確認・生成できます。</p>
+</div>
+
+<!-- コントロールパネル -->
+<div class="bg-white rounded-xl shadow-md p-6 mb-6">
+    <div class="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+        <!-- 年月セレクター -->
+        <div class="flex items-center gap-2">
+            <label for="year-select" class="text-base font-semibold text-gray-700">年:</label>
+            <select id="year-select"
+                    class="px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
+            </select>
+        </div>
+        <div class="flex items-center gap-2">
+            <label for="month-select" class="text-base font-semibold text-gray-700">月:</label>
+            <select id="month-select"
+                    class="px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
+                <option value="1">1月</option>
+                <option value="2">2月</option>
+                <option value="3">3月</option>
+                <option value="4">4月</option>
+                <option value="5">5月</option>
+                <option value="6">6月</option>
+                <option value="7">7月</option>
+                <option value="8">8月</option>
+                <option value="9">9月</option>
+                <option value="10">10月</option>
+                <option value="11">11月</option>
+                <option value="12">12月</option>
+            </select>
+        </div>
+
+        <!-- 表示ボタン -->
+        <button onclick="loadShifts()"
+                class="bg-primary-100 hover:bg-primary-200 text-primary-700 font-bold py-3 px-6 rounded-lg transition-colors text-base">
+            表示
+        </button>
+
+        <!-- シフト生成ボタン -->
+        <button id="generate-btn" onclick="generateShift()"
+                class="bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 px-8 rounded-lg shadow transition-colors text-lg">
+            シフト生成
+        </button>
+
+        <!-- 出力ボタン（シフトデータがある時に表示） -->
+        <div id="export-buttons" class="hidden flex items-center gap-2 sm:ml-auto">
+            <button onclick="exportShift('excel')"
+                    class="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors text-base">
+                Excel出力
+            </button>
+            <button onclick="exportShift('csv')"
+                    class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors text-base">
+                CSV出力
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- ローディング表示 -->
+<div id="loading" class="hidden">
+    <div class="bg-white rounded-xl shadow-md p-12 text-center">
+        <div class="inline-block animate-spin rounded-full h-12 w-12 border-4 border-primary-200 border-t-primary-600 mb-4"></div>
+        <p class="text-xl text-gray-600 font-medium" id="loading-text">シフトを生成中...</p>
+        <p class="text-gray-400 text-sm mt-2">しばらくお待ちください。職員数や日数によって数秒〜数十秒かかることがあります。</p>
+    </div>
+</div>
+
+<!-- 警告バナー -->
+<div id="warnings-container" class="hidden mb-6"></div>
+
+<!-- カレンダー表示エリア -->
+<div id="calendar-container" class="hidden">
+    <div class="bg-white rounded-xl shadow-md overflow-hidden">
+        <div class="overflow-x-auto">
+            <table id="calendar-table" class="min-w-full border-collapse">
+                <!-- JSで動的に構築 -->
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 初期メッセージ -->
+<div id="no-data-message" class="bg-white rounded-xl shadow-md p-12 text-center">
+    <svg class="w-16 h-16 mx-auto text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+    </svg>
+    <p class="text-gray-500 text-xl mb-2">シフトデータがありません</p>
+    <p class="text-gray-400 text-base">上の「シフト生成」ボタンを押して、シフトを自動作成してください。</p>
+</div>
+
+<!-- 凡例 -->
+<div class="bg-white rounded-xl shadow-md p-6 mt-6">
+    <h3 class="text-base font-bold text-gray-700 mb-3">凡例</h3>
+    <div class="flex flex-wrap gap-3">
+        <span class="inline-flex items-center">
+            <span class="inline-block w-4 h-4 rounded bg-blue-500 mr-1"></span>
+            <span class="text-sm text-gray-600">デイ8:30-17:30</span>
+        </span>
+        <span class="inline-flex items-center">
+            <span class="inline-block w-4 h-4 rounded bg-blue-400 mr-1"></span>
+            <span class="text-sm text-gray-600">デイ9:00-16:00</span>
+        </span>
+        <span class="inline-flex items-center">
+            <span class="inline-block w-4 h-4 rounded bg-sky-400 mr-1"></span>
+            <span class="text-sm text-gray-600">デイ午前のみ</span>
+        </span>
+        <span class="inline-flex items-center">
+            <span class="inline-block w-4 h-4 rounded bg-sky-200 mr-1"></span>
+            <span class="text-sm text-gray-600">デイ午後のみ</span>
+        </span>
+        <span class="inline-flex items-center">
+            <span class="inline-block w-4 h-4 rounded bg-emerald-500 mr-1"></span>
+            <span class="text-sm text-gray-600">訪問午前のみ</span>
+        </span>
+        <span class="inline-flex items-center">
+            <span class="inline-block w-4 h-4 rounded bg-emerald-300 mr-1"></span>
+            <span class="text-sm text-gray-600">訪問午後のみ</span>
+        </span>
+        <span class="inline-flex items-center">
+            <span class="inline-block w-4 h-4 rounded bg-purple-500 mr-1"></span>
+            <span class="text-sm text-gray-600">兼務A</span>
+        </span>
+        <span class="inline-flex items-center">
+            <span class="inline-block w-4 h-4 rounded bg-orange-400 mr-1"></span>
+            <span class="text-sm text-gray-600">兼務B</span>
+        </span>
+        <span class="inline-flex items-center">
+            <span class="inline-block w-4 h-4 rounded bg-amber-500 mr-1"></span>
+            <span class="text-sm text-gray-600">早番（調理①）</span>
+        </span>
+        <span class="inline-flex items-center">
+            <span class="inline-block w-4 h-4 rounded bg-yellow-500 mr-1"></span>
+            <span class="text-sm text-gray-600">日勤（調理②）</span>
+        </span>
+        <span class="inline-flex items-center">
+            <span class="inline-block w-4 h-4 rounded bg-amber-600 mr-1"></span>
+            <span class="text-sm text-gray-600">遅番（調理③）</span>
+        </span>
+        <span class="inline-flex items-center">
+            <span class="inline-block w-4 h-4 rounded bg-amber-700 mr-1"></span>
+            <span class="text-sm text-gray-600">通し（調理④）</span>
+        </span>
+        <span class="inline-flex items-center">
+            <span class="inline-block w-4 h-4 rounded bg-gray-300 mr-1"></span>
+            <span class="text-sm text-gray-600">休み</span>
+        </span>
+        <span class="inline-flex items-center">
+            <span class="inline-block w-4 h-4 rounded bg-red-500 mr-1"></span>
+            <span class="text-sm text-gray-600">電話当番（TEL）</span>
+        </span>
+        <span class="inline-flex items-center">
+            <span class="inline-block w-4 h-4 rounded mr-1" style="background-color:#FFF3E0"></span>
+            <span class="text-sm text-gray-600">祝日</span>
+        </span>
+    </div>
+    <p class="text-xs text-gray-400 mt-3">バッジにマウスを乗せると休憩時間が表示されます。相談員には相談業務時間帯が表示されます。</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        initCalendarPage();
+    });
+</script>
+{% endblock %}

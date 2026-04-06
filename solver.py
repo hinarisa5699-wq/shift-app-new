@@ -1704,7 +1704,8 @@ def _solve_care(
     # ソルバー実行
     # ==================================================================
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 45
+    # Render free planでのワーカータイムアウト回避のため、探索時間を抑える
+    solver.parameters.max_time_in_seconds = 18
     solver.parameters.num_workers = 1
     solver.parameters.random_seed = 0
 
@@ -2281,8 +2282,9 @@ def _solve_cooking(
     # ソルバー実行
     # ==================================================================
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 25
-    solver.parameters.num_workers = 8
+    # 並列ワーカー数が大きいとメモリ急増しやすいため1に固定
+    solver.parameters.max_time_in_seconds = 10
+    solver.parameters.num_workers = 1
 
     status = solver.solve(model)
 

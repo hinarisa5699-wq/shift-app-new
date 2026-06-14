@@ -1688,10 +1688,32 @@ def create_app():
         ]
         oncall_items, oncall_warnings = [], []
         if settings_dict.get("phone_duty_enabled"):
-            oncall_eligible = [
-                {"id": st.id, "name": st.name}
-                for st in Staff.query.filter_by(has_phone_duty=True).order_by(Staff.id).all()
-            ]
+            # 休み希望: {staff_id: set(isoformat)}
+            dayoff_by_staff = {}
+            for r in day_off_requests:
+                dayoff_by_staff.setdefault(r.staff_id, set()).add(r.date.isoformat())
+
+            oncall_eligible = []
+            for st in Staff.query.filter_by(has_phone_duty=True).order_by(Staff.id).all():
+                avail_wd = set(int(x) for x in st.available_days.split(",") if x.strip())
+                fixed_wd = (set(int(x) for x in st.fixed_days_off.split(",") if x.strip())
+                            if st.fixed_days_off else set())
+                wk = set(workable_dates_map.get(st.id, []))
+                offs = dayoff_by_staff.get(st.id, set())
+                hol_ng = bool(getattr(st, "holiday_ng", False))
+                # オンコールに入れない日を集約（休み希望・勤務不可曜日・出勤可能日外・祝日不可）
+                unavailable = set()
+                for dt in month_dates:
+                    iso = dt.isoformat()
+                    if (dt.weekday() not in avail_wd
+                            or dt.weekday() in fixed_wd
+                            or (wk and iso not in wk)
+                            or iso in offs
+                            or (hol_ng and jpholiday.is_holiday(dt))):
+                        unavailable.add(iso)
+                oncall_eligible.append(
+                    {"id": st.id, "name": st.name, "unavailable": unavailable}
+                )
             oncall_items, oncall_warnings = assign_oncall(
                 oncall_eligible,
                 month_dates,

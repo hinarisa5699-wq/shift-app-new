@@ -212,10 +212,12 @@ def generate_shift(
 # オンコール（電話当番）割り当て — 出勤と独立した後処理
 # ===========================================================================
 def assign_oncall(eligible_staff: list, dates: list, max_consecutive: int = 1):
-    """オンコール担当を1日1名、出勤の有無と独立して割り当てる（決定的）。
+    """オンコール担当を1日1名、各職員の制約を守って割り当てる（決定的）。
 
-    eligible_staff: [{"id": int, "name": str}, ...]  has_phone_duty=True の職員
-    dates: [datetime.date, ...]  対象月の全日（毎日1名割り当てる）
+    eligible_staff: [{"id": int, "name": str, "unavailable": set(isoformat日付)}, ...]
+        unavailable … その職員がオンコールに入れない日（休み希望・勤務不可曜日・
+        出勤可能日(whitelist)外・祝日(祝日不可の人) を app.py 側で集約したもの）。
+    dates: [datetime.date, ...]  対象月の全日（毎日1名割り当てを試みる）
     max_consecutive: 同一人物が連続で当番に入れる最大日数
                      （既定1＝連続禁止 / 0＝制限なし）
 
@@ -236,15 +238,8 @@ def assign_oncall(eligible_staff: list, dates: list, max_consecutive: int = 1):
             })
         return assignments, warnings
 
-    # 担当者が1名のみだと連続回避が物理的に不可能 → 警告のうえ毎日その人を割当
-    only_one = len(eligible_ids) == 1
-    if only_one and len(dates) > 1 and max_consecutive and max_consecutive > 0:
-        warnings.append({
-            "date": dates[0].isoformat(),
-            "warning_type": "oncall_single_candidate",
-            "message": "オンコール担当者が1名のみのため、連続当番の回避ができません。"
-                       "担当者を2名以上にすることを推奨します。",
-        })
+    # 各担当者のオンコール不可日（休み希望・不可曜日・出勤可能日外・祝日 等）
+    unavailable = {s["id"]: set(s.get("unavailable") or ()) for s in eligible_staff}
 
     counts = {sid: 0 for sid in eligible_ids}
     last_day = {sid: -1 for sid in eligible_ids}  # 直近に当番だった日index（公平性のタイブレーク）
@@ -252,16 +247,32 @@ def assign_oncall(eligible_staff: list, dates: list, max_consecutive: int = 1):
     prev_run = 0  # prev_staff が直前まで連続している日数
 
     for i, d in enumerate(dates):
+        d_iso = d.isoformat()
+        # その日にオンコール可能な担当者（制約に違反しない人）
+        available = [sid for sid in eligible_ids if d_iso not in unavailable[sid]]
+
         # 連続上限に達している直前担当者はブロック
         blocked = set()
         if max_consecutive and max_consecutive > 0 and prev_staff is not None:
             if prev_run >= max_consecutive:
                 blocked.add(prev_staff)
 
-        candidates = [sid for sid in eligible_ids if sid not in blocked]
+        candidates = [sid for sid in available if sid not in blocked]
         if not candidates:
-            # 全員ブロック（実質1名運用）→ 連続回避を緩和して割当
-            candidates = list(eligible_ids)
+            # 連続回避だけは緩和してよい（制約=休み希望等は緩和しない）
+            candidates = list(available)
+
+        if not candidates:
+            # この日は制約を守れる担当者がいない → 無理に入れず警告（連勤カウントもリセット）
+            warnings.append({
+                "date": d_iso,
+                "warning_type": "oncall_no_available",
+                "message": "この日はオンコールに入れる担当者がいません"
+                           "（全員が休み希望・勤務不可曜日・出勤可能日外・祝日不可のいずれか）。",
+            })
+            prev_staff = None
+            prev_run = 0
+            continue
 
         # 公平性: 当番回数が少ない → 最後に入った日が古い → id昇順 で決定的に選ぶ
         chosen = min(candidates, key=lambda sid: (counts[sid], last_day[sid], sid))

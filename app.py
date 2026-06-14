@@ -614,21 +614,27 @@ def _load_users():
     平文では保存せずハッシュ化して保持する。
       - SHIFT_ADMIN_PASSWORD  … 管理者のパスワード
       - SHIFT_SASEKI_PASSWORD … サ責のパスワード
-    未設定の場合はローカル開発用に admin/saseki を仮設定（要・本番では必ず環境変数を設定）。
+      - SHIFT_YAKUIN_PASSWORD … 役員のパスワード（権限は管理者と同等＝全機能）
+    未設定の場合はローカル開発用に admin/saseki/yakuin を仮設定（要・本番では必ず環境変数を設定）。
     戻り値: {username: {"hash": ..., "role": 表示名}}
     """
     admin_pw = os.environ.get("SHIFT_ADMIN_PASSWORD", "").strip()
     saseki_pw = os.environ.get("SHIFT_SASEKI_PASSWORD", "").strip()
-    dev_default = not admin_pw and not saseki_pw
+    yakuin_pw = os.environ.get("SHIFT_YAKUIN_PASSWORD", "").strip()
+    dev_default = not admin_pw and not saseki_pw and not yakuin_pw
     if dev_default:
         # ローカル開発フォールバック（本番では環境変数を必ず設定すること）
         admin_pw = "admin"
         saseki_pw = "saseki"
+        yakuin_pw = "yakuin"
     users = {}
     if admin_pw:
         users["admin"] = {"hash": generate_password_hash(admin_pw), "role": "管理者"}
     if saseki_pw:
         users["saseki"] = {"hash": generate_password_hash(saseki_pw), "role": "サ責"}
+    if yakuin_pw:
+        # 役員は管理者と同じ権限（ログイン済みなら全機能アクセス可）
+        users["yakuin"] = {"hash": generate_password_hash(yakuin_pw), "role": "役員"}
     return users, dev_default
 
 
@@ -660,8 +666,9 @@ def create_app():
     app.config["USERS"] = users
     if _dev_default:
         app.logger.warning(
-            "ログインがローカル既定値(admin/saseki)で動作中です。"
-            "本番では SHIFT_ADMIN_PASSWORD / SHIFT_SASEKI_PASSWORD と SECRET_KEY を必ず設定してください。"
+            "ログインがローカル既定値(admin/saseki/yakuin)で動作中です。"
+            "本番では SHIFT_ADMIN_PASSWORD / SHIFT_SASEKI_PASSWORD / SHIFT_YAKUIN_PASSWORD と "
+            "SECRET_KEY を必ず設定してください。"
         )
 
     @app.before_request

@@ -1609,6 +1609,12 @@ def create_app():
                 allowed_patterns_map[ap.staff_id] = set()
             allowed_patterns_map[ap.staff_id].add(ap.assignment_code)
 
+        # 出勤可能日（whitelist）の取得: {staff_id: [YYYY-MM-DD, ...]}
+        # 1日でも登録があれば、その職員は登録日のみ出勤可（solverで強制）。
+        workable_dates_map = {}
+        for w in StaffWorkableDate.query.all():
+            workable_dates_map.setdefault(w.staff_id, []).append(w.date.isoformat())
+
         # ORM → dict 変換（部門別に分割）
         care_dicts = []
         cook_dicts = []
@@ -1635,6 +1641,7 @@ def create_app():
                 "qualification_codes": staff_qual_codes.get(s.id, []),
                 "weekend_constraint": getattr(s, "weekend_constraint", "") or "",
                 "holiday_ng": getattr(s, "holiday_ng", False) or False,
+                "workable_dates": workable_dates_map.get(s.id, []),
             }
             if s.staff_group == "cooking":
                 cook_dicts.append(d)

@@ -1155,6 +1155,7 @@ def _solve_care_with_fallback(
             "weekend_constraint": s.get("weekend_constraint", ""),
             "min_days_per_week": s.get("min_days_per_week", 0),
             "holiday_ng": s.get("holiday_ng", False),
+            "workable_dates": set(s.get("workable_dates") or []),
         }
 
     staff_ids = list(staff_by_id.keys())
@@ -1462,6 +1463,19 @@ def _solve_care(
         avail_weekdays = set(info["available_days"])
         for d_idx, dt in enumerate(all_dates):
             if dt.weekday() not in avail_weekdays:
+                model.add(x[s, d_idx, "off"] == 1)
+
+    # ==================================================================
+    # 制約: 出勤可能日（whitelist）の遵守
+    #   出勤可能日が1日でも登録されている職員は、その登録日のみ出勤可。
+    #   登録外の日は強制的に休み（早番・遅番・デイ・訪問・相談・入浴当番なども不可）。
+    # ==================================================================
+    for s in staff_ids:
+        workable = staff_by_id[s].get("workable_dates") or set()
+        if not workable:
+            continue
+        for d_idx, dt in enumerate(all_dates):
+            if dt.isoformat() not in workable:
                 model.add(x[s, d_idx, "off"] == 1)
 
     # ==================================================================
@@ -2297,6 +2311,7 @@ def _solve_cooking_with_fallback(
             "weekend_constraint": s.get("weekend_constraint", ""),
             "min_days_per_week": s.get("min_days_per_week", 0),
             "holiday_ng": s.get("holiday_ng", False),
+            "workable_dates": set(s.get("workable_dates") or []),
         }
 
     staff_ids = list(staff_by_id.keys())
@@ -2397,6 +2412,18 @@ def _solve_cooking(
         avail_weekdays = set(info["available_days"])
         for d_idx, dt in enumerate(all_dates):
             if dt.weekday() not in avail_weekdays:
+                model.add(x[s, d_idx, "cook_off"] == 1)
+
+    # ==================================================================
+    # 制約: 出勤可能日（whitelist）の遵守
+    #   登録がある職員は登録日のみ出勤可。登録外の日は強制的に休み。
+    # ==================================================================
+    for s in staff_ids:
+        workable = staff_by_id[s].get("workable_dates") or set()
+        if not workable:
+            continue
+        for d_idx, dt in enumerate(all_dates):
+            if dt.isoformat() not in workable:
                 model.add(x[s, d_idx, "cook_off"] == 1)
 
     # ==================================================================

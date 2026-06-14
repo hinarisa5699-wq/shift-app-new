@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ログイン - シフト自動作成くん</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: { extend: { colors: { primary: {
+                50:'#eff6ff',100:'#dbeafe',200:'#bfdbfe',300:'#93c5fd',400:'#60a5fa',
+                500:'#3b82f6',600:'#2563eb',700:'#1d4ed8',800:'#1e40af',900:'#1e3a8a' } } } }
+        }
+    </script>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center px-4">
+    <div class="w-full max-w-md">
+        <div class="text-center mb-6">
+            <h1 class="text-3xl font-bold text-primary-800">シフト自動作成くん</h1>
+            <p class="text-gray-600 mt-1">管理者・サ責の方はログインしてください</p>
+        </div>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                <div class="mb-4 px-4 py-3 rounded-lg text-base font-medium
+                    {% if category == 'error' %}bg-red-100 text-red-800 border border-red-300
+                    {% else %}bg-green-100 text-green-800 border border-green-300{% endif %}">
+                    {{ message }}
+                </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <form method="POST" action="{{ url_for('login') }}"
+              class="bg-white rounded-xl shadow-md p-8 space-y-5">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div>
+                <label for="username" class="block text-sm font-semibold text-gray-700 mb-1">ID</label>
+                <input type="text" id="username" name="username" required autofocus autocomplete="username"
+                       class="w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                       placeholder="admin または saseki">
+            </div>
+            <div>
+                <label for="password" class="block text-sm font-semibold text-gray-700 mb-1">パスワード</label>
+                <input type="password" id="password" name="password" required autocomplete="current-password"
+                       class="w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
+            </div>
+            <button type="submit"
+                    class="w-full bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 rounded-lg shadow transition-colors text-lg">
+                ログイン
+            </button>
+        </form>
+        <p class="text-center text-xs text-gray-400 mt-4">管理者：admin ／ サ責：saseki</p>
+    </div>
+</body>
+</html>

@@ -1,0 +1,26 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Database (クライアント固有データ)
+shift.db
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+
+# Deployment (不要になった設定)
+Procfile
+render.yaml
+.python-version

@@ -1,0 +1,351 @@
+{% extends "base.html" %}
+
+{% block title %}職員一覧 - シフト自動作成くん{% endblock %}
+
+{% block content %}
+<div class="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-8">
+    <div>
+        <h1 class="text-3xl font-bold text-primary-800 mb-1">職員一覧</h1>
+        <p class="text-gray-600 text-lg">登録されている職員の情報を管理できます。</p>
+    </div>
+    <a href="{{ url_for('staff_new') }}"
+       class="mt-4 sm:mt-0 inline-flex items-center bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors text-lg">
+        <svg class="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+        </svg>
+        新規登録
+    </a>
+</div>
+
+<!-- 入浴介助可 一括設定 -->
+<div class="bg-white rounded-xl shadow-md p-6 mb-6">
+    <h2 class="text-lg font-bold text-primary-800 mb-3">入浴介助可の一括設定</h2>
+    <p class="text-sm text-gray-600 mb-3">お風呂当番(中介助2・外介助1)の候補は「入浴介助可」の介護職員から選ばれます。個別に設定するか、ここでまとめて設定できます。</p>
+    <div class="flex flex-wrap items-center gap-3">
+        <form action="{{ url_for('staff_bulk_bath_assist') }}" method="POST"
+              onsubmit="return confirm('すべての介護職員に『入浴介助可』を付与します。よろしいですか？');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="enable" value="1">
+            <button type="submit"
+                    class="inline-flex items-center bg-sky-600 hover:bg-sky-700 text-white font-medium py-2 px-4 rounded-lg transition-colors text-sm">
+                介護職員に入浴介助可を一括付与
+            </button>
+        </form>
+        <form action="{{ url_for('staff_bulk_bath_assist') }}" method="POST"
+              onsubmit="return confirm('すべての介護職員の『入浴介助可』を解除します。よろしいですか？');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="enable" value="0">
+            <button type="submit"
+                    class="inline-flex items-center bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium py-2 px-4 rounded-lg transition-colors text-sm">
+                一括解除
+            </button>
+        </form>
+    </div>
+</div>
+
+<!-- CSV 一括管理 -->
+<div class="bg-white rounded-xl shadow-md p-6 mb-6">
+    <h2 class="text-lg font-bold text-primary-800 mb-3">CSVで一括管理</h2>
+    <div class="flex flex-col lg:flex-row lg:items-end gap-4">
+        <div>
+            <p class="text-sm text-gray-600 mb-2">現在の職員一覧をダウンロード（見本・テンプレート兼用）。編集して取り込めます。</p>
+            <a href="{{ url_for('staff_export_csv') }}"
+               class="inline-flex items-center bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2 px-4 rounded-lg transition-colors text-sm">
+                見本CSVをダウンロード
+            </a>
+        </div>
+        <form action="{{ url_for('staff_import_csv') }}" method="POST" enctype="multipart/form-data"
+              class="flex flex-col sm:flex-row sm:items-end gap-3 border-t lg:border-t-0 lg:border-l border-gray-200 lg:pl-4 pt-4 lg:pt-0"
+              onsubmit="return staffCsvConfirm(this);">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">CSVファイル</label>
+                <div id="csv-dropzone"
+                     class="border-2 border-dashed border-gray-300 rounded-lg px-4 py-3 bg-gray-50 transition-colors hover:border-primary-400 hover:bg-primary-50">
+                    <div class="flex flex-col items-center text-center pointer-events-none mb-2">
+                        <svg class="w-6 h-6 text-gray-400 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                  d="M7 16a4 4 0 01-.88-7.9A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 13l3-3m0 0l3 3m-3-3v9"/>
+                        </svg>
+                        <p class="text-sm text-gray-600">ここにCSVをドラッグ&ドロップ</p>
+                        <p class="text-xs text-gray-400">または下のボタンから選択</p>
+                    </div>
+                    <input type="file" name="file" id="csv-file-input" accept=".csv" required
+                           class="block mx-auto text-sm text-gray-700 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-100 file:text-primary-700 file:font-medium file:cursor-pointer">
+                    <p id="csv-filename" class="hidden text-sm text-primary-700 font-medium mt-2 text-center"></p>
+                    <p id="csv-drop-error" class="hidden text-sm text-red-600 mt-2 text-center"></p>
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">取り込みモード</label>
+                <select name="mode" class="border border-gray-300 rounded-lg py-2 px-3 text-sm">
+                    <option value="merge">差分（id優先・無ければ名前×区分で更新／一致なしは追加・CSVに無い既存は残す）</option>
+                    <option value="replace">全置き換え（既存を全削除してから登録）</option>
+                </select>
+            </div>
+            <button type="submit"
+                    class="inline-flex items-center bg-primary-600 hover:bg-primary-700 text-white font-medium py-2 px-4 rounded-lg transition-colors text-sm">
+                取り込む
+            </button>
+        </form>
+    </div>
+    <p class="text-xs text-gray-400 mt-3">突合キーは <code>id</code> 優先、空欄なら <code>名前＋区分</code>（例: 池田/ケア と 池田/調理 は別人）。同区分に同名が複数いる行はスキップして注意表示します。資格列は <code>nurse;pt</code>（コード）でも <code>看護師;理学療法士</code>（名称）でも可。<span class="text-red-500">全置き換えは既存職員と生成済みシフトも削除されます。</span></p>
+</div>
+<script>
+function staffCsvConfirm(form) {
+    var mode = form.mode.value;
+    if (mode === 'replace') {
+        return confirm('【全置き換え】既存の職員をすべて削除し、生成済みシフト・休み希望もカスケード削除した上でCSVの内容に置き換えます。よろしいですか？');
+    }
+    return confirm('CSVの内容で差分取り込み（追加・更新）を実行します。よろしいですか？');
+}
+
+// CSV取込: ドラッグ&ドロップ対応（既存の「ファイルの選択」と併用）
+(function () {
+    var dz = document.getElementById('csv-dropzone');
+    var input = document.getElementById('csv-file-input');
+    var nameEl = document.getElementById('csv-filename');
+    var errEl = document.getElementById('csv-drop-error');
+    if (!dz || !input) return;
+
+    var ACTIVE = ['border-primary-500', 'bg-primary-100'];
+
+    function isCsv(file) {
+        if (!file) return false;
+        var name = (file.name || '').toLowerCase();
+        if (name.slice(-4) === '.csv') return true;
+        return ['text/csv', 'application/vnd.ms-excel'].indexOf(file.type) !== -1;
+    }
+    function showError(msg) {
+        errEl.textContent = msg;
+        errEl.classList.remove('hidden');
+        nameEl.classList.add('hidden');
+    }
+    function showName(file) {
+        nameEl.textContent = '選択中: ' + file.name;
+        nameEl.classList.remove('hidden');
+        errEl.classList.add('hidden');
+    }
+    function setActive(on) {
+        if (on) { dz.classList.add.apply(dz.classList, ACTIVE); }
+        else { dz.classList.remove.apply(dz.classList, ACTIVE); }
+    }
+
+    ['dragenter', 'dragover'].forEach(function (ev) {
+        dz.addEventListener(ev, function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            setActive(true);
+        });
+    });
+    dz.addEventListener('dragleave', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        // 子要素へ移動しただけの dragleave では解除しない
+        if (dz.contains(e.relatedTarget)) return;
+        setActive(false);
+    });
+    dz.addEventListener('drop', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        setActive(false);
+        var files = e.dataTransfer && e.dataTransfer.files;
+        if (!files || files.length === 0) return;
+        var file = files[0];
+        if (!isCsv(file)) {
+            showError('CSVファイル（.csv）のみ取り込めます。別のファイルが選択されました。');
+            return;
+        }
+        try {
+            var dt = new DataTransfer();
+            dt.items.add(file);
+            input.files = dt.files;
+            showName(file);
+        } catch (err) {
+            showError('このブラウザではドラッグ&ドロップに対応していません。「ファイルの選択」をご利用ください。');
+        }
+    });
+    // 領域クリックでもダイアログを開く（入力欄自体のクリックは除外）
+    dz.addEventListener('click', function (e) {
+        if (e.target === input || input.contains(e.target)) return;
+        input.click();
+    });
+    // ボタンで選択したときもファイル名表示／非CSVはエラー＆クリア
+    input.addEventListener('change', function () {
+        if (input.files && input.files.length) {
+            var f = input.files[0];
+            if (!isCsv(f)) {
+                showError('CSVファイル（.csv）のみ取り込めます。');
+                input.value = '';
+                return;
+            }
+            showName(f);
+        }
+    });
+})();
+</script>
+
+{% if staff_list|length == 0 %}
+    <div class="bg-white rounded-xl shadow-md p-12 text-center">
+        <svg class="w-16 h-16 mx-auto text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+        <p class="text-gray-500 text-xl mb-4">まだ職員が登録されていません。</p>
+        <a href="{{ url_for('staff_new') }}"
+           class="inline-flex items-center bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors text-lg">
+            最初の職員を登録する
+        </a>
+    </div>
+{% else %}
+    <div class="bg-white rounded-xl shadow-md overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-primary-50">
+                    <tr>
+                        <th class="px-6 py-4 text-left text-sm font-bold text-primary-800 uppercase tracking-wider">
+                            氏名
+                        </th>
+                        <th class="px-6 py-4 text-left text-sm font-bold text-primary-800 uppercase tracking-wider">
+                            区分
+                        </th>
+                        <th class="px-6 py-4 text-center text-sm font-bold text-primary-800 uppercase tracking-wider">
+                            性別
+                        </th>
+                        <th class="px-6 py-4 text-left text-sm font-bold text-primary-800 uppercase tracking-wider">
+                            雇用形態
+                        </th>
+                        <th class="px-6 py-4 text-center text-sm font-bold text-primary-800 uppercase tracking-wider">
+                            兼務可否
+                        </th>
+                        <th class="px-6 py-4 text-left text-sm font-bold text-primary-800 uppercase tracking-wider">
+                            勤務可能曜日
+                        </th>
+                        <th class="px-6 py-4 text-left text-sm font-bold text-primary-800 uppercase tracking-wider">
+                            時間帯
+                        </th>
+                        <th class="px-6 py-4 text-center text-sm font-bold text-primary-800 uppercase tracking-wider">
+                            操作
+                        </th>
+                    </tr>
+                </thead>
+                <tbody class="bg-white divide-y divide-gray-200">
+                    {% for staff in staff_list %}
+                    <tr class="hover:bg-gray-50 transition-colors">
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <span class="text-base font-semibold text-gray-900">{{ staff.name }}{% if staff.has_phone_duty %} <span class="text-red-500" title="オンコール担当者">★</span>{% endif %}</span>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            {% if staff.job_category == 'cooking' %}
+                                <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-amber-100 text-amber-800">
+                                    調理
+                                </span>
+                            {% elif staff.job_category == 'nurse_rehab' %}
+                                <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-emerald-100 text-emerald-800">
+                                    看護
+                                </span>
+                            {% else %}
+                                <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-sky-100 text-sky-800">
+                                    介護
+                                </span>
+                            {% endif %}
+                            {% if staff.role == 'manager' %}
+                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800 ml-1">管理者</span>
+                            {% elif staff.role == 'sekinin' %}
+                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-800 ml-1">サ責</span>
+                            {% elif staff.role == 'sekinin_assist' %}
+                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-50 text-rose-700 ml-1">サ責補佐</span>
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-center text-sm text-gray-700">
+                            {% if staff.gender == 'male' %}男{% elif staff.gender == 'female' %}女{% else %}-{% endif %}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            {% if staff.employment_type == '常勤' %}
+                                <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800">
+                                    常勤
+                                </span>
+                            {% elif staff.employment_type == '時短正社員' %}
+                                <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-indigo-100 text-indigo-800">
+                                    時短正社員
+                                </span>
+                            {% elif staff.employment_type == '管理者' %}
+                                <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-purple-100 text-purple-800">
+                                    管理者
+                                </span>
+                            {% else %}
+                                <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-teal-100 text-teal-800">
+                                    パート
+                                </span>
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-center">
+                            {% if staff.can_visit %}
+                                <span class="text-green-600 font-bold text-lg" title="兼務可能">&#9675;</span>
+                            {% else %}
+                                <span class="text-gray-400 font-bold text-lg" title="兼務不可">&times;</span>
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            {% set day_names = ['月', '火', '水', '木', '金', '土', '日'] %}
+                            {% if staff.available_days %}
+                                {% for d in staff.available_days.split(',') %}
+                                    {% if d.strip() != '' %}
+                                        {% set idx = d.strip()|int %}
+                                        <span class="inline-block px-2 py-0.5 rounded text-xs font-medium mr-0.5
+                                            {% if idx == 5 %}bg-blue-100 text-blue-700
+                                            {% elif idx == 6 %}bg-red-100 text-red-700
+                                            {% else %}bg-gray-100 text-gray-700
+                                            {% endif %}">
+                                            {{ day_names[idx] }}
+                                        </span>
+                                    {% endif %}
+                                {% endfor %}
+                            {% else %}
+                                <span class="text-gray-400 text-sm">未設定</span>
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                            {% if staff.available_time_slots == 'full_day' %}
+                                終日
+                            {% elif staff.available_time_slots == 'am_only' %}
+                                午前のみ
+                            {% elif staff.available_time_slots == 'pm_only' %}
+                                午後のみ
+                            {% else %}
+                                {{ staff.available_time_slots }}
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-center">
+                            <div class="flex items-center justify-center space-x-2">
+                                <a href="{{ url_for('staff_edit', staff_id=staff.id) }}"
+                                   class="inline-flex items-center bg-primary-100 hover:bg-primary-200 text-primary-700 font-medium py-2 px-4 rounded-lg transition-colors text-sm">
+                                    <svg class="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                                    </svg>
+                                    編集
+                                </a>
+                                <form action="{{ url_for('staff_delete', staff_id=staff.id) }}" method="POST"
+                                      onsubmit="return confirm('{{ staff.name }} さんを削除してもよろしいですか？\nこの操作は取り消せません。');">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button type="submit"
+                                            class="inline-flex items-center bg-red-100 hover:bg-red-200 text-red-700 font-medium py-2 px-4 rounded-lg transition-colors text-sm">
+                                        <svg class="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                        </svg>
+                                        削除
+                                    </button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <p class="text-gray-500 text-sm mt-4">全 {{ staff_list|length }} 名</p>
+{% endif %}
+{% endblock %}

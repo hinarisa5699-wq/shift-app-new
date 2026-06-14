@@ -1,0 +1,201 @@
+/* ============================================
+   シフト自動作成くん - カスタムスタイル
+   Tailwind CDN を使用するため最小限に留める
+   ============================================ */
+
+/* ---------- バッジ（カレンダーセル内） ---------- */
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: nowrap;
+}
+
+.badge-day-full {
+    background-color: #3b82f6;
+    color: #fff;
+}
+
+.badge-day-am {
+    background-color: #38bdf8;
+    color: #fff;
+}
+
+.badge-day-pm {
+    background-color: #bae6fd;
+    color: #0369a1;
+}
+
+.badge-visit-am {
+    background-color: #10b981;
+    color: #fff;
+}
+
+.badge-visit-pm {
+    background-color: #6ee7b7;
+    color: #065f46;
+}
+
+.badge-dual-a {
+    background-color: #8b5cf6;
+    color: #fff;
+}
+
+.badge-dual-b {
+    background-color: #fb923c;
+    color: #fff;
+}
+
+.badge-off {
+    background-color: #d1d5db;
+    color: #6b7280;
+}
+
+.badge-day-p2 {
+    background-color: #60a5fa;
+    color: #fff;
+}
+
+.badge-cook-1 {
+    background-color: #f59e0b;
+    color: #fff;
+}
+
+.badge-cook-2 {
+    background-color: #eab308;
+    color: #fff;
+}
+
+.badge-cook-3 {
+    background-color: #d97706;
+    color: #fff;
+}
+
+.badge-cook-4 {
+    background-color: #b45309;
+    color: #fff;
+}
+
+.badge-phone {
+    background-color: #ef4444;
+    color: #fff;
+}
+
+/* ---------- カレンダーテーブル ---------- */
+.calendar-table {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+.calendar-table th,
+.calendar-table td {
+    border: 1px solid #e5e7eb;
+    padding: 6px 8px;
+    vertical-align: top;
+    font-size: 13px;
+}
+
+.calendar-table th {
+    background-color: #eff6ff;
+    font-weight: 700;
+    text-align: center;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.calendar-table .date-cell {
+    font-weight: 700;
+    text-align: center;
+    min-width: 80px;
+    white-space: nowrap;
+}
+
+.calendar-table .staff-cell {
+    min-width: 70px;
+    text-align: center;
+}
+
+.calendar-table .summary-cell {
+    min-width: 200px;
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: nowrap;
+}
+
+/* 土曜・日曜の行 */
+.row-saturday {
+    background-color: #eff6ff;
+}
+
+.row-sunday {
+    background-color: #fef2f2;
+}
+
+/* 祝日の行（⑧） */
+.row-holiday {
+    background-color: #FFF3E0;
+}
+
+/* 警告行 */
+.summary-warning {
+    background-color: #fecaca !important;
+}
+
+/* ---------- 印刷用スタイル ---------- */
+@media print {
+    /* ナビゲーション・フッターを非表示 */
+    nav,
+    footer,
+    .print\\:hidden {
+        display: none !important;
+    }
+
+    /* コントロール部分を非表示 */
+    #export-buttons,
+    button,
+    .no-print {
+        display: none !important;
+    }
+
+    /* 余白を縮小 */
+    body {
+        font-size: 10px;
+        margin: 0;
+        padding: 0;
+    }
+
+    main {
+        max-width: 100% !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+
+    /* カレンダーテーブルのみ表示 */
+    .calendar-table th,
+    .calendar-table td {
+        padding: 3px 4px;
+        font-size: 9px;
+        border-color: #999;
+    }
+
+    .badge {
+        font-size: 8px;
+        padding: 1px 4px;
+    }
+
+    /* 背景色を印刷 */
+    * {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+    }
+
+    /* ページ設定 */
+    @page {
+        size: landscape;
+        margin: 5mm;
+    }
+}

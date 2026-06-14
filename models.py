@@ -179,6 +179,31 @@ class OncallAssignment(db.Model):
         }
 
 
+class ShiftConfirmation(db.Model):
+    """シフトの確定記録（月ごと）。同じ月で再確定したら上書き。"""
+    __tablename__ = "shift_confirmation"
+
+    id = db.Column(db.Integer, primary_key=True)
+    year = db.Column(db.Integer, nullable=False)
+    month = db.Column(db.Integer, nullable=False)
+    confirmed_by = db.Column(db.String(50), default="")    # ログインユーザー名
+    confirmed_role = db.Column(db.String(20), default="")  # 役割（管理者/サ責/役員）
+    confirmed_at = db.Column(db.DateTime, nullable=False)  # 確定日時（JST wall-clock）
+
+    __table_args__ = (
+        db.UniqueConstraint("year", "month", name="uq_shift_confirmation_ym"),
+    )
+
+    def to_dict(self):
+        return {
+            "year": self.year,
+            "month": self.month,
+            "confirmed_by": self.confirmed_by or "",
+            "confirmed_role": self.confirmed_role or "",
+            "confirmed_at": self.confirmed_at.strftime("%Y/%m/%d %H:%M") if self.confirmed_at else None,
+        }
+
+
 class ShiftSettings(db.Model):
     """シフト条件設定"""
     __tablename__ = "shift_settings"

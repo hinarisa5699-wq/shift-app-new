@@ -8,6 +8,8 @@
    ============================================ */
 let currentGenerationId = null;
 let isGenerating = false;
+let currentYear = null;
+let currentMonth = null;
 
 /* ============================================
    CSRF トークン管理
@@ -140,10 +142,14 @@ function loadShifts(year, month) {
             const hasShifts = data.shifts && data.shifts.length > 0;
             const hasWarnings = data.warnings && data.warnings.length > 0;
 
+            currentYear = year;
+            currentMonth = month;
+
             if (hasShifts) {
                 currentGenerationId = data.generation_id;
                 renderCalendar(data, year, month);
                 renderWarnings(data.warnings || []);
+                renderConfirmation(data.confirmation);
                 showElement('calendar-container');
                 showElement('export-buttons');
                 hideElement('no-data-message');
@@ -151,11 +157,13 @@ function loadShifts(year, month) {
                 // W-13: シフト0件でも警告があれば表示
                 currentGenerationId = data.generation_id;
                 renderWarnings(data.warnings);
+                renderConfirmation(null);
                 hideElement('calendar-container');
                 hideElement('export-buttons');
                 hideElement('no-data-message');
             } else {
                 currentGenerationId = null;
+                renderConfirmation(null);
                 hideElement('calendar-container');
                 hideElement('export-buttons');
                 hideElement('warnings-container');
@@ -530,6 +538,76 @@ function exportShift(format) {
         return;
     }
     window.location.href = `/api/export/${currentGenerationId}/${format}`;
+}
+
+/* ============================================
+   シフト確定
+   ============================================ */
+function renderConfirmation(conf) {
+    const el = document.getElementById('confirmation-status');
+    const confirmBtn = document.getElementById('confirm-btn');
+    const unconfirmBtn = document.getElementById('unconfirm-btn');
+    const confirmed = !!(conf && conf.confirmed_at);
+    if (el) {
+        if (confirmed) {
+            const who = conf.confirmed_role || conf.confirmed_by || '';
+            el.textContent = `確定済み｜確定者：${who}／確定日時：${conf.confirmed_at}（再生成するには確定解除が必要です）`;
+            el.classList.remove('hidden');
+        } else {
+            el.textContent = '';
+            el.classList.add('hidden');
+        }
+    }
+    // 確定中は「確定」ボタンを隠し「確定解除」を表示
+    if (confirmBtn) confirmBtn.classList.toggle('hidden', confirmed);
+    if (unconfirmBtn) unconfirmBtn.classList.toggle('hidden', !confirmed);
+}
+
+function confirmShift() {
+    if (!currentYear || !currentMonth) {
+        alert('確定するシフトがありません。先にシフトを表示・生成してください。');
+        return;
+    }
+    if (!confirm(`${currentYear}年${currentMonth}月のシフトを確定しますか？（同じ月で再度確定すると最新の確定者・日時に上書きされます）`)) {
+        return;
+    }
+    fetchWithCsrf(`/api/shifts/${currentYear}/${currentMonth}/confirm`, { method: 'POST' })
+        .then(response => {
+            if (!response.ok) {
+                return response.json().then(err => {
+                    throw new Error(err.error || err.message || '確定に失敗しました');
+                });
+            }
+            return response.json();
+        })
+        .then(conf => {
+            renderConfirmation(conf);
+            alert('シフトを確定しました。');
+        })
+        .catch(error => {
+            alert('確定に失敗しました: ' + error.message);
+            console.error('Error confirming shift:', error);
+        });
+}
+
+function unconfirmShift() {
+    if (!currentYear || !currentMonth) return;
+    if (!confirm(`${currentYear}年${currentMonth}月の確定を解除しますか？（解除すると再生成できるようになります）`)) {
+        return;
+    }
+    fetchWithCsrf(`/api/shifts/${currentYear}/${currentMonth}/confirm`, { method: 'DELETE' })
+        .then(response => {
+            if (!response.ok) throw new Error('確定解除に失敗しました');
+            return response.json();
+        })
+        .then(() => {
+            renderConfirmation(null);
+            alert('確定を解除しました。');
+        })
+        .catch(error => {
+            alert('確定解除に失敗しました: ' + error.message);
+            console.error('Error unconfirming shift:', error);
+        });
 }
 
 /* ============================================

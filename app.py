@@ -12,7 +12,15 @@ import threading
 import uuid
 import sqlite3
 import calendar
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+
+# 日本標準時（JST = UTC+9）
+JST = timezone(timedelta(hours=9))
+
+
+def _now_jst():
+    """現在のJST日時（tzなしのwall-clock）を返す。"""
+    return datetime.now(JST).replace(tzinfo=None)
 from io import BytesIO
 
 from flask import (
@@ -35,7 +43,7 @@ from config import Config
 from models import (
     db, Staff, DayOffRequest, ShiftSettings, GeneratedShift, ShiftWarning,
     ShiftPattern, Qualification, StaffQualification, PlacementRule, CookingComboRule,
-    StaffAllowedPattern, StaffWorkableDate, OncallAssignment,
+    StaffAllowedPattern, StaffWorkableDate, OncallAssignment, ShiftConfirmation,
 )
 from solver import generate_shift, assign_oncall, CARE_ASSIGNMENTS, COOK_ASSIGNMENTS
 from export import export_excel, export_csv
@@ -1571,6 +1579,13 @@ def create_app():
         if year < 2000 or year > 2100:
             return jsonify({"error": "year は 2000〜2100 の範囲で指定してください"}), 400
 
+        # 確定済みの月は再生成（上書き）をブロック。確定解除が必要。
+        if ShiftConfirmation.query.filter_by(year=year, month=month).first():
+            return jsonify({
+                "error": "この月は確定済みのため再生成できません。再生成するには先に「確定解除」してください。",
+                "confirmed": True,
+            }), 409
+
         staffs = Staff.query.all()
         if not staffs:
             return jsonify({"error": "職員が登録されていません"}), 400
@@ -1891,6 +1906,9 @@ def create_app():
         ).all()
         oncall_map = {r.date.isoformat(): (r.staff.name if r.staff else "") for r in oncall_rows}
 
+        # 確定情報（この月）
+        conf = ShiftConfirmation.query.filter_by(year=year, month=month).first()
+
         return jsonify(
             {
                 "year": year,
@@ -1900,6 +1918,7 @@ def create_app():
                 "warnings": [w.to_dict() for w in warnings],
                 "holidays": holidays,
                 "oncall": oncall_map,
+                "confirmation": conf.to_dict() if conf else None,
                 "staff_list": [
                     {
                         "id": st.id,
@@ -1912,6 +1931,38 @@ def create_app():
                 ],
             }
         )
+
+    @app.route("/api/shifts/<int:year>/<int:month>/confirm", methods=["POST"])
+    def api_shift_confirm(year, month):
+        """その月のシフトを「確定」する（確定者・確定日時JSTを記録、月ごとに上書き）。"""
+        if month < 1 or month > 12:
+            return jsonify({"error": "month は 1〜12 で指定してください"}), 400
+        first_day = date(year, month, 1)
+        last_day = date(year, month, calendar.monthrange(year, month)[1])
+        has_shifts = GeneratedShift.query.filter(
+            GeneratedShift.date >= first_day, GeneratedShift.date <= last_day
+        ).first() is not None
+        if not has_shifts:
+            return jsonify({"error": "この月のシフトがありません。先に生成してください。"}), 400
+
+        conf = ShiftConfirmation.query.filter_by(year=year, month=month).first()
+        if conf is None:
+            conf = ShiftConfirmation(year=year, month=month)
+            db.session.add(conf)
+        conf.confirmed_by = session.get("user", "")
+        conf.confirmed_role = session.get("role", "")
+        conf.confirmed_at = _now_jst()
+        db.session.commit()
+        return jsonify(conf.to_dict())
+
+    @app.route("/api/shifts/<int:year>/<int:month>/confirm", methods=["DELETE"])
+    def api_shift_unconfirm(year, month):
+        """その月のシフト確定を解除する（再生成できるようにする）。"""
+        conf = ShiftConfirmation.query.filter_by(year=year, month=month).first()
+        if conf:
+            db.session.delete(conf)
+            db.session.commit()
+        return jsonify({"message": "確定を解除しました", "confirmation": None})
 
     # -----------------------------------------------------------------
     # API ルート — エクスポート
@@ -1976,7 +2027,9 @@ def create_app():
         oncall_map = {r.date.isoformat(): (r.staff.name if r.staff else "") for r in oncall_rows}
 
         buf = export_excel(shifts_data, warnings_data, staff_list_data, year, month, oncall_map=oncall_map)
-        filename = f"shift_{year}_{month:02d}.xlsx"
+        # ファイル名: シフト{役割}{YYMMDD}.xlsx（役割=ログイン中ユーザー、日付=JST）
+        role = session.get("role", "")
+        filename = f"シフト{role}{_now_jst().strftime('%y%m%d')}.xlsx"
 
         return send_file(
             buf,
@@ -2042,7 +2095,8 @@ def create_app():
         oncall_map = {r.date.isoformat(): (r.staff.name if r.staff else "") for r in oncall_rows}
 
         csv_string = export_csv(shifts_data, warnings_data, staff_list_data, year, month, oncall_map=oncall_map)
-        filename = f"shift_{year}_{month:02d}.csv"
+        role = session.get("role", "")
+        filename = f"シフト{role}{_now_jst().strftime('%y%m%d')}.csv"
 
         buf = BytesIO(csv_string.encode("utf-8"))
         buf.seek(0)

@@ -1599,18 +1599,34 @@ def _solve_care(
             if s in allowed_patterns:
                 allowed = set(allowed_patterns[s])
                 if not allowed:
+                    # 空集合＝全パターン許可（チェックなしのセマンティクス）
                     continue
 
-                # UIの許可パターンは主にデイ①〜④を制御するため、
-                # ここで訪問/兼務まで閉じると解が極端に出にくくなる。
-                allowed_day_patterns = allowed & DAY_PATTERN_ASSIGNMENTS
-                if allowed_day_patterns:
-                    for a in DAY_PATTERN_ASSIGNMENTS:
-                        if a not in allowed_day_patterns:
-                            for d_idx in range(num_days):
-                                model.add(x[s, d_idx, a] == 0)
+                # --- ハード制約: UIで直接制御するアサインメント ---
+                # デイ①〜④・早番⑤・遅番⑥は、許可集合に無ければ一律禁止。
+                # 修正: 従来は早番(early)・遅番(late)がこのフィルタの対象外で、
+                #       不許可にしても割り当てられてしまっていた（早番/遅番漏れ）。
+                # ※ このコードに存在しないアサインメント(旧バージョンの early/late 等)は
+                #   CARE_WORKING_ASSIGNMENTS ガードでスキップし、KeyError を避ける。
+                for a in ("day_pattern1", "day_pattern2", "day_pattern3",
+                          "day_pattern4", "early", "late"):
+                    if a in CARE_WORKING_ASSIGNMENTS and a not in allowed:
+                        for d_idx in range(num_days):
+                            model.add(x[s, d_idx, a] == 0)
 
-                # API等で訪問/兼務を明示指定した場合のみ、その範囲で制限する。
+                # --- 兼務(派生)パターン: 派生元のデイが不許可なら派生も禁止 ---
+                #   day_p3_visit_pm ← デイ③(day_pattern3) + PM訪問
+                #   visit_am_day_p4 ← AM訪問 + デイ④(day_pattern4)
+                for dual, base in (("day_p3_visit_pm", "day_pattern3"),
+                                   ("visit_am_day_p4", "day_pattern4")):
+                    if dual in CARE_WORKING_ASSIGNMENTS and base not in allowed:
+                        for d_idx in range(num_days):
+                            model.add(x[s, d_idx, dual] == 0)
+
+                # --- 単独訪問(visit_am/visit_pm) ---
+                # UIの許可パターンには訪問の項目が無いため、ここで一律に閉じると
+                # 解が極端に出にくくなる。よって従来通り、API等で訪問コードを
+                # 明示指定した場合のみ、その範囲に制限する。
                 allowed_visit_assignments = allowed & VISIT_ASSIGNMENTS
                 if allowed_visit_assignments:
                     for a in VISIT_ASSIGNMENTS:

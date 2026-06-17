@@ -32,26 +32,26 @@ function fetchWithCsrf(url, options = {}) {
    配置タイプの定義
    ============================================ */
 const ASSIGNMENT_MAP = {
-    day_pattern1:    { label: 'デイ8:30-17:30',  badgeClass: 'badge-day-full'  },
-    day_pattern2:    { label: 'デイ9:00-16:00',  badgeClass: 'badge-day-p2'   },
-    day_pattern3:    { label: 'デイ午前のみ',     badgeClass: 'badge-day-am'   },
-    day_pattern4:    { label: 'デイ午後のみ',     badgeClass: 'badge-day-pm'   },
+    day_pattern1:    { label: '訪問8:30-17:30',  badgeClass: 'badge-day-full'  },
+    day_pattern2:    { label: '訪問9:00-16:00',  badgeClass: 'badge-day-p2'   },
+    day_pattern3:    { label: '訪問午前のみ',     badgeClass: 'badge-day-am'   },
+    day_pattern4:    { label: '訪問午後のみ',     badgeClass: 'badge-day-pm'   },
     early:           { label: '早番7:30-16:30',  badgeClass: 'badge-day-full' },
     late:            { label: '遅番9:30-18:30',  badgeClass: 'badge-day-p2'   },
-    visit_am:        { label: '訪問午前のみ',     badgeClass: 'badge-visit-am'  },
-    visit_pm:        { label: '訪問午後のみ',     badgeClass: 'badge-visit-pm'  },
-    day_p3_visit_pm: { label: '兼務(③→訪問)',    badgeClass: 'badge-dual-a'    },
-    visit_am_day_p4: { label: '兼務(訪問→④)',    badgeClass: 'badge-dual-b'    },
+    visit_am:        { label: 'デイ午前のみ',     badgeClass: 'badge-visit-am'  },
+    visit_pm:        { label: 'デイ午後のみ',     badgeClass: 'badge-visit-pm'  },
+    day_p3_visit_pm: { label: '兼務(訪問→デイ)',  badgeClass: 'badge-dual-a'    },
+    visit_am_day_p4: { label: '兼務(デイ→訪問)',  badgeClass: 'badge-dual-b'    },
     cook_early:      { label: '①6-8',            badgeClass: 'badge-cook-1'    },
     cook_morning:    { label: '②8-13',           badgeClass: 'badge-cook-2'    },
     cook_late:       { label: '③12-19',          badgeClass: 'badge-cook-3'    },
     cook_long:       { label: '④6-13',           badgeClass: 'badge-cook-4'    },
     cook_mid:        { label: '⑤9-15',           badgeClass: 'badge-cook-2'    },
     // 旧名の後方互換
-    day_am:          { label: 'デイ午前のみ',     badgeClass: 'badge-day-am'   },
-    day_pm:          { label: 'デイ午後のみ',     badgeClass: 'badge-day-pm'   },
-    day_am_visit_pm: { label: '兼務(③→訪問)',    badgeClass: 'badge-dual-a'   },
-    visit_am_day_pm: { label: '兼務(訪問→④)',    badgeClass: 'badge-dual-b'   },
+    day_am:          { label: '訪問午前のみ',     badgeClass: 'badge-day-am'   },
+    day_pm:          { label: '訪問午後のみ',     badgeClass: 'badge-day-pm'   },
+    day_am_visit_pm: { label: '兼務(訪問→デイ)',  badgeClass: 'badge-dual-a'   },
+    visit_am_day_pm: { label: '兼務(デイ→訪問)',  badgeClass: 'badge-dual-b'   },
 };
 
 // デイ午前に寄与するアサインメント
@@ -73,16 +73,6 @@ const DUAL_SET = new Set(['day_p3_visit_pm', 'visit_am_day_p4', 'day_am_visit_pm
 
 // ③ 相談員事務スロットラベル
 const DESK_SLOT_LABELS = ['9-11時', '11-13時', '13-15時', '15-17時'];
-
-// ① 休憩開始時刻 → 表示ラベル（1時間固定）
-function formatBreakLabel(breakStart) {
-    if (!breakStart) return '';
-    // "12:30" → "12:30-13:30", "10:00" → "10:00-11:00"
-    const [h, m] = breakStart.split(':').map(Number);
-    const endH = h + 1;
-    const end = `${String(endH).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-    return `休${breakStart}-${end}`;
-}
 
 const DAY_NAMES = ['日', '月', '火', '水', '木', '金', '土'];
 
@@ -286,7 +276,6 @@ function renderCalendar(data, year, month) {
     const shiftMap = {};
     const phoneDutyMap = {};
     const deskSlotMap = {};  // ③ {date: {staff_id: [slot_idx, ...]}}
-    const breakMap = {};     // ① {date: {staff_id: "12:00"}}
     const bathMap = {};      // お風呂当番 {date: {staff_id: "中"/"外"}}
     const mealMap = {};      // 食事介助 {date: {staff_id: "12:00-13:00"}}
     shifts.forEach(s => {
@@ -299,10 +288,6 @@ function renderCalendar(data, year, month) {
         if (s.counselor_desk_slots && s.counselor_desk_slots.length > 0) {
             if (!deskSlotMap[s.date]) deskSlotMap[s.date] = {};
             deskSlotMap[s.date][s.staff_id] = s.counselor_desk_slots;
-        }
-        if (s.break_start) {
-            if (!breakMap[s.date]) breakMap[s.date] = {};
-            breakMap[s.date][s.staff_id] = s.break_start;
         }
         if (s.bath_role) {
             if (!bathMap[s.date]) bathMap[s.date] = {};
@@ -373,10 +358,6 @@ function renderCalendar(data, year, month) {
                 const info = ASSIGNMENT_MAP[assignment];
                 const isPhone = phoneDutyMap[dateStr] && phoneDutyMap[dateStr][s.id];
                 const phoneBadge = isPhone ? ' <span class="badge badge-phone">TEL</span>' : '';
-                // ① 個人別休憩時間
-                const breakStart = breakMap[dateStr] && breakMap[dateStr][s.id];
-                const breakLabel = formatBreakLabel(breakStart);
-                const breakDisplay = breakLabel ? `<br><span style="font-size:9px;color:#b45309">${breakLabel}</span>` : '';
                 // ③ 相談員事務時間帯（[0,1,2,3]=終日相談）
                 const deskSlots = deskSlotMap[dateStr] && deskSlotMap[dateStr][s.id];
                 let deskLabel = '';
@@ -394,12 +375,11 @@ function renderCalendar(data, year, month) {
                 // お風呂当番（中/外）
                 const bathRole = bathMap[dateStr] && bathMap[dateStr][s.id];
                 const bathDisplay = bathRole ? ` <span class="badge" style="background:#0ea5e9;color:#fff">${bathRole}介助</span>` : '';
-                // 食事介助ラベルは表示しない（要望により非表示。休憩表示は残す）
-                const mealDisplay = '';
+                // 休憩時間・食事介助ラベルは表示しない（要望により非表示）
                 if (info) {
-                    html += `<td class="staff-cell"><span class="badge ${info.badgeClass}">${info.label}</span>${bathDisplay}${phoneBadge}${breakDisplay}${mealDisplay}${deskLabel}</td>`;
+                    html += `<td class="staff-cell"><span class="badge ${info.badgeClass}">${info.label}</span>${bathDisplay}${phoneBadge}${deskLabel}</td>`;
                 } else {
-                    html += `<td class="staff-cell"><span class="badge badge-off">${escapeHtml(assignment)}</span>${bathDisplay}${phoneBadge}${breakDisplay}${mealDisplay}${deskLabel}</td>`;
+                    html += `<td class="staff-cell"><span class="badge badge-off">${escapeHtml(assignment)}</span>${bathDisplay}${phoneBadge}${deskLabel}</td>`;
                 }
                 // ② 看護師/PTはデイ人数カウントから除外
                 if (!nursePtIds.has(s.id)) {
@@ -419,27 +399,24 @@ function renderCalendar(data, year, month) {
         const careSummaryClass = dayWarnings.some(w => w.warning_type && !w.warning_type.startsWith('understaffed_cook'))
             ? 'summary-cell summary-warning' : 'summary-cell';
         html += `<td class="${careSummaryClass}">`;
-        html += `デイ午前:<strong>${dayAmCount}</strong> `;
-        html += `デイ午後:<strong>${dayPmCount}</strong><br>`;
-        html += `訪問午前:<strong>${visitAmCount}</strong> `;
-        html += `訪問午後:<strong>${visitPmCount}</strong><br>`;
+        html += `訪問午前:<strong>${dayAmCount}</strong> `;
+        html += `訪問午後:<strong>${dayPmCount}</strong><br>`;
+        html += `デイ午前:<strong>${visitAmCount}</strong> `;
+        html += `デイ午後:<strong>${visitPmCount}</strong><br>`;
         html += `兼務:<strong>${dualCount}</strong>`;
         html += '</td>';
 
-        // Cooking staff cells ① 休憩時間表示
+        // Cooking staff cells
         if (hasCooking) {
             let cookCount = 0;
             cookingStaff.forEach(s => {
                 const assignment = shiftMap[dateStr] ? shiftMap[dateStr][s.id] : null;
                 if (assignment && assignment !== 'cook_off') {
                     const info = ASSIGNMENT_MAP[assignment];
-                    const breakStart = breakMap[dateStr] && breakMap[dateStr][s.id];
-                    const breakLabel = formatBreakLabel(breakStart);
-                    const breakDisplay = breakLabel ? `<br><span style="font-size:9px;color:#b45309">${breakLabel}</span>` : '';
                     if (info) {
-                        html += `<td class="staff-cell"><span class="badge ${info.badgeClass}">${info.label}</span>${breakDisplay}</td>`;
+                        html += `<td class="staff-cell"><span class="badge ${info.badgeClass}">${info.label}</span></td>`;
                     } else {
-                        html += `<td class="staff-cell"><span class="badge badge-off">${escapeHtml(assignment)}</span>${breakDisplay}</td>`;
+                        html += `<td class="staff-cell"><span class="badge badge-off">${escapeHtml(assignment)}</span></td>`;
                     }
                     cookCount++;
                 } else {

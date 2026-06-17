@@ -30,26 +30,26 @@ from openpyxl.worksheet.properties import PageSetupProperties
 # 定数: アサインメント → 日本語表示ラベル
 # ---------------------------------------------------------------------------
 ASSIGNMENT_LABELS = {
-    "day_pattern1":    "デイ8:30-17:30",
-    "day_pattern2":    "デイ9:00-16:00",
-    "day_pattern3":    "デイ午前のみ",
-    "day_pattern4":    "デイ午後のみ",
+    "day_pattern1":    "訪問8:30-17:30",
+    "day_pattern2":    "訪問9:00-16:00",
+    "day_pattern3":    "訪問午前のみ",
+    "day_pattern4":    "訪問午後のみ",
     "early":           "早番7:30-16:30",
     "late":            "遅番9:30-18:30",
-    "visit_am":        "訪問午前のみ",
-    "visit_pm":        "訪問午後のみ",
-    "day_p3_visit_pm": "兼務(③→訪問)",
-    "visit_am_day_p4": "兼務(訪問→④)",
+    "visit_am":        "デイ午前のみ",
+    "visit_pm":        "デイ午後のみ",
+    "day_p3_visit_pm": "兼務(訪問→デイ)",
+    "visit_am_day_p4": "兼務(デイ→訪問)",
     "cook_early":      "調理①6-8",
     "cook_morning":    "調理②8-13",
     "cook_late":       "調理③12-19",
     "cook_long":       "調理④6-13",
     "cook_mid":        "調理⑤9-15",
     # 旧名の後方互換
-    "day_am":          "デイ午前のみ",
-    "day_pm":          "デイ午後のみ",
-    "day_am_visit_pm": "兼務(③→訪問)",
-    "visit_am_day_pm": "兼務(訪問→④)",
+    "day_am":          "訪問午前のみ",
+    "day_pm":          "訪問午後のみ",
+    "day_am_visit_pm": "兼務(訪問→デイ)",
+    "visit_am_day_pm": "兼務(デイ→訪問)",
 }
 
 # カテゴリごとの背景色 (アサインメントセル)
@@ -80,7 +80,9 @@ ASSIGNMENT_FILL = {
 WEEKDAY_NAMES = ["月", "火", "水", "木", "金", "土", "日"]
 
 # サマリー列ヘッダー (ケア)
-SUMMARY_HEADERS = ["デイ午前", "デイ午後", "訪問午前", "訪問午後", "兼務者数", "オンコール"]
+# 注: 値の並びは [day_am, day_pm, visit_am, visit_pm, ...] のまま。
+# 表記入れ替え（訪問⇄デイ）の要望によりラベルのみ入れ替えている。
+SUMMARY_HEADERS = ["訪問午前", "訪問午後", "デイ午前", "デイ午後", "兼務者数", "オンコール"]
 
 # サマリー列ヘッダー (調理)
 COOK_SUMMARY_HEADERS = ["調理配置数"]
@@ -109,20 +111,8 @@ CENTER_ALIGN = Alignment(horizontal="center", vertical="center")
 # ⑧ 祝日行の背景色
 HOLIDAY_FILL = PatternFill(start_color="FFF3E0", end_color="FFF3E0", fill_type="solid")
 
-def _format_break_comment(break_start):
-    """休憩開始時刻 → "休憩 HH:MM-HH:MM" （1h固定）"""
-    if not break_start:
-        return ""
-    h, m = break_start.split(":")
-    end_h = int(h) + 1
-    return f"休憩 {break_start}-{end_h:02d}:{m}"
-
 # ③ 相談員事務スロットラベル
 DESK_SLOT_LABELS = ["9-11時", "11-13時", "13-15時", "15-17時"]
-
-# 休憩なし明示表示の対象パターン（半日・訪問のみ）
-_NO_BREAK_PATTERNS = {"day_pattern3", "day_pattern4", "visit_am", "visit_pm",
-                      "day_am", "day_pm"}  # 旧名の後方互換
 
 # 兼務パターンは休憩はあるが相談業務なし
 _NO_COUNSELOR_PATTERNS = {"day_p3_visit_pm", "visit_am_day_p4"}
@@ -370,7 +360,7 @@ def export_excel(
             asgn = day_assignments.get(sid, "")
             label = ASSIGNMENT_LABELS.get(asgn, "")
 
-            # セル内テキストに役割・休憩・食事介助を追記（印刷対応）
+            # セル内テキストに役割を追記（印刷対応）
             display_text = label
             lines = 1
 
@@ -380,16 +370,7 @@ def export_excel(
                 display_text += f"\n{bath_role}介助"
                 lines += 1
 
-            bs = break_map.get(d_str, {}).get(sid)
-            break_text = _format_break_comment(bs)
-            if break_text:
-                display_text += f"\n{break_text}"
-                lines += 1
-            elif asgn in _NO_BREAK_PATTERNS:
-                display_text += "\n休憩なし"
-                lines += 1
-
-            # 食事介助ラベルは表示しない（要望により非表示。休憩表示は残す）
+            # 休憩時間・食事介助ラベルは表示しない（要望により非表示）
 
             desk_slots = desk_slot_map.get(d_str, {}).get(sid)
             if desk_slots:
@@ -466,14 +447,8 @@ def export_excel(
                 asgn = day_assignments.get(sid, "")
                 label = ASSIGNMENT_LABELS.get(asgn, "")
 
-                # ① 休憩をセル内テキストに追記（印刷対応）
+                # 休憩時間は表示しない（要望により非表示）
                 display_text = label
-                bs = break_map.get(d_str, {}).get(sid)
-                break_text = _format_break_comment(bs)
-                if break_text:
-                    display_text += f"\n{break_text}"
-                    if 2 > max_lines:
-                        max_lines = 2
 
                 cell = ws.cell(row=row, column=col, value=display_text)
                 cell.font = NORMAL_FONT
@@ -663,10 +638,7 @@ def export_csv(
             bath_role = bath_map.get(d_str, {}).get(sid)
             if bath_role:
                 parts.append(f"{bath_role}介助")
-            bs = break_map.get(d_str, {}).get(sid)
-            break_text = _format_break_comment(bs)
-            if break_text:
-                parts.append(break_text)
+            # 休憩時間は表示しない（要望により非表示）
             meal = meal_map.get(d_str, {}).get(sid)
             if meal:
                 parts.append(f"食事:{meal}")

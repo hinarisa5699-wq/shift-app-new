@@ -822,7 +822,7 @@ def create_app():
     def index():
         """ダッシュボード"""
         staff_count = Staff.query.count()
-        fulltime_count = Staff.query.filter(Staff.employment_type.in_(["常勤", "時短正社員", "管理者"])).count()
+        fulltime_count = Staff.query.filter(Staff.employment_type.in_(["常勤", "時短正社員", "正社員", "管理者"])).count()
         parttime_count = Staff.query.filter_by(employment_type="パート").count()
         dual_count = Staff.query.filter_by(can_visit=True).count()
         care_count = Staff.query.filter_by(staff_group="care").count()

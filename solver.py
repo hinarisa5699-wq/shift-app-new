@@ -1232,6 +1232,10 @@ def _solve_care_with_fallback(
     # 形式: [(staff_id, "YYYY-MM-DD"), ...]
     oncall_forced_off = settings.get("oncall_forced_off", []) or []
 
+    # オンコール当番日そのもの（連勤カウントに「勤務日」として含める）
+    # 形式: [(staff_id, "YYYY-MM-DD"), ...]
+    oncall_work_days = settings.get("oncall_work_days", []) or []
+
     # Phase 1: ハード制約のみ
     shifts_data, warnings_data = _solve_care(
         year, month, all_dates, staff_ids, staff_by_id,
@@ -1252,6 +1256,7 @@ def _solve_care_with_fallback(
         allowed_patterns=allowed_patterns or {},
         max_day_service=max_day_service,
         oncall_forced_off=oncall_forced_off,
+        oncall_work_days=oncall_work_days,
         require_early_late=True,
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
@@ -1282,6 +1287,7 @@ def _solve_care_with_fallback(
         allowed_patterns=allowed_patterns or {},
         max_day_service=max_day_service,
         oncall_forced_off=oncall_forced_off,
+        oncall_work_days=oncall_work_days,
         require_early_late=True,
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
@@ -1322,6 +1328,7 @@ def _solve_care_with_fallback(
         allowed_patterns=allowed_patterns or {},
         max_day_service=max_day_service,
         oncall_forced_off=oncall_forced_off,
+        oncall_work_days=oncall_work_days,
         require_early_late=True,
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
@@ -1377,6 +1384,7 @@ def _solve_care(
     allowed_patterns: dict = None,
     max_day_service: int = 0,
     oncall_forced_off: list = None,
+    oncall_work_days: list = None,
     require_early_late: bool = False,
     min_early_staff: int = 1,
     min_late_staff: int = 1,
@@ -1391,6 +1399,8 @@ def _solve_care(
         counselor_staff_ids = []
     if oncall_forced_off is None:
         oncall_forced_off = []
+    if oncall_work_days is None:
+        oncall_work_days = []
 
     model = cp_model.CpModel()
     num_days = len(all_dates)
@@ -1636,15 +1646,39 @@ def _solve_care(
 
     # ==================================================================
     # 制約: 連勤上限
+    #   オンコール（電話当番）は出勤と独立した当番だが「勤務日」として扱い、
+    #   連勤日数のカウントに含める（オンコール日は休み(off)であっても休養日に
+    #   数えない）。これにより 5連勤の翌日にオンコールが入って実質6連勤になる
+    #   不具合を防ぐ。
     # ==================================================================
+    # {staff_id: set(day_index)} … その職員がオンコール当番の日
+    oncall_day_idx_by_staff = {}
+    for _entry in oncall_work_days:
+        try:
+            _sid, _diso = _entry
+        except (ValueError, TypeError):
+            continue
+        _d = datetime.date.fromisoformat(_diso) if isinstance(_diso, str) else _diso
+        _di = _date_to_idx.get(_d)
+        if _di is not None and _sid in staff_by_id:
+            oncall_day_idx_by_staff.setdefault(_sid, set()).add(_di)
+
     for s in staff_ids:
         info = staff_by_id[s]
         max_con = info["max_consecutive_days"]
         window = max_con + 1
+        oncall_days_s = oncall_day_idx_by_staff.get(s, set())
         for start in range(num_days - window + 1):
-            model.add(
-                sum(x[s, start + k, "off"] for k in range(window)) >= 1
-            )
+            # 休養日とみなせるのは「off かつ オンコール当番でない日」のみ。
+            rest_terms = [
+                x[s, start + k, "off"]
+                for k in range(window)
+                if (start + k) not in oncall_days_s
+            ]
+            # オンコールは連続禁止が既定のため、ウィンドウが全てオンコール日に
+            # なることは無い。万一そうなった場合のみ制約を課さず素通りさせる。
+            if rest_terms:
+                model.add(sum(rest_terms) >= 1)
 
     # ==================================================================
     # 制約: 週の勤務日数上限・下限（月曜始まり）

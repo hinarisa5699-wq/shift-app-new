@@ -1742,6 +1742,11 @@ def create_app():
                 if d.day < last_dom:
                     forced_off.append((it["staff_id"], (d + timedelta(days=1)).isoformat()))
             settings_dict["oncall_forced_off"] = forced_off
+            # オンコール当番日そのものを「勤務日」としてソルバーへ渡し、
+            # 連勤上限のカウントに含める（オンコール込みで連勤上限を超えないように）。
+            settings_dict["oncall_work_days"] = [
+                (it["staff_id"], it["date"].isoformat()) for it in oncall_items
+            ]
 
         # ソルバー実行（ケアと調理を独立して解く）
         try:

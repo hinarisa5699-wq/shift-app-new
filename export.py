@@ -245,6 +245,252 @@ def _build_daily_data(shifts_data, staff_list, year, month):
 
 
 # ---------------------------------------------------------------------------
+# ヘルパー: 縦＝職員名・横＝日付 のシートを 1 枚書き込む
+# ---------------------------------------------------------------------------
+def _date_column_fill(d):
+    """日付列の背景色（祝日 > 土 > 日）。平日は None。"""
+    if jpholiday.is_holiday(d):
+        return HOLIDAY_FILL
+    weekday_idx = d.weekday()
+    if weekday_idx == 5:
+        return SATURDAY_FILL
+    if weekday_idx == 6:
+        return SUNDAY_FILL
+    return None
+
+
+def _staff_name_label(staff: dict, is_cook: bool) -> str:
+    """職員名セルの表示（ケアは資格を併記）。"""
+    if is_cook:
+        return staff["name"]
+    quals = staff.get("qualifications", [])
+    if quals:
+        return f"{staff['name']}\n({'/'.join(quals)})"
+    return staff["name"]
+
+
+def _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map):
+    """ケアスタッフ 1 セルの (assignment, 表示テキスト) を組み立てる。"""
+    asgn = assignment_map.get(d_str, {}).get(sid, "")
+    text = ASSIGNMENT_LABELS.get(asgn, "")
+
+    # お風呂当番（中/外）
+    bath_role = bath_map.get(d_str, {}).get(sid)
+    if bath_role:
+        text += f"\n{bath_role}介助"
+
+    # 休憩時間・食事介助ラベルは表示しない（要望により非表示）
+
+    # ③ 相談員事務スロット
+    desk_slots = desk_slot_map.get(d_str, {}).get(sid)
+    if desk_slots:
+        if set(desk_slots) >= {0, 1, 2, 3}:
+            text += "\n相談（終日）"
+        else:
+            slot_texts = [DESK_SLOT_LABELS[si] for si in desk_slots if si < len(DESK_SLOT_LABELS)]
+            if slot_texts:
+                text += f"\n相談:{','.join(slot_texts)}"
+    return asgn, text
+
+
+def _write_group_sheet(
+    ws,
+    group_staff,
+    dates,
+    year,
+    month,
+    *,
+    assignment_map,
+    summary_map,
+    phone_duty_map,
+    desk_slot_map,
+    bath_map,
+    warnings_data,
+    is_cook,
+):
+    """1 グループ（介護 or 調理）を「縦＝職員名・横＝日付」で 1 シートに書き込む。"""
+    num_days = len(dates)
+    name_col = 1
+    first_date_col = 2
+    last_date_col = first_date_col + num_days - 1
+    total_col = last_date_col + 1   # 出勤日数列
+
+    title_label = "調理スタッフ" if is_cook else "介護スタッフ"
+    off_token = "cook_off" if is_cook else "off"
+
+    header_font_wrap = Font(name="メイリオ", bold=True, color="FFFFFF", size=11)
+    label_font = Font(name="メイリオ", bold=True, size=10)
+
+    # --- タイトル行 ---
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_col)
+    title_cell = ws.cell(row=1, column=1, value=f"{year}年{month}月 シフト表（{title_label}）")
+    title_cell.font = TITLE_FONT
+    title_cell.alignment = CENTER_ALIGN
+
+    header_row1 = 2   # 日付（M/D）
+    header_row2 = 3   # 曜日
+    data_start_row = 4
+
+    # --- 職員名ヘッダー（2 行ぶち抜き）---
+    ws.merge_cells(start_row=header_row1, start_column=name_col, end_row=header_row2, end_column=name_col)
+    c = ws.cell(row=header_row1, column=name_col, value="職員名")
+    c.font = header_font_wrap
+    c.fill = HEADER_FILL
+    c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    c.border = THIN_BORDER
+    ws.cell(row=header_row2, column=name_col).border = THIN_BORDER
+
+    # --- 出勤日数ヘッダー（2 行ぶち抜き）---
+    ws.merge_cells(start_row=header_row1, start_column=total_col, end_row=header_row2, end_column=total_col)
+    c = ws.cell(row=header_row1, column=total_col, value="出勤\n日数")
+    c.font = header_font_wrap
+    c.fill = HEADER_FILL
+    c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    c.border = THIN_BORDER
+    ws.cell(row=header_row2, column=total_col).border = THIN_BORDER
+
+    # --- 日付ヘッダー（1 行目＝M/D、2 行目＝曜日 / 祝日名）---
+    for i, d in enumerate(dates):
+        col = first_date_col + i
+        col_fill = _date_column_fill(d)
+
+        c1 = ws.cell(row=header_row1, column=col, value=f"{d.month}/{d.day}")
+        c1.font = header_font_wrap
+        c1.fill = HEADER_FILL
+        c1.alignment = CENTER_ALIGN
+        c1.border = THIN_BORDER
+
+        weekday_name = WEEKDAY_NAMES[d.weekday()]
+        if jpholiday.is_holiday(d):
+            dow_value = f"{weekday_name}\n{jpholiday.is_holiday_name(d)}"
+        else:
+            dow_value = weekday_name
+        c2 = ws.cell(row=header_row2, column=col, value=dow_value)
+        c2.font = NORMAL_FONT
+        c2.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c2.border = THIN_BORDER
+        if col_fill:
+            c2.fill = col_fill
+
+    # --- 職員ごとのデータ行 ---
+    for r_off, s in enumerate(group_staff):
+        row = data_start_row + r_off
+        sid = s["id"]
+
+        name_cell = ws.cell(row=row, column=name_col, value=_staff_name_label(s, is_cook))
+        name_cell.font = NORMAL_FONT
+        name_cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        name_cell.border = THIN_BORDER
+
+        work_days = 0
+        for i, d in enumerate(dates):
+            col = first_date_col + i
+            d_str = d.isoformat()
+            col_fill = _date_column_fill(d)
+
+            if is_cook:
+                asgn = assignment_map.get(d_str, {}).get(sid, "")
+                text = ASSIGNMENT_LABELS.get(asgn, "")
+            else:
+                asgn, text = _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map)
+
+            cell = ws.cell(row=row, column=col, value=text)
+            cell.font = NORMAL_FONT
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = THIN_BORDER
+
+            if asgn in ASSIGNMENT_FILL:
+                cell.fill = ASSIGNMENT_FILL[asgn]
+            elif col_fill:
+                cell.fill = col_fill
+
+            if asgn not in (off_token, ""):
+                work_days += 1
+
+        total_cell = ws.cell(row=row, column=total_col, value=work_days)
+        total_cell.font = label_font
+        total_cell.alignment = CENTER_ALIGN
+        total_cell.border = THIN_BORDER
+
+    # --- サマリー行（日付ごとの配置数。横＝日付に合わせて行として並べる）---
+    summary_start_row = data_start_row + len(group_staff)
+    if is_cook:
+        summary_rows = [("調理配置数", "cook_total", "understaffed_cook")]
+    else:
+        summary_rows = [
+            ("訪問午前", "day_am", "understaffed_day_am"),
+            ("訪問午後", "day_pm", "understaffed_day_pm"),
+            ("デイ午前", "visit_am", "understaffed_visit_am"),
+            ("デイ午後", "visit_pm", "understaffed_visit_pm"),
+            ("兼務者数", "dual", "dual_shortage"),
+            ("オンコール", "_phone", None),
+        ]
+
+    for r_off, (label, key, warn_type) in enumerate(summary_rows):
+        row = summary_start_row + r_off
+        label_cell = ws.cell(row=row, column=name_col, value=label)
+        label_cell.font = label_font
+        label_cell.fill = SATURDAY_FILL
+        label_cell.alignment = Alignment(horizontal="left", vertical="center")
+        label_cell.border = THIN_BORDER
+
+        for i, d in enumerate(dates):
+            col = first_date_col + i
+            d_str = d.isoformat()
+            summary = summary_map.get(d_str, {})
+
+            if key == "_phone":
+                names = phone_duty_map.get(d_str, [])
+                val = ", ".join(names) if names else ""
+            else:
+                val = summary.get(key, 0)
+
+            cell = ws.cell(row=row, column=col, value=val)
+            cell.font = NORMAL_FONT
+            cell.alignment = CENTER_ALIGN
+            cell.border = THIN_BORDER
+
+            is_alert = False
+            if warn_type:
+                for w in warnings_data:
+                    if w.get("date") != d_str:
+                        continue
+                    wt = w.get("warning_type", "")
+                    if warn_type == "understaffed_cook":
+                        if wt.startswith("understaffed_cook"):
+                            is_alert = True
+                            break
+                    elif wt == warn_type:
+                        is_alert = True
+                        break
+            if is_alert:
+                cell.fill = ALERT_FILL
+                cell.font = ALERT_FONT
+
+        ws.cell(row=row, column=total_col, value="").border = THIN_BORDER
+
+    # --- 列幅・行高・固定・印刷設定 ---
+    ws.column_dimensions[get_column_letter(name_col)].width = 18   # 職員名・資格
+    date_width = 14 if is_cook else 13   # 調理は時間ラベルが長い
+    for i in range(num_days):
+        ws.column_dimensions[get_column_letter(first_date_col + i)].width = date_width
+    ws.column_dimensions[get_column_letter(total_col)].width = 7
+
+    ws.row_dimensions[header_row2].height = 30   # 祝日名の折り返し用
+
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 0    # 横は日付ぶん複数ページに分割
+    ws.page_setup.fitToHeight = 1   # 縦（職員）は 1 ページに収める
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.page_margins = PageMargins(
+        left=0.3, right=0.3, top=0.5, bottom=0.5, header=0.2, footer=0.2
+    )
+    ws.print_title_rows = "1:3"      # タイトル＋日付見出しを各ページ先頭に繰り返す
+    ws.print_title_cols = "A:A"      # 職員名列を各ページ左端に繰り返す
+    ws.freeze_panes = ws.cell(row=data_start_row, column=first_date_col).coordinate
+
+
+# ---------------------------------------------------------------------------
 # Excel エクスポート
 # ---------------------------------------------------------------------------
 def export_excel(
@@ -255,11 +501,12 @@ def export_excel(
     month: int,
     oncall_map: dict = None,
 ) -> BytesIO:
-    """Excel 形式でシフト表を出力する。"""
-    wb = Workbook()
+    """Excel 形式でシフト表を出力する。
 
-    ws = wb.active
-    ws.title = "シフト表"
+    レイアウトは「縦＝職員名・横＝日付」。介護スタッフと調理スタッフを
+    別シート（1 枚目＝介護、2 枚目＝調理）に分けて出力する。
+    """
+    wb = Workbook()
 
     dates, assignment_map, summary_map, phone_duty_map, desk_slot_map, break_map, bath_map, meal_map = _build_daily_data(
         shifts_data, staff_list, year, month
@@ -270,286 +517,34 @@ def export_excel(
 
     care_staff = [s for s in staff_list if s.get("department") != "cooking"]
     cook_staff = [s for s in staff_list if s.get("department") == "cooking"]
-    care_names = [s["name"] for s in care_staff]
-    care_ids = [s["id"] for s in care_staff]
-    cook_names = [s["name"] for s in cook_staff]
-    cook_ids = [s["id"] for s in cook_staff]
-    has_cooking = len(cook_staff) > 0
 
-    care_summary_start_col = 3 + len(care_staff)
-    cook_staff_start_col = care_summary_start_col + len(SUMMARY_HEADERS)
-
-    if has_cooking:
-        cook_summary_start_col = cook_staff_start_col + len(cook_staff)
-        last_col = cook_summary_start_col + len(COOK_SUMMARY_HEADERS) - 1
-    else:
-        last_col = care_summary_start_col + len(SUMMARY_HEADERS) - 1
-
-    # --- タイトル行 ---
-    title_text = f"{year}年{month}月 シフト表"
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
-    title_cell = ws.cell(row=1, column=1, value=title_text)
-    title_cell.font = TITLE_FONT
-    title_cell.alignment = Alignment(horizontal="center", vertical="center")
-
-    # --- ヘッダー行 ④ 資格表示付き ---
-    header_row = 2
-    # ④ ケアスタッフ名に資格情報を付加
-    care_header_names = []
-    for s in care_staff:
-        quals = s.get("qualifications", [])
-        if quals:
-            care_header_names.append(f"{s['name']}\n({'/'.join(quals)})")
-        else:
-            care_header_names.append(s["name"])
-
-    headers = ["日付", "曜日"] + care_header_names + SUMMARY_HEADERS
-    if has_cooking:
-        headers += cook_names + COOK_SUMMARY_HEADERS
-
-    for col_idx, header in enumerate(headers, start=1):
-        cell = ws.cell(row=header_row, column=col_idx, value=header)
-        cell.font = HEADER_FONT
-        cell.fill = HEADER_FILL
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        cell.border = THIN_BORDER
-
-    # --- データ行 ---
-    data_start_row = 3
-
-    for row_offset, d in enumerate(dates):
-        row = data_start_row + row_offset
-        d_str = d.isoformat()
-        weekday_idx = d.weekday()
-        weekday_name = WEEKDAY_NAMES[weekday_idx]
-
-        # ⑧ 祝日判定
-        is_holiday = jpholiday.is_holiday(d)
-        row_fill = None
-        if is_holiday:
-            row_fill = HOLIDAY_FILL
-        elif weekday_idx == 5:
-            row_fill = SATURDAY_FILL
-        elif weekday_idx == 6:
-            row_fill = SUNDAY_FILL
-
-        date_cell = ws.cell(row=row, column=1, value=f"{d.month}/{d.day}")
-        date_cell.font = NORMAL_FONT
-        date_cell.alignment = CENTER_ALIGN
-        date_cell.border = THIN_BORDER
-        if row_fill:
-            date_cell.fill = row_fill
-
-        # 祝日名を曜日セルに追記
-        if is_holiday:
-            holiday_name = jpholiday.is_holiday_name(d)
-            dow_value = f"{weekday_name}\n{holiday_name}"
-        else:
-            dow_value = weekday_name
-        dow_cell = ws.cell(row=row, column=2, value=dow_value)
-        dow_cell.font = NORMAL_FONT
-        dow_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        dow_cell.border = THIN_BORDER
-        if row_fill:
-            dow_cell.fill = row_fill
-
-        day_assignments = assignment_map.get(d_str, {})
-        max_lines = 1
-        for staff_offset, sid in enumerate(care_ids):
-            col = 3 + staff_offset
-            asgn = day_assignments.get(sid, "")
-            label = ASSIGNMENT_LABELS.get(asgn, "")
-
-            # セル内テキストに役割を追記（印刷対応）
-            display_text = label
-            lines = 1
-
-            # お風呂当番（中/外）
-            bath_role = bath_map.get(d_str, {}).get(sid)
-            if bath_role:
-                display_text += f"\n{bath_role}介助"
-                lines += 1
-
-            # 休憩時間・食事介助ラベルは表示しない（要望により非表示）
-
-            desk_slots = desk_slot_map.get(d_str, {}).get(sid)
-            if desk_slots:
-                # [0,1,2,3] = 終日相談、それ以外はスロット表示（旧データ互換）
-                if set(desk_slots) >= {0, 1, 2, 3}:
-                    display_text += "\n相談（終日）"
-                else:
-                    slot_texts = [DESK_SLOT_LABELS[si] for si in desk_slots if si < len(DESK_SLOT_LABELS)]
-                    if slot_texts:
-                        display_text += f"\n相談:{','.join(slot_texts)}"
-                lines += 1
-
-            cell = ws.cell(row=row, column=col, value=display_text)
-            cell.font = NORMAL_FONT
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            cell.border = THIN_BORDER
-
-            if asgn in ASSIGNMENT_FILL:
-                cell.fill = ASSIGNMENT_FILL[asgn]
-            elif row_fill:
-                cell.fill = row_fill
-
-            if lines > max_lines:
-                max_lines = lines
-
-        summary = summary_map.get(d_str, {
-            "day_am": 0, "day_pm": 0,
-            "visit_am": 0, "visit_pm": 0, "dual": 0,
-            "cook_total": 0,
-        })
-        phone_names = phone_duty_map.get(d_str, [])
-        summary_values = [
-            summary["day_am"],
-            summary["day_pm"],
-            summary["visit_am"],
-            summary["visit_pm"],
-            summary["dual"],
-            ", ".join(phone_names) if phone_names else "",
-        ]
-
-        _SUMMARY_WARNING_TYPES = [
-            'understaffed_day_am',
-            'understaffed_day_pm',
-            'understaffed_visit_am',
-            'understaffed_visit_pm',
-            'dual_shortage',
-            None,
-        ]
-
-        for s_offset, val in enumerate(summary_values):
-            col = care_summary_start_col + s_offset
-            cell = ws.cell(row=row, column=col, value=val)
-            cell.font = NORMAL_FONT
-            cell.alignment = CENTER_ALIGN
-            cell.border = THIN_BORDER
-
-            expected_type = _SUMMARY_WARNING_TYPES[s_offset] if s_offset < len(_SUMMARY_WARNING_TYPES) else None
-            is_alert = False
-            if expected_type:
-                for w in warnings_data:
-                    if w.get("date") == d_str and w.get("warning_type") == expected_type:
-                        is_alert = True
-                        break
-
-            if is_alert:
-                cell.fill = ALERT_FILL
-                cell.font = ALERT_FONT
-            elif row_fill:
-                cell.fill = row_fill
-
-        if has_cooking:
-            for staff_offset, sid in enumerate(cook_ids):
-                col = cook_staff_start_col + staff_offset
-                asgn = day_assignments.get(sid, "")
-                label = ASSIGNMENT_LABELS.get(asgn, "")
-
-                # 休憩時間は表示しない（要望により非表示）
-                display_text = label
-
-                cell = ws.cell(row=row, column=col, value=display_text)
-                cell.font = NORMAL_FONT
-                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-                cell.border = THIN_BORDER
-
-                if asgn in ASSIGNMENT_FILL:
-                    cell.fill = ASSIGNMENT_FILL[asgn]
-                elif row_fill:
-                    cell.fill = row_fill
-
-            cook_total = summary.get("cook_total", 0)
-            col = cook_summary_start_col
-            cell = ws.cell(row=row, column=col, value=cook_total)
-            cell.font = NORMAL_FONT
-            cell.alignment = CENTER_ALIGN
-            cell.border = THIN_BORDER
-
-            is_cook_alert = False
-            for w in warnings_data:
-                if w.get("date") == d_str and w.get("warning_type", "").startswith("understaffed_cook"):
-                    is_cook_alert = True
-                    break
-            if is_cook_alert:
-                cell.fill = ALERT_FILL
-                cell.font = ALERT_FONT
-            elif row_fill:
-                cell.fill = row_fill
-
-        # 行高さを内容に応じて確保（折り返し行数×行高＋余白。印刷で見切れないよう十分に）
-        ws.row_dimensions[row].height = max(20, 15 * max_lines + 6)
-
-    # --- ⑦ フッター: 出勤日数 ---
-    footer_row = data_start_row + len(dates)
-    footer_font = Font(name="メイリオ", bold=True, size=10)
-
-    ws.cell(row=footer_row, column=1, value="出勤日数").font = footer_font
-    ws.cell(row=footer_row, column=1).alignment = CENTER_ALIGN
-    ws.cell(row=footer_row, column=1).border = THIN_BORDER
-    ws.cell(row=footer_row, column=2, value="").border = THIN_BORDER
-
-    for staff_offset, sid in enumerate(care_ids):
-        count = sum(
-            1 for d in dates
-            if assignment_map.get(d.isoformat(), {}).get(sid, "off") not in ("off", "")
-        )
-        cell = ws.cell(row=footer_row, column=3 + staff_offset, value=count)
-        cell.font = footer_font
-        cell.alignment = CENTER_ALIGN
-        cell.border = THIN_BORDER
-
-    # サマリー列は空セル
-    for s_offset in range(len(SUMMARY_HEADERS)):
-        cell = ws.cell(row=footer_row, column=care_summary_start_col + s_offset, value="")
-        cell.border = THIN_BORDER
-
-    if has_cooking:
-        for staff_offset, sid in enumerate(cook_ids):
-            count = sum(
-                1 for d in dates
-                if assignment_map.get(d.isoformat(), {}).get(sid, "cook_off") not in ("cook_off", "")
-            )
-            cell = ws.cell(row=footer_row, column=cook_staff_start_col + staff_offset, value=count)
-            cell.font = footer_font
-            cell.alignment = CENTER_ALIGN
-            cell.border = THIN_BORDER
-
-        for s_offset in range(len(COOK_SUMMARY_HEADERS)):
-            cell = ws.cell(row=footer_row, column=cook_summary_start_col + s_offset, value="")
-            cell.border = THIN_BORDER
-
-    # --- 列幅（内容が1〜2行で収まる十分な幅）---
-    ws.column_dimensions["A"].width = 7    # 日付
-    ws.column_dimensions["B"].width = 9    # 曜日（祝日名は折り返し）
-    for i in range(len(care_staff)):
-        col_letter = get_column_letter(3 + i)
-        ws.column_dimensions[col_letter].width = 17   # 職員名・役割・時間
-    for i in range(len(SUMMARY_HEADERS)):
-        col_letter = get_column_letter(care_summary_start_col + i)
-        ws.column_dimensions[col_letter].width = 11
-    if has_cooking:
-        for i in range(len(cook_staff)):
-            col_letter = get_column_letter(cook_staff_start_col + i)
-            ws.column_dimensions[col_letter].width = 14   # 調理（時間ラベルが長い）
-        for i in range(len(COOK_SUMMARY_HEADERS)):
-            col_letter = get_column_letter(cook_summary_start_col + i)
-            ws.column_dimensions[col_letter].width = 11
-
-    # ヘッダー行（氏名＋資格で2行になる）の高さを確保
-    ws.row_dimensions[header_row].height = 34
-
-    # --- 印刷設定: 横向き・全列を1ページ幅に収める・余白狭め・各ページにヘッダー ---
-    ws.page_setup.orientation = "landscape"
-    ws.page_setup.fitToWidth = 1
-    ws.page_setup.fitToHeight = 0   # 縦は必要なだけ複数ページ
-    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
-    ws.page_margins = PageMargins(
-        left=0.3, right=0.3, top=0.5, bottom=0.5, header=0.2, footer=0.2
+    # --- 1 枚目: 介護スタッフ ---
+    ws_care = wb.active
+    ws_care.title = "介護スタッフ"
+    _write_group_sheet(
+        ws_care, care_staff, dates, year, month,
+        assignment_map=assignment_map,
+        summary_map=summary_map,
+        phone_duty_map=phone_duty_map,
+        desk_slot_map=desk_slot_map,
+        bath_map=bath_map,
+        warnings_data=warnings_data,
+        is_cook=False,
     )
-    ws.print_title_rows = "1:2"      # タイトル＋見出しを各ページ先頭に繰り返す
-    ws.freeze_panes = "C3"           # 画面表示でも氏名行・日付列を固定
+
+    # --- 2 枚目: 調理スタッフ ---
+    if cook_staff:
+        ws_cook = wb.create_sheet(title="調理スタッフ")
+        _write_group_sheet(
+            ws_cook, cook_staff, dates, year, month,
+            assignment_map=assignment_map,
+            summary_map=summary_map,
+            phone_duty_map=phone_duty_map,
+            desk_slot_map=desk_slot_map,
+            bath_map=bath_map,
+            warnings_data=warnings_data,
+            is_cook=True,
+        )
 
     # --- 警告シート ---
     if warnings_data:
@@ -601,7 +596,12 @@ def export_csv(
     month: int,
     oncall_map: dict = None,
 ) -> str:
-    """CSV 形式でシフト表を出力する。"""
+    """CSV 形式でシフト表を出力する。
+
+    レイアウトは Excel と同じ「縦＝職員名・横＝日付」。1 ファイル内に
+    介護スタッフ・調理スタッフのブロックを順に出力する（CSV はシートを
+    持てないため、空行で区切る）。
+    """
     dates, assignment_map, summary_map, phone_duty_map, desk_slot_map, break_map, bath_map, meal_map = _build_daily_data(
         shifts_data, staff_list, year, month
     )
@@ -611,70 +611,86 @@ def export_csv(
 
     care_staff = [s for s in staff_list if s.get("department") != "cooking"]
     cook_staff = [s for s in staff_list if s.get("department") == "cooking"]
-    care_names = [s["name"] for s in care_staff]
-    care_ids = [s["id"] for s in care_staff]
-    cook_names = [s["name"] for s in cook_staff]
-    cook_ids = [s["id"] for s in cook_staff]
-    has_cooking = len(cook_staff) > 0
 
     output = io.StringIO()
     writer = csv.writer(output)
 
-    headers = ["日付", "曜日"] + care_names + SUMMARY_HEADERS
-    if has_cooking:
-        headers += cook_names + COOK_SUMMARY_HEADERS
-    writer.writerow(headers)
-
+    # 日付ヘッダー（M/D(曜)）。各ブロックは 職員名列＋日付列＋出勤日数列。
+    date_headers = []
     for d in dates:
-        d_str = d.isoformat()
-        weekday_name = WEEKDAY_NAMES[d.weekday()]
-        day_assignments = assignment_map.get(d_str, {})
+        date_headers.append(f"{d.month}/{d.day}({WEEKDAY_NAMES[d.weekday()]})")
 
-        care_cells = []
-        for sid in care_ids:
-            asgn = day_assignments.get(sid, "")
-            label = ASSIGNMENT_LABELS.get(asgn, "")
-            parts = [label] if label else []
-            bath_role = bath_map.get(d_str, {}).get(sid)
-            if bath_role:
-                parts.append(f"{bath_role}介助")
-            # 休憩時間は表示しない（要望により非表示）
-            meal = meal_map.get(d_str, {}).get(sid)
-            if meal:
-                parts.append(f"食事:{meal}")
-            desk_slots = desk_slot_map.get(d_str, {}).get(sid)
-            if desk_slots:
-                parts.append("相談（終日）" if set(desk_slots) >= {0, 1, 2, 3}
-                             else "相談:" + ",".join(
-                                 DESK_SLOT_LABELS[si] for si in desk_slots if si < len(DESK_SLOT_LABELS)))
-            care_cells.append(" ".join(parts))
+    def _care_cell(d_str, sid):
+        asgn = assignment_map.get(d_str, {}).get(sid, "")
+        label = ASSIGNMENT_LABELS.get(asgn, "")
+        parts = [label] if label else []
+        bath_role = bath_map.get(d_str, {}).get(sid)
+        if bath_role:
+            parts.append(f"{bath_role}介助")
+        # 休憩時間は表示しない（要望により非表示）
+        meal = meal_map.get(d_str, {}).get(sid)
+        if meal:
+            parts.append(f"食事:{meal}")
+        desk_slots = desk_slot_map.get(d_str, {}).get(sid)
+        if desk_slots:
+            parts.append("相談（終日）" if set(desk_slots) >= {0, 1, 2, 3}
+                         else "相談:" + ",".join(
+                             DESK_SLOT_LABELS[si] for si in desk_slots if si < len(DESK_SLOT_LABELS)))
+        return asgn, " ".join(parts)
 
-        summary = summary_map.get(d_str, {
-            "day_am": 0, "day_pm": 0,
-            "visit_am": 0, "visit_pm": 0, "dual": 0,
-            "cook_total": 0,
-        })
-        phone_names = phone_duty_map.get(d_str, [])
-        summary_cells = [
-            summary["day_am"],
-            summary["day_pm"],
-            summary["visit_am"],
-            summary["visit_pm"],
-            summary["dual"],
-            ", ".join(phone_names) if phone_names else "",
-        ]
+    def _write_block(title, group_staff, is_cook):
+        off_token = "cook_off" if is_cook else "off"
+        writer.writerow([title])
+        writer.writerow(["職員名"] + date_headers + ["出勤日数"])
 
-        row = [f"{d.month}/{d.day}", weekday_name] + care_cells + summary_cells
+        for s in group_staff:
+            sid = s["id"]
+            name = s["name"]
+            quals = s.get("qualifications", [])
+            if not is_cook and quals:
+                name = f"{name}({'/'.join(quals)})"
 
-        if has_cooking:
-            cook_cells = []
-            for sid in cook_ids:
-                asgn = day_assignments.get(sid, "")
-                label = ASSIGNMENT_LABELS.get(asgn, "")
-                cook_cells.append(label)
-            row += cook_cells + [summary.get("cook_total", 0)]
+            cells = []
+            work_days = 0
+            for d in dates:
+                d_str = d.isoformat()
+                if is_cook:
+                    asgn = assignment_map.get(d_str, {}).get(sid, "")
+                    cells.append(ASSIGNMENT_LABELS.get(asgn, ""))
+                else:
+                    asgn, text = _care_cell(d_str, sid)
+                    cells.append(text)
+                if asgn not in (off_token, ""):
+                    work_days += 1
+            writer.writerow([name] + cells + [work_days])
 
-        writer.writerow(row)
+        # サマリー行（日付ごとの配置数）
+        if is_cook:
+            summary_rows = [("調理配置数", "cook_total")]
+        else:
+            summary_rows = [
+                ("訪問午前", "day_am"),
+                ("訪問午後", "day_pm"),
+                ("デイ午前", "visit_am"),
+                ("デイ午後", "visit_pm"),
+                ("兼務者数", "dual"),
+                ("オンコール", "_phone"),
+            ]
+        for label, key in summary_rows:
+            cells = []
+            for d in dates:
+                d_str = d.isoformat()
+                if key == "_phone":
+                    names = phone_duty_map.get(d_str, [])
+                    cells.append(", ".join(names) if names else "")
+                else:
+                    cells.append(summary_map.get(d_str, {}).get(key, 0))
+            writer.writerow([label] + cells + [""])
+
+    _write_block("【介護スタッフ】", care_staff, is_cook=False)
+    if cook_staff:
+        writer.writerow([])
+        _write_block("【調理スタッフ】", cook_staff, is_cook=True)
 
     csv_string = "\ufeff" + output.getvalue()
     return csv_string

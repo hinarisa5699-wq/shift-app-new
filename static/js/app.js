@@ -300,167 +300,176 @@ function renderCalendar(data, year, month) {
     });
 
     const daysInMonth = new Date(year, month, 0).getDate();
-    let html = '';
 
-    // Header row ④ 資格バッジ付き
-    html += '<thead><tr>';
-    html += '<th class="date-cell">日付</th>';
-    html += '<th class="staff-cell">オンコール</th>';
-    careStaff.forEach(s => {
-        const quals = (s.qualifications || []).join('/');
-        const qualLabel = quals ? `<br><span class="text-xs text-gray-400" style="font-weight:normal;font-size:9px">${escapeHtml(quals)}</span>` : '';
-        html += `<th class="staff-cell">${escapeHtml(s.name)}${qualLabel}</th>`;
-    });
-    html += '<th class="summary-cell">ケアサマリー</th>';
-    if (hasCooking) {
-        cookingStaff.forEach(s => {
-            html += `<th class="staff-cell">${escapeHtml(s.name)}</th>`;
-        });
-        html += '<th class="summary-cell">調理サマリー</th>';
-    }
-    html += '</tr></thead>';
-
-    // Body rows
-    html += '<tbody>';
+    // 各日付（列）のメタ情報を事前計算（縦＝職員名・横＝日付）
+    const dayMeta = [];
     for (let day = 1; day <= daysInMonth; day++) {
         const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-        const dateObj = new Date(year, month - 1, day);
-        const dayOfWeek = dateObj.getDay();
-
-        // ⑧ 祝日色分け
-        let rowClass = '';
+        const dayOfWeek = new Date(year, month - 1, day).getDay();
+        let colClass = '';
         if (holidays[dateStr]) {
-            rowClass = 'row-holiday';
+            colClass = 'row-holiday';
         } else if (dayOfWeek === 6) {
-            rowClass = 'row-saturday';
+            colClass = 'row-saturday';
         } else if (dayOfWeek === 0) {
-            rowClass = 'row-sunday';
+            colClass = 'row-sunday';
         }
+        const holidayName = holidays[dateStr]
+            ? `<br><span style="font-size:9px;font-weight:normal;color:#b45309">${escapeHtml(holidays[dateStr])}</span>` : '';
+        dayMeta.push({
+            dateStr,
+            colClass,
+            label: `${month}/${day}<br>${DAY_NAMES[dayOfWeek]}${holidayName}`,
+        });
+    }
 
-        const holidayName = holidays[dateStr] ? ` [${escapeHtml(holidays[dateStr])}]` : '';
-        const dayLabel = `${month}/${day}(${DAY_NAMES[dayOfWeek]})${holidayName}`;
+    const totalCols = daysInMonth + 2;   // 職員名 + 日付 + 出勤日数
 
-        let dayAmCount = 0, dayPmCount = 0;
-        let visitAmCount = 0, visitPmCount = 0;
-        let dualCount = 0;
+    // ヘッダー行（日付が横並び）
+    function headerRowHtml() {
+        let h = '<tr>';
+        h += '<th class="date-cell" style="text-align:left;min-width:120px;left:0;position:sticky;z-index:11">職員名</th>';
+        dayMeta.forEach(m => {
+            h += `<th class="date-cell ${m.colClass}" style="min-width:62px">${m.label}</th>`;
+        });
+        h += '<th class="date-cell">出勤<br>日数</th>';
+        h += '</tr>';
+        return h;
+    }
 
-        html += `<tr class="${rowClass}">`;
-        html += `<td class="date-cell">${dayLabel}</td>`;
+    // セクション見出し行
+    function sectionTitleRow(title) {
+        return `<tr><td colspan="${totalCols}" style="background:#1f2937;color:#fff;font-weight:700;text-align:left;padding:6px 10px">${title}</td></tr>`;
+    }
 
-        // オンコール担当（出勤と独立・1日1名）
-        const oncallName = oncallMap[dateStr];
-        html += `<td class="staff-cell">${oncallName ? '<span class="badge badge-phone">' + escapeHtml(oncallName) + '</span>' : '<span class="text-gray-300">-</span>'}</td>`;
-
-        // Care staff cells ① 休憩時間 + ③ 事務時間帯
-        careStaff.forEach(s => {
-            const assignment = shiftMap[dateStr] ? shiftMap[dateStr][s.id] : null;
-            if (assignment) {
-                const info = ASSIGNMENT_MAP[assignment];
-                const isPhone = phoneDutyMap[dateStr] && phoneDutyMap[dateStr][s.id];
-                const phoneBadge = isPhone ? ' <span class="badge badge-phone">TEL</span>' : '';
-                // ③ 相談員事務時間帯（[0,1,2,3]=終日相談）
-                const deskSlots = deskSlotMap[dateStr] && deskSlotMap[dateStr][s.id];
-                let deskLabel = '';
-                if (deskSlots && deskSlots.length > 0) {
-                    const isFullDay = [0, 1, 2, 3].every(i => deskSlots.includes(i));
-                    if (isFullDay) {
-                        deskLabel = `<br><span style="font-size:9px;color:#6b7280">相談（終日）</span>`;
-                    } else {
-                        const slotTexts = deskSlots.map(si => DESK_SLOT_LABELS[si] || '').filter(Boolean);
-                        if (slotTexts.length > 0) {
-                            deskLabel = `<br><span style="font-size:9px;color:#6b7280">相談 ${slotTexts.join(',')}</span>`;
-                        }
-                    }
-                }
-                // お風呂当番（中/外）
-                const bathRole = bathMap[dateStr] && bathMap[dateStr][s.id];
-                const bathDisplay = bathRole ? ` <span class="badge" style="background:#0ea5e9;color:#fff">${bathRole}介助</span>` : '';
-                // 休憩時間・食事介助ラベルは表示しない（要望により非表示）
-                if (info) {
-                    html += `<td class="staff-cell"><span class="badge ${info.badgeClass}">${info.label}</span>${bathDisplay}${phoneBadge}${deskLabel}</td>`;
-                } else {
-                    html += `<td class="staff-cell"><span class="badge badge-off">${escapeHtml(assignment)}</span>${bathDisplay}${phoneBadge}${deskLabel}</td>`;
-                }
-                // ② 看護師/PTはデイ人数カウントから除外
-                if (!nursePtIds.has(s.id)) {
-                    if (DAY_AM_SET.has(assignment)) dayAmCount++;
-                    if (DAY_PM_SET.has(assignment)) dayPmCount++;
-                }
-                if (VISIT_AM_SET.has(assignment)) visitAmCount++;
-                if (VISIT_PM_SET.has(assignment)) visitPmCount++;
-                if (DUAL_SET.has(assignment)) dualCount++;
+    // ケアスタッフ 1 セルの中身
+    function careCellHtml(dateStr, s) {
+        const assignment = shiftMap[dateStr] ? shiftMap[dateStr][s.id] : null;
+        if (!assignment || assignment === 'off') {
+            return '<span class="badge badge-off">休</span>';
+        }
+        const info = ASSIGNMENT_MAP[assignment];
+        const isPhone = phoneDutyMap[dateStr] && phoneDutyMap[dateStr][s.id];
+        const phoneBadge = isPhone ? ' <span class="badge badge-phone">TEL</span>' : '';
+        const deskSlots = deskSlotMap[dateStr] && deskSlotMap[dateStr][s.id];
+        let deskLabel = '';
+        if (deskSlots && deskSlots.length > 0) {
+            const isFullDay = [0, 1, 2, 3].every(i => deskSlots.includes(i));
+            if (isFullDay) {
+                deskLabel = `<br><span style="font-size:9px;color:#6b7280">相談（終日）</span>`;
             } else {
-                html += '<td class="staff-cell"><span class="badge badge-off">休</span></td>';
-            }
-        });
-
-        // Care summary cell
-        const dayWarnings = (data.warnings || []).filter(w => w.date === dateStr);
-        const careSummaryClass = dayWarnings.some(w => w.warning_type && !w.warning_type.startsWith('understaffed_cook'))
-            ? 'summary-cell summary-warning' : 'summary-cell';
-        html += `<td class="${careSummaryClass}">`;
-        html += `訪問午前:<strong>${dayAmCount}</strong> `;
-        html += `訪問午後:<strong>${dayPmCount}</strong><br>`;
-        html += `デイ午前:<strong>${visitAmCount}</strong> `;
-        html += `デイ午後:<strong>${visitPmCount}</strong><br>`;
-        html += `兼務:<strong>${dualCount}</strong>`;
-        html += '</td>';
-
-        // Cooking staff cells
-        if (hasCooking) {
-            let cookCount = 0;
-            cookingStaff.forEach(s => {
-                const assignment = shiftMap[dateStr] ? shiftMap[dateStr][s.id] : null;
-                if (assignment && assignment !== 'cook_off') {
-                    const info = ASSIGNMENT_MAP[assignment];
-                    if (info) {
-                        html += `<td class="staff-cell"><span class="badge ${info.badgeClass}">${info.label}</span></td>`;
-                    } else {
-                        html += `<td class="staff-cell"><span class="badge badge-off">${escapeHtml(assignment)}</span></td>`;
-                    }
-                    cookCount++;
-                } else {
-                    html += '<td class="staff-cell"><span class="badge badge-off">休</span></td>';
+                const slotTexts = deskSlots.map(si => DESK_SLOT_LABELS[si] || '').filter(Boolean);
+                if (slotTexts.length > 0) {
+                    deskLabel = `<br><span style="font-size:9px;color:#6b7280">相談 ${slotTexts.join(',')}</span>`;
                 }
-            });
-
-            const cookSummaryClass = dayWarnings.some(w => w.warning_type && w.warning_type.startsWith('understaffed_cook'))
-                ? 'summary-cell summary-warning' : 'summary-cell';
-            html += `<td class="${cookSummaryClass}">`;
-            html += `配置:<strong>${cookCount}</strong>人`;
-            html += '</td>';
-        }
-
-        html += '</tr>';
-    }
-
-    // ⑦ フッター: 出勤日数行
-    html += '<tr class="font-bold" style="background-color:#f3f4f6">';
-    html += '<td class="date-cell" style="font-weight:bold">出勤日数</td>';
-    html += '<td class="staff-cell"></td>';  // オンコール列
-    careStaff.forEach(s => {
-        let count = 0;
-        for (let day = 1; day <= daysInMonth; day++) {
-            const ds = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
-            const asgn = shiftMap[ds] && shiftMap[ds][s.id];
-            if (asgn && asgn !== 'off') count++;
-        }
-        html += `<td class="staff-cell" style="font-weight:bold">${count}</td>`;
-    });
-    html += '<td class="summary-cell"></td>';
-    if (hasCooking) {
-        cookingStaff.forEach(s => {
-            let count = 0;
-            for (let day = 1; day <= daysInMonth; day++) {
-                const ds = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
-                const asgn = shiftMap[ds] && shiftMap[ds][s.id];
-                if (asgn && asgn !== 'cook_off') count++;
             }
-            html += `<td class="staff-cell" style="font-weight:bold">${count}</td>`;
-        });
-        html += '<td class="summary-cell"></td>';
+        }
+        const bathRole = bathMap[dateStr] && bathMap[dateStr][s.id];
+        const bathDisplay = bathRole ? ` <span class="badge" style="background:#0ea5e9;color:#fff">${bathRole}介助</span>` : '';
+        const badge = info
+            ? `<span class="badge ${info.badgeClass}">${info.label}</span>`
+            : `<span class="badge badge-off">${escapeHtml(assignment)}</span>`;
+        return `${badge}${bathDisplay}${phoneBadge}${deskLabel}`;
     }
-    html += '</tr>';
+
+    // 職員名セル（資格併記）
+    function nameCellHtml(s, showQual) {
+        const quals = (s.qualifications || []).join('/');
+        const qualLabel = (showQual && quals)
+            ? `<br><span style="font-weight:normal;font-size:9px;color:#9ca3af">${escapeHtml(quals)}</span>` : '';
+        return `<td class="staff-name-cell" style="text-align:left;font-weight:600;white-space:nowrap;background:#f9fafb;position:sticky;left:0;z-index:5">${escapeHtml(s.name)}${qualLabel}</td>`;
+    }
+
+    let html = '<thead>' + sectionTitleRow('介護スタッフ') + headerRowHtml() + '</thead><tbody>';
+
+    // --- 介護スタッフ: 職員行 ---
+    careStaff.forEach(s => {
+        let work = 0;
+        let r = '<tr>' + nameCellHtml(s, true);
+        dayMeta.forEach(m => {
+            const assignment = shiftMap[m.dateStr] ? shiftMap[m.dateStr][s.id] : null;
+            if (assignment && assignment !== 'off') work++;
+            r += `<td class="staff-cell ${m.colClass}">${careCellHtml(m.dateStr, s)}</td>`;
+        });
+        r += `<td class="date-cell" style="font-weight:bold">${work}</td></tr>`;
+        html += r;
+    });
+
+    // --- 介護スタッフ: サマリー行（日付ごとの配置数）---
+    const careSummaryRows = [
+        ['訪問午前', DAY_AM_SET, 'understaffed_day_am', true],
+        ['訪問午後', DAY_PM_SET, 'understaffed_day_pm', true],
+        ['デイ午前', VISIT_AM_SET, 'understaffed_visit_am', false],
+        ['デイ午後', VISIT_PM_SET, 'understaffed_visit_pm', false],
+        ['兼務者数', DUAL_SET, 'dual_shortage', false],
+    ];
+    careSummaryRows.forEach(([label, set, warnType, excludeNursePt]) => {
+        let r = `<tr><td class="staff-name-cell" style="text-align:left;font-weight:700;background:#eef2ff;position:sticky;left:0;z-index:5">${label}</td>`;
+        dayMeta.forEach(m => {
+            let cnt = 0;
+            careStaff.forEach(s => {
+                const a = shiftMap[m.dateStr] ? shiftMap[m.dateStr][s.id] : null;
+                if (a && set.has(a) && !(excludeNursePt && nursePtIds.has(s.id))) cnt++;
+            });
+            const warn = (data.warnings || []).some(w => w.date === m.dateStr && w.warning_type === warnType);
+            r += `<td class="staff-cell ${warn ? 'summary-warning' : m.colClass}" style="font-weight:600">${cnt}</td>`;
+        });
+        r += '<td class="date-cell"></td></tr>';
+        html += r;
+    });
+    // オンコール行
+    {
+        let r = `<tr><td class="staff-name-cell" style="text-align:left;font-weight:700;background:#eef2ff;position:sticky;left:0;z-index:5">オンコール</td>`;
+        dayMeta.forEach(m => {
+            const n = oncallMap[m.dateStr];
+            const cell = n ? `<span class="badge badge-phone">${escapeHtml(n)}</span>` : '<span class="text-gray-300">-</span>';
+            r += `<td class="staff-cell ${m.colClass}" style="font-size:11px">${cell}</td>`;
+        });
+        r += '<td class="date-cell"></td></tr>';
+        html += r;
+    }
+
+    // --- 調理スタッフセクション ---
+    if (hasCooking) {
+        html += `<tr><td colspan="${totalCols}" style="height:16px;border:none;background:#fff"></td></tr>`;
+        html += sectionTitleRow('調理スタッフ');
+        html += headerRowHtml();
+
+        cookingStaff.forEach(s => {
+            let work = 0;
+            let r = '<tr>' + nameCellHtml(s, false);
+            dayMeta.forEach(m => {
+                const a = shiftMap[m.dateStr] ? shiftMap[m.dateStr][s.id] : null;
+                let cell;
+                if (a && a !== 'cook_off') {
+                    work++;
+                    const info = ASSIGNMENT_MAP[a];
+                    cell = info
+                        ? `<span class="badge ${info.badgeClass}">${info.label}</span>`
+                        : `<span class="badge badge-off">${escapeHtml(a)}</span>`;
+                } else {
+                    cell = '<span class="badge badge-off">休</span>';
+                }
+                r += `<td class="staff-cell ${m.colClass}">${cell}</td>`;
+            });
+            r += `<td class="date-cell" style="font-weight:bold">${work}</td></tr>`;
+            html += r;
+        });
+
+        // 調理配置数 行
+        let r = `<tr><td class="staff-name-cell" style="text-align:left;font-weight:700;background:#fff7ed;position:sticky;left:0;z-index:5">調理配置数</td>`;
+        dayMeta.forEach(m => {
+            let cnt = 0;
+            cookingStaff.forEach(s => {
+                const a = shiftMap[m.dateStr] ? shiftMap[m.dateStr][s.id] : null;
+                if (a && a !== 'cook_off') cnt++;
+            });
+            const warn = (data.warnings || []).some(w => w.date === m.dateStr && (w.warning_type || '').startsWith('understaffed_cook'));
+            r += `<td class="staff-cell ${warn ? 'summary-warning' : m.colClass}" style="font-weight:600">${cnt}</td>`;
+        });
+        r += '<td class="date-cell"></td></tr>';
+        html += r;
+    }
 
     html += '</tbody>';
 

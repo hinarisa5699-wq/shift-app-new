@@ -545,9 +545,21 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates):
             if it["assignment"] in _FLOOR_PATTERNS and it["staff_id"] in nurse_pt_ids
         ]
 
-        # --- 変更1: 相談員 1日1名（終日相談） ---
+        # --- 追加ルール: 遅番(9:30-18:30)の人は中介助として扱う ---
+        # 毎日ちょうど1名の遅番職員を、その日の中介助1名分として固定で割り当てる。
+        # （看護師・リハが遅番の場合は食事介助スキームと衝突するため対象外＝従来動作）
+        late_ids = [
+            it["staff_id"] for it in day_items
+            if it["assignment"] == "late" and it["staff_id"] not in nurse_pt_ids
+        ]
+        forced_mid = late_ids[0] if late_ids else None
+
+        # --- 変更1: 相談員 1日1名（終日相談）。遅番(中介助確保)は相談員にしない ---
         selected_counselor = None
-        working_counselors = [sid for sid in floor_ids if sid in counselor_ids]
+        working_counselors = [
+            sid for sid in floor_ids
+            if sid in counselor_ids and sid != forced_mid
+        ]
         if working_counselors:
             selected_counselor = min(
                 working_counselors,
@@ -558,21 +570,35 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates):
 
         # --- 変更2: お風呂当番 中2・外1（均等ローテ） ---
         # 候補=昼帯フロア在席(早番/遅番含む・看護/リハ除く)・相談員除く・入浴介助可。
+        # 遅番の人(forced_mid)は中介助として必ず確保し、残り中1・外1を他職員から選ぶ。
+        # 遅番の人は外介助には割り当てない。
         bath_floor_ids = [
             it["staff_id"] for it in day_items
             if it["assignment"] in _BATH_FLOOR_PATTERNS and it["staff_id"] not in nurse_pt_ids
         ]
         bath_pool = [
             sid for sid in bath_floor_ids
-            if sid != selected_counselor
+            if sid != selected_counselor and sid != forced_mid
             and (not bath_filter_active or sid in bath_capable_ids)
         ]
         bath_pool.sort(key=lambda sid: (bath_count.get(sid, 0), sid))
         n_bath = _BATH_MID_COUNT + _BATH_OUT_COUNT
-        bath_selected = bath_pool[:n_bath]
-        mid_ids = bath_selected[:_BATH_MID_COUNT]
-        out_ids = bath_selected[_BATH_MID_COUNT:n_bath]
+
+        if forced_mid is not None:
+            # 遅番の人を中介助の1枠に固定し、残り中1・外1をプールから補充する。
+            remaining_mid = max(_BATH_MID_COUNT - 1, 0)
+            mid_ids = [forced_mid] + bath_pool[:remaining_mid]
+            out_ids = bath_pool[remaining_mid:remaining_mid + _BATH_OUT_COUNT]
+            bath_selected = mid_ids + out_ids
+        else:
+            bath_selected = bath_pool[:n_bath]
+            mid_ids = bath_selected[:_BATH_MID_COUNT]
+            out_ids = bath_selected[_BATH_MID_COUNT:n_bath]
+
+        # 公平性カウンタ更新（遅番固定分は均等ローテに含めない）
         for sid in bath_selected:
+            if sid == forced_mid:
+                continue
             bath_count[sid] = bath_count.get(sid, 0) + 1
         for sid in mid_ids:
             item_by_sid[sid]["bath_role"] = "中"

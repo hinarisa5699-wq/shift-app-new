@@ -1657,6 +1657,8 @@ def create_app():
                 "weekend_constraint": getattr(s, "weekend_constraint", "") or "",
                 "holiday_ng": getattr(s, "holiday_ng", False) or False,
                 "workable_dates": workable_dates_map.get(s.id, []),
+                "work_start_time": getattr(s, "work_start_time", "") or "",
+                "work_end_time": getattr(s, "work_end_time", "") or "",
             }
             if s.staff_group == "cooking":
                 cook_dicts.append(d)

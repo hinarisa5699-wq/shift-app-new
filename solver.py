@@ -92,6 +92,47 @@ DAY_PATTERN_ASSIGNMENTS = set(DAY_SERVICE_ASSIGNMENTS)
 PRESENT_FULL_DAY = PRESENT_AT_9 & PRESENT_AT_15
 # = {"day_pattern1", "day_pattern2"}
 
+# 各アサインメントの勤務時間帯（分単位 start, end）。
+# 職員ごとの勤務時間(work_start_time/work_end_time)の遵守チェックに使用する。
+# 兼務パターン(午前+午後)は日全体にまたがるため 8:30-17:30 を採用。
+ASSIGNMENT_TIME_RANGES = {
+    "day_pattern1":    (8 * 60 + 30, 17 * 60 + 30),  # 8:30-17:30
+    "day_pattern2":    (9 * 60,      16 * 60),        # 9:00-16:00
+    "day_pattern3":    (8 * 60 + 30, 12 * 60 + 30),   # 8:30-12:30
+    "day_pattern4":    (13 * 60 + 30, 17 * 60 + 30),  # 13:30-17:30
+    "visit_am":        (8 * 60 + 30, 12 * 60 + 30),   # 訪問午前
+    "visit_pm":        (13 * 60 + 30, 17 * 60 + 30),  # 訪問午後
+    "day_p3_visit_pm": (8 * 60 + 30, 17 * 60 + 30),   # 兼務A(午前デイ→午後訪問)
+    "visit_am_day_p4": (8 * 60 + 30, 17 * 60 + 30),   # 兼務B(午前訪問→午後デイ)
+    "early":           (7 * 60 + 30, 16 * 60 + 30),   # 早番 7:30-16:30
+    "late":            (9 * 60 + 30, 18 * 60 + 30),   # 遅番 9:30-18:30
+}
+
+# 調理アサインメントの勤務時間帯（分単位）
+COOK_ASSIGNMENT_TIME_RANGES = {
+    "cook_early":   (6 * 60,  8 * 60),    # ① 6:00-8:00
+    "cook_morning": (8 * 60,  13 * 60),   # ② 8:00-13:00
+    "cook_late":    (12 * 60, 19 * 60),   # ③ 12:00-19:00
+    "cook_long":    (6 * 60,  13 * 60),   # ④ 6:00-13:00
+    "cook_mid":     (9 * 60,  15 * 60),   # ⑤ 9:00-15:00
+}
+
+
+def _hhmm_to_min(value):
+    """'HH:MM' を分に変換。空欄・不正値は None を返す（制約なし扱い）。"""
+    if not value or not isinstance(value, str):
+        return None
+    parts = value.strip().split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        h, m = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        return None
+    return h * 60 + m
+
 _NURSE_QUAL_CODES = {"nurse"}
 _NURSE_QUAL_NAMES = {"看護師"}
 _NURSE_PT_QUAL_CODES = {"nurse", "pt"}
@@ -157,6 +198,112 @@ def _get_counselor_qualification_ids(placement_rules: list[dict]) -> set[int]:
 
 
 # ===========================================================================
+# 割り当て可能パターンが無い職員（出勤不能）の検出
+# ===========================================================================
+def _care_allowable_working_assignments(staff: dict, allowed_set: set) -> set:
+    """介護職員が静的に割り当て可能な勤務アサインメント集合。
+    can_visit / 勤務可能時間帯 / 勤務時間(開始終了) / 許可シフトパターン を
+    ソルバーと同じロジックで積集合的に適用する（曜日依存の早番制約は除く近似）。
+    """
+    allow = set(CARE_WORKING_ASSIGNMENTS)
+    if not staff.get("can_visit"):
+        allow -= VISIT_ASSIGNMENTS
+    ts = staff.get("available_time_slots", "full_day")
+    if ts == "am_only":
+        allow -= AM_ONLY_FORBIDDEN
+    elif ts == "pm_only":
+        allow -= PM_ONLY_FORBIDDEN
+    ws = _hhmm_to_min(staff.get("work_start_time"))
+    we = _hhmm_to_min(staff.get("work_end_time"))
+    if ws is not None or we is not None:
+        for a in list(allow):
+            rng = ASSIGNMENT_TIME_RANGES.get(a)
+            if rng and ((ws is not None and rng[0] < ws) or (we is not None and rng[1] > we)):
+                allow.discard(a)
+    if allowed_set:  # 非空＝制限あり（空集合は全許可セマンティクス）
+        for a in ("day_pattern1", "day_pattern2", "day_pattern3",
+                  "day_pattern4", "early", "late"):
+            if a not in allowed_set:
+                allow.discard(a)
+        for dual, base in (("day_p3_visit_pm", "day_pattern3"),
+                           ("visit_am_day_p4", "day_pattern4")):
+            if base not in allowed_set:
+                allow.discard(dual)
+        allowed_visit = allowed_set & VISIT_ASSIGNMENTS
+        if allowed_visit:
+            for a in VISIT_ASSIGNMENTS:
+                if a not in allowed_visit:
+                    allow.discard(a)
+    return allow
+
+
+def _cook_allowable_working_assignments(staff: dict, allowed_set: set) -> set:
+    """調理職員が静的に割り当て可能な勤務アサインメント集合。"""
+    allow = set(COOK_ASSIGNMENT_TIME_RANGES.keys())
+    ws = _hhmm_to_min(staff.get("work_start_time"))
+    we = _hhmm_to_min(staff.get("work_end_time"))
+    if ws is not None or we is not None:
+        for a in list(allow):
+            rng = COOK_ASSIGNMENT_TIME_RANGES.get(a)
+            if rng and ((ws is not None and rng[0] < ws) or (we is not None and rng[1] > we)):
+                allow.discard(a)
+    if allowed_set:
+        allow &= set(allowed_set)
+    return allow
+
+
+def _has_any_available_day(staff: dict) -> bool:
+    raw = staff.get("available_days", [])
+    if isinstance(raw, str):
+        raw = [x for x in raw.split(",") if x.strip()]
+    return bool(raw)
+
+
+def _stranded_reason(staff: dict, dept: str) -> str:
+    parts = []
+    ws = (staff.get("work_start_time") or "").strip()
+    we = (staff.get("work_end_time") or "").strip()
+    if ws or we:
+        parts.append(f"勤務時間{ws or '?'}〜{we or '?'}")
+    ts = staff.get("available_time_slots", "full_day")
+    if ts == "am_only":
+        parts.append("勤務可能時間帯=午前のみ")
+    elif ts == "pm_only":
+        parts.append("勤務可能時間帯=午後のみ")
+    if not staff.get("can_visit"):
+        parts.append("訪問兼務不可")
+    cond = "・".join(parts) if parts else "現在の設定"
+    return (f"{staff.get('name', '?')}（{dept}）は設定（{cond}）により"
+            f"割り当て可能なシフトパターンがありません。出勤不能になるため設定を見直してください。")
+
+
+def _detect_unassignable_staff(care_staff, cook_staff, allowed_patterns, first_date):
+    """勤務時間・許可パターン等の積集合で割り当て可能パターンが消える職員を検出。"""
+    warnings = []
+    for s in care_staff or []:
+        if not _has_any_available_day(s):
+            continue
+        allowed_set = set(allowed_patterns.get(s["id"]) or [])
+        if not _care_allowable_working_assignments(s, allowed_set):
+            warnings.append({
+                "date": first_date.isoformat(),
+                "warning_type": "staff_no_assignable_pattern",
+                "message": _stranded_reason(s, "介護"),
+            })
+    for s in cook_staff or []:
+        if not _has_any_available_day(s):
+            continue
+        allowed_set = set(allowed_patterns.get(s["id"]) or [])
+        if not _cook_allowable_working_assignments(s, allowed_set):
+            warnings.append({
+                "date": first_date.isoformat(),
+                "warning_type": "staff_no_assignable_pattern",
+                "message": _stranded_reason(s, "調理"),
+            })
+    return warnings
+
+
+# ===========================================================================
 # メインエントリーポイント
 # ===========================================================================
 def generate_shift(
@@ -183,6 +330,12 @@ def generate_shift(
     num_days = calendar.monthrange(year, month)[1]
     all_dates = [datetime.date(year, month, d) for d in range(1, num_days + 1)]
 
+    # --- 出勤不能チェック: 制約の積集合で割り当て可能パターンが無い職員を検出 ---
+    #   矛盾を握りつぶさず警告として表面化する（解は通常どおり続行）。
+    unassignable_warnings = _detect_unassignable_staff(
+        care_staff, cook_staff, allowed_patterns, all_dates[0]
+    )
+
     # --- 介護ソルバー ---
     care_shifts, care_warnings = _solve_care_with_fallback(
         year, month, all_dates, care_staff, day_off_requests, settings,
@@ -205,7 +358,8 @@ def generate_shift(
     # --- ① 調理の休憩時間（固定のみ）---
     cook_shifts = _assign_break_times(cook_shifts, all_dates)
 
-    return care_shifts + cook_shifts, care_warnings + cook_warnings
+    return (care_shifts + cook_shifts,
+            care_warnings + cook_warnings + unassignable_warnings)
 
 
 # ===========================================================================
@@ -1193,6 +1347,8 @@ def _solve_care_with_fallback(
             "min_days_per_week": s.get("min_days_per_week", 0),
             "holiday_ng": s.get("holiday_ng", False),
             "workable_dates": set(s.get("workable_dates") or []),
+            "work_start_time": s.get("work_start_time", ""),
+            "work_end_time": s.get("work_end_time", ""),
         }
 
     staff_ids = list(staff_by_id.keys())
@@ -1584,6 +1740,23 @@ def _solve_care(
         elif ts == "pm_only":
             for d_idx in range(num_days):
                 for a in PM_ONLY_FORBIDDEN:
+                    model.add(x[s, d_idx, a] == 0)
+
+    # ==================================================================
+    # 制約: 個人の勤務時間(開始/終了)の遵守
+    #   work_start_time / work_end_time が設定されている職員は、その時間帯に
+    #   収まるシフトパターンのみ可（窓の外に出るパターンは不可）。
+    #   どちらも空欄なら制約なし（従来どおり全パターン可）。
+    # ==================================================================
+    for s in staff_ids:
+        info = staff_by_id[s]
+        ws = _hhmm_to_min(info.get("work_start_time"))
+        we = _hhmm_to_min(info.get("work_end_time"))
+        if ws is None and we is None:
+            continue
+        for a, (a_start, a_end) in ASSIGNMENT_TIME_RANGES.items():
+            if (ws is not None and a_start < ws) or (we is not None and a_end > we):
+                for d_idx in range(num_days):
                     model.add(x[s, d_idx, a] == 0)
 
     # ==================================================================
@@ -2399,6 +2572,8 @@ def _solve_cooking_with_fallback(
             "min_days_per_week": s.get("min_days_per_week", 0),
             "holiday_ng": s.get("holiday_ng", False),
             "workable_dates": set(s.get("workable_dates") or []),
+            "work_start_time": s.get("work_start_time", ""),
+            "work_end_time": s.get("work_end_time", ""),
         }
 
     staff_ids = list(staff_by_id.keys())
@@ -2512,6 +2687,22 @@ def _solve_cooking(
         for d_idx, dt in enumerate(all_dates):
             if dt.isoformat() not in workable:
                 model.add(x[s, d_idx, "cook_off"] == 1)
+
+    # ==================================================================
+    # 制約: 個人の勤務時間(開始/終了)の遵守（調理）
+    #   work_start_time / work_end_time が設定されている職員は、その時間帯に
+    #   収まる調理パターンのみ可。どちらも空欄なら制約なし。
+    # ==================================================================
+    for s in staff_ids:
+        info = staff_by_id[s]
+        ws = _hhmm_to_min(info.get("work_start_time"))
+        we = _hhmm_to_min(info.get("work_end_time"))
+        if ws is None and we is None:
+            continue
+        for a, (a_start, a_end) in COOK_ASSIGNMENT_TIME_RANGES.items():
+            if (ws is not None and a_start < ws) or (we is not None and a_end > we):
+                for d_idx in range(num_days):
+                    model.add(x[s, d_idx, a] == 0)
 
     # ==================================================================
     # 制約: 固定休曜日の遵守

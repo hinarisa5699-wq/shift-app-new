@@ -71,6 +71,13 @@ PRESENT_AT_15 = {
     "early", "late",       # 早番・遅番ともPMは事業所
 }
 
+# 依頼文19: 在籍判定時刻を 9時→9時30分 / 15時→14時 に変更。
+# 9時30分在籍 = PRESENT_AT_9 に late(9:30開始) を加えたもの（9時ちょうどは未在席だが9:30は在籍）。
+# 共有定数 PRESENT_AT_9/PRESENT_FULL_DAY 等には影響させない（別集合として定義）。
+PRESENT_AT_930 = PRESENT_AT_9 | {"late"}
+# 14時在籍 = 15時在籍と同じ集合（14時も15時も day_pattern1/2/4・早番・遅番・visit_am_day_p4 が在籍）。
+PRESENT_AT_14 = set(PRESENT_AT_15)
+
 # 時間帯制限: am_only の職員が取れないアサインメント（午後を含む全パターン）
 AM_ONLY_FORBIDDEN = {
     "day_pattern1", "day_pattern2", "day_pattern4", "visit_pm",
@@ -110,6 +117,9 @@ ASSIGNMENT_TIME_RANGES = {
     "nurse_short":     (9 * 60 + 30, 13 * 60 + 30),   # 看護師短時間 9:30-13:30
 }
 
+# 各アサインメントの勤務分数（end - start）。看護師の「合計勤務時間」判定に使用。
+ASSIGNMENT_MINUTES = {a: (e - s) for a, (s, e) in ASSIGNMENT_TIME_RANGES.items()}
+
 # 調理アサインメントの勤務時間帯（分単位）
 COOK_ASSIGNMENT_TIME_RANGES = {
     "cook_early":   (6 * 60,  8 * 60),    # ① 6:00-8:00
@@ -134,6 +144,26 @@ def _hhmm_to_min(value):
     if not (0 <= h <= 23 and 0 <= m <= 59):
         return None
     return h * 60 + m
+
+
+def _period_from_time_window(time_start, time_end):
+    """配置ルールの適用時間帯(時刻)を従来の period(am/pm/all)へ分類する。
+    両方空なら None（=保存済み period をそのまま使う）。
+    終了≤13:00→"am" / 開始≥13:00→"pm" / それ以外→"all"。
+    移行初期値（午前9:00-13:00 / 午後13:00-16:00 / 終日9:00-16:00）はそれぞれ
+    am / pm / all に分類され、従来挙動を保つ。
+    """
+    ts = _hhmm_to_min(time_start)
+    te = _hhmm_to_min(time_end)
+    if ts is None and te is None:
+        return None
+    noon = 13 * 60  # 13:00 を午前/午後の境界とする
+    if te is not None and te <= noon:
+        return "am"
+    if ts is not None and ts >= noon:
+        return "pm"
+    return "all"
+
 
 _NURSE_QUAL_CODES = {"nurse"}
 _NURSE_QUAL_NAMES = {"看護師"}
@@ -2081,12 +2111,13 @@ def _solve_care(
                 model.add(dual_count >= min_dual)
 
     # ==================================================================
-    # 制約: 9時・11時・13時・15時で最低人数必須
+    # 制約: 9時30分・11時・13時・14時で最低人数必須
+    #   依頼文19: 在籍判定時刻を 9時→9時30分 / 15時→14時 に変更。
     # ② 看護師/PTを4名カウントから除外（nurse_pt判定は上で定義済み）
     # ==================================================================
     for d_idx in non_closed_days:
         count_9 = sum(
-            x[s, d_idx, a] for s in non_nurse_pt_staff for a in PRESENT_AT_9
+            x[s, d_idx, a] for s in non_nurse_pt_staff for a in PRESENT_AT_930
         )
         count_11 = sum(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in PRESENT_AT_11
@@ -2100,7 +2131,7 @@ def _solve_care(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in PRESENT_AT_13
         )
         count_15 = sum(
-            x[s, d_idx, a] for s in non_nurse_pt_staff for a in PRESENT_AT_15
+            x[s, d_idx, a] for s in non_nurse_pt_staff for a in PRESENT_AT_14
         )
         if use_slack:
             model.add(count_9 + slack_staff_9[d_idx] >= min_staff_at_9)
@@ -2134,20 +2165,24 @@ def _solve_care(
                 model.add(late_count >= min_late_staff)
 
     # ==================================================================
-    # 制約: 毎日 看護師を1名以上配置（時間帯・パターンは問わない）。
+    # 制約: その日の看護師の勤務時間が合計2時間(120分)以上なら看護師配置OK。
+    #   依頼文18-A: 旧「9-16時に看護師/PT 1名以上」ルールを廃止し、より緩い
+    #   「合計2時間以上」条件に統一。1名でも複数でも合計120分以上ならOK。
+    #   合計2時間未満(0分含む)の日のみ「看護師配置不足」警告。
     #   各看護師の個別制約（休み希望・勤務不可曜日・出勤可能日・祝日NG等）は
-    #   別制約で厳守済み。どうしても1名も置けない日はスラックで許容し、
-    #   「看護師0名」を警告として報告する（無理な割り当てはしない）。
+    #   別制約で厳守済み。どうしても満たせない日はスラックで許容し報告する。
     # ==================================================================
     if nurse_ids:
         for d_idx in non_closed_days:
-            nurse_working = sum(
-                x[s, d_idx, a] for s in nurse_ids for a in CARE_WORKING_ASSIGNMENTS
+            nurse_minutes = sum(
+                x[s, d_idx, a] * ASSIGNMENT_MINUTES.get(a, 0)
+                for s in nurse_ids for a in CARE_WORKING_ASSIGNMENTS
             )
             if use_slack:
-                model.add(nurse_working + slack_nurse[d_idx] >= 1)
+                # slack_nurse=1 で 120分ぶんを充足扱いにする（=その日は警告）
+                model.add(nurse_minutes + slack_nurse[d_idx] * 120 >= 120)
             else:
-                model.add(nurse_working >= 1)
+                model.add(nurse_minutes >= 120)
 
     # ==================================================================
     # 制約: 相談員ローテON時は、原則として相談員を最低2名出勤させる
@@ -2400,13 +2435,13 @@ def _solve_care(
                         "message": f"遅番(9:30-18:30): {_sl}名不足（遅番未配置）",
                     })
 
-            # 看護師0名（配置不能）の警告
+            # 看護師配置不足（その日の看護師勤務が合計2時間未満）の警告
             if nurse_ids and d_idx not in closed_day_indices and d_idx in slack_nurse:
                 if solver.value(slack_nurse[d_idx]) > 0:
                     warnings_data.append({
                         "date": date_str,
-                        "warning_type": "no_nurse_on_duty",
-                        "message": "この日は看護師を1名も配置できません"
+                        "warning_type": "understaffed_nurse",
+                        "message": "看護師配置不足: この日の看護師の勤務が合計2時間未満です"
                                    "（全看護師が休み希望・勤務不可曜日・出勤可能日外・祝日不可のいずれか）。",
                     })
 
@@ -2440,7 +2475,7 @@ def _solve_care(
                 warnings_data.append({
                     "date": date_str,
                     "warning_type": "understaffed_at_9",
-                    "message": f"9時在籍人数: {val}名不足",
+                    "message": f"9時30分在籍人数: {val}名不足",
                 })
 
             val = solver.value(slack_staff_11[d_idx])
@@ -2464,7 +2499,7 @@ def _solve_care(
                 warnings_data.append({
                     "date": date_str,
                     "warning_type": "understaffed_at_15",
-                    "message": f"15時在籍人数: {val}名不足",
+                    "message": f"14時在籍人数: {val}名不足",
                 })
 
             if min_counselor_staff > 0 and counselor_staff_ids:
@@ -2516,7 +2551,12 @@ def _add_placement_rules(
             continue
 
         rule_type = rule.get("rule_type", "")
-        period = rule.get("period", "all")
+        # 依頼文18-B: 適用時間帯は time_start/time_end（時刻入力）を優先。
+        #   時刻が入っていれば従来の period(am/pm/all) へ分類して挙動を不変に保つ：
+        #   終了≤13:00→午前 / 開始≥13:00→午後 / それ以外→終日。
+        period = _period_from_time_window(
+            rule.get("time_start", ""), rule.get("time_end", "")
+        ) or rule.get("period", "all")
         min_count = rule.get("min_count", 1)
         is_hard = rule.get("is_hard", True)
         penalty_weight = rule.get("penalty_weight", 100)

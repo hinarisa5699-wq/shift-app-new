@@ -45,7 +45,10 @@ from models import (
     ShiftPattern, Qualification, StaffQualification, PlacementRule, CookingComboRule,
     StaffAllowedPattern, StaffWorkableDate, OncallAssignment, ShiftConfirmation,
 )
-from solver import generate_shift, assign_oncall, CARE_ASSIGNMENTS, COOK_ASSIGNMENTS
+from solver import (
+    generate_shift, assign_oncall, CARE_ASSIGNMENTS, COOK_ASSIGNMENTS,
+    _period_from_time_window,
+)
 from export import export_excel, export_csv, export_pdf
 
 
@@ -517,17 +520,8 @@ _INITIAL_PLACEMENT_RULES = [
         "penalty_weight": 100,
         "_qual_code": "counselor",
     },
-    {
-        "name": "看護師/PT 9-16時 1名以上",
-        "rule_type": "qualification_min",
-        "target_qualification_ids_json": "[]",
-        "target_gender": "",
-        "period": "all",
-        "min_count": 1,
-        "is_hard": False,
-        "penalty_weight": 200,
-        "_qual_codes": ["nurse", "pt"],
-    },
+    # 依頼文18-A: 「看護師/PT 9-16時 1名以上」ルールは廃止。
+    #   看護師の配置条件は solver 内の「その日の看護師勤務 合計2時間以上」に統一。
     {
         "name": "男性 午前1名以上",
         "rule_type": "gender_min",
@@ -777,6 +771,30 @@ def create_app():
                     rule_copy["target_qualification_ids_json"] = json.dumps(ids)
                 db.session.add(PlacementRule(**rule_copy))
             db.session.commit()
+
+        # 依頼文18-A: 既存DBの「看護師/PT 9-16時」配置ルールを無効化（看護師条件は
+        #   solver の「合計2時間以上」に統一）。既に無効/不在なら何もしない（冪等）。
+        for r in PlacementRule.query.filter(PlacementRule.name.like("看護師/PT%")).all():
+            if r.is_active:
+                r.is_active = False
+        db.session.commit()
+
+        # 依頼文18-B: 適用時間帯を period→time_start/time_end へ移行（時刻入力化）。
+        #   既存挙動を保つ初期値: 午前=09:00-13:00 / 午後=13:00-16:00 / 終日=09:00-16:00。
+        #   既に時刻が入っているルールは触らない（冪等）。
+        _PERIOD_TO_TIMES = {
+            "am": ("09:00", "13:00"),
+            "pm": ("13:00", "16:00"),
+            "all": ("09:00", "16:00"),
+        }
+        for r in PlacementRule.query.all():
+            has_start = bool((r.time_start or "").strip())
+            has_end = bool((r.time_end or "").strip())
+            if not has_start and not has_end:
+                ts, te = _PERIOD_TO_TIMES.get(r.period or "all", ("09:00", "16:00"))
+                r.time_start = ts
+                r.time_end = te
+        db.session.commit()
 
         # CookingComboRule 初期データ
         if CookingComboRule.query.count() == 0:
@@ -1467,14 +1485,18 @@ def create_app():
         data = request.get_json()
         if not data or not data.get("name"):
             return jsonify({"error": "name は必須です"}), 400
+        # 適用時間帯は時刻入力（time_start/time_end）が主。period は時刻から分類して同期。
+        time_start = (data.get("time_start", "") or "").strip()
+        time_end = (data.get("time_end", "") or "").strip()
+        period = _period_from_time_window(time_start, time_end) or data.get("period", "all")
         rule = PlacementRule(
             name=data["name"],
             rule_type=data.get("rule_type", "qualification_min"),
             target_qualification_ids_json=json.dumps(data.get("target_qualification_ids", [])),
             target_gender=data.get("target_gender", ""),
-            period=data.get("period", "all"),
-            time_start=data.get("time_start", ""),
-            time_end=data.get("time_end", ""),
+            period=period,
+            time_start=time_start,
+            time_end=time_end,
             min_count=data.get("min_count", 1),
             is_hard=data.get("is_hard", True),
             penalty_weight=data.get("penalty_weight", 100),
@@ -1502,6 +1524,15 @@ def create_app():
             rule.target_gender = data["target_gender"]
         if data.get("period") is not None:
             rule.period = data["period"]
+        # 適用時間帯（時刻入力）。指定があれば time_start/end を更新し period も同期。
+        if data.get("time_start") is not None:
+            rule.time_start = (data["time_start"] or "").strip()
+        if data.get("time_end") is not None:
+            rule.time_end = (data["time_end"] or "").strip()
+        if data.get("time_start") is not None or data.get("time_end") is not None:
+            derived = _period_from_time_window(rule.time_start, rule.time_end)
+            if derived:
+                rule.period = derived
         if data.get("min_count") is not None:
             rule.min_count = data["min_count"]
         if data.get("is_hard") is not None:

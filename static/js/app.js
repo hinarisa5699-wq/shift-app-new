@@ -831,7 +831,8 @@ function deletePlacementRule(ruleId) {
 function addPlacementRule() {
     const name = document.getElementById('new-rule-name').value.trim();
     const ruleType = document.getElementById('new-rule-type').value;
-    const period = document.getElementById('new-rule-period').value;
+    const timeStart = document.getElementById('new-rule-time-start').value;
+    const timeEnd = document.getElementById('new-rule-time-end').value;
     const minCount = parseInt(document.getElementById('new-rule-min-count').value) || 1;
     const isHard = document.getElementById('new-rule-is-hard').checked;
 
@@ -843,7 +844,8 @@ function addPlacementRule() {
     const data = {
         name: name,
         rule_type: ruleType,
-        period: period,
+        time_start: timeStart,
+        time_end: timeEnd,
         min_count: minCount,
         is_hard: isHard,
         target_qualification_ids: [],
@@ -870,6 +872,22 @@ function addPlacementRule() {
         })
         .catch(error => {
             alert('配置ルールの追加に失敗しました: ' + error.message);
+        });
+}
+
+// 配置ルールの適用時間帯（開始/終了）を変更して保存
+function updatePlacementRuleTime(ruleId, field, value) {
+    const body = {};
+    body[field] = value;
+    fetchWithCsrf(`/api/placement_rules/${ruleId}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+    })
+        .then(response => {
+            if (!response.ok) throw new Error('更新に失敗しました');
+        })
+        .catch(error => {
+            alert('適用時間帯の更新に失敗しました: ' + error.message);
         });
 }
 

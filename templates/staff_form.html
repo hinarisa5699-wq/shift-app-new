@@ -155,7 +155,7 @@
             <label class="block text-lg font-semibold text-gray-700 mb-3">勤務可能曜日</label>
             <p class="text-gray-500 text-sm mb-3">出勤できる曜日にチェックを入れてください。</p>
             {% set day_names = ['月', '火', '水', '木', '金', '土', '日'] %}
-            {% set available = staff.available_days.split(',') if staff and staff.available_days else [] %}
+            {% set available = (staff.available_days.split(',') | map('trim') | list) if staff and staff.available_days else [] %}
             <div class="flex flex-wrap gap-3">
                 {% for i in range(7) %}
                 <label class="inline-flex items-center cursor-pointer bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 hover:bg-primary-50 hover:border-primary-300 transition-colors has-[:checked]:bg-primary-100 has-[:checked]:border-primary-500">
@@ -302,7 +302,7 @@
         <div class="mb-6">
             <label class="block text-lg font-semibold text-gray-700 mb-3">勤務不可曜日</label>
             <p class="text-gray-500 text-sm mb-3">毎週必ず勤務できない（固定で休みになる）曜日を選択してください。</p>
-            {% set fixed_off = staff.fixed_days_off.split(',') if staff and staff.fixed_days_off else [] %}
+            {% set fixed_off = (staff.fixed_days_off.split(',') | map('trim') | list) if staff and staff.fixed_days_off else [] %}
             <div class="flex flex-wrap gap-3">
                 {% for i in range(7) %}
                 <label class="inline-flex items-center cursor-pointer bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 hover:bg-red-50 hover:border-red-300 transition-colors has-[:checked]:bg-red-100 has-[:checked]:border-red-400">

@@ -527,6 +527,15 @@ function exportShift(format) {
     window.location.href = `/api/export/${currentGenerationId}/${format}`;
 }
 
+// PDF出力（4種: group=care|cooking, half=first|second）
+function exportPdf(group, half) {
+    if (!currentGenerationId) {
+        alert('エクスポートするシフトデータがありません。先にシフトを生成してください。');
+        return;
+    }
+    window.location.href = `/api/export/${currentGenerationId}/pdf?group=${group}&half=${half}`;
+}
+
 /* ============================================
    シフト確定
    ============================================ */

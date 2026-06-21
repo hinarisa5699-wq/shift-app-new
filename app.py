@@ -46,7 +46,7 @@ from models import (
     StaffAllowedPattern, StaffWorkableDate, OncallAssignment, ShiftConfirmation,
 )
 from solver import generate_shift, assign_oncall, CARE_ASSIGNMENTS, COOK_ASSIGNMENTS
-from export import export_excel, export_csv
+from export import export_excel, export_csv, export_pdf
 
 
 def safe_int(value, default=0):
@@ -1974,12 +1974,14 @@ def create_app():
     # -----------------------------------------------------------------
     # API ルート — エクスポート
     # -----------------------------------------------------------------
-    @app.route("/api/export/<generation_id>/excel", methods=["GET"])
-    def api_export_excel(generation_id):
-        """Excel ファイルとしてダウンロード"""
+    def _build_export_payload(generation_id):
+        """Excel/CSV/PDF 共通: 生成IDからエクスポート用データ一式を組み立てる。
+        戻り値: (shifts_data, warnings_data, staff_list_data, year, month, oncall_map)
+        該当シフトが無ければ None。
+        """
         shifts = GeneratedShift.query.filter_by(generation_id=generation_id).all()
         if not shifts:
-            return jsonify({"error": "該当するシフトデータがありません"}), 404
+            return None
 
         staffs = Staff.query.order_by(Staff.id).all()
         warnings = ShiftWarning.query.filter_by(generation_id=generation_id).all()
@@ -2033,6 +2035,16 @@ def create_app():
         oncall_rows = OncallAssignment.query.filter_by(generation_id=generation_id).all()
         oncall_map = {r.date.isoformat(): (r.staff.name if r.staff else "") for r in oncall_rows}
 
+        return shifts_data, warnings_data, staff_list_data, year, month, oncall_map
+
+    @app.route("/api/export/<generation_id>/excel", methods=["GET"])
+    def api_export_excel(generation_id):
+        """Excel ファイルとしてダウンロード"""
+        payload = _build_export_payload(generation_id)
+        if payload is None:
+            return jsonify({"error": "該当するシフトデータがありません"}), 404
+        shifts_data, warnings_data, staff_list_data, year, month, oncall_map = payload
+
         buf = export_excel(shifts_data, warnings_data, staff_list_data, year, month, oncall_map=oncall_map)
         # ファイル名: シフト{役割}{YYMMDD}.xlsx（役割=ログイン中ユーザー、日付=JST）
         role = session.get("role", "")
@@ -2048,58 +2060,10 @@ def create_app():
     @app.route("/api/export/<generation_id>/csv", methods=["GET"])
     def api_export_csv(generation_id):
         """CSV ファイルとしてダウンロード"""
-        shifts = GeneratedShift.query.filter_by(generation_id=generation_id).all()
-        if not shifts:
+        payload = _build_export_payload(generation_id)
+        if payload is None:
             return jsonify({"error": "該当するシフトデータがありません"}), 404
-
-        staffs = Staff.query.order_by(Staff.id).all()
-        warnings = ShiftWarning.query.filter_by(generation_id=generation_id).all()
-
-        first_date = shifts[0].date
-        year = first_date.year
-        month = first_date.month
-
-        shifts_data = []
-        for s in shifts:
-            d = {
-                "date": s.date.isoformat(),
-                "staff_id": s.staff_id,
-                "staff_name": s.staff.name if s.staff else "",
-                "assignment": s.assignment,
-                "is_phone_duty": s.is_phone_duty,
-                "break_start": s.break_start,
-                "bath_role": s.bath_role,
-                "meal_assist": s.meal_assist,
-            }
-            if s.counselor_desk_slots:
-                try:
-                    d["counselor_desk_slots"] = json.loads(s.counselor_desk_slots)
-                except (ValueError, TypeError):
-                    pass
-            shifts_data.append(d)
-        warnings_data = [
-            {
-                "date": w.date.isoformat(),
-                "warning_type": w.warning_type or "",
-                "message": w.message or "",
-            }
-            for w in warnings
-        ]
-        _staff_qual_ids, staff_qual_names_csv, staff_qual_codes_csv = _build_staff_qualification_maps()
-
-        staff_list_data = [
-            {
-                "id": st.id,
-                "name": st.name,
-                "department": st.staff_group,
-                "qualifications": staff_qual_names_csv.get(st.id, []),
-                "qualification_codes": staff_qual_codes_csv.get(st.id, []),
-            }
-            for st in staffs
-        ]
-
-        oncall_rows = OncallAssignment.query.filter_by(generation_id=generation_id).all()
-        oncall_map = {r.date.isoformat(): (r.staff.name if r.staff else "") for r in oncall_rows}
+        shifts_data, warnings_data, staff_list_data, year, month, oncall_map = payload
 
         csv_string = export_csv(shifts_data, warnings_data, staff_list_data, year, month, oncall_map=oncall_map)
         role = session.get("role", "")
@@ -2111,6 +2075,40 @@ def create_app():
         return send_file(
             buf,
             mimetype="text/csv; charset=utf-8",
+            as_attachment=True,
+            download_name=filename,
+        )
+
+    @app.route("/api/export/<generation_id>/pdf", methods=["GET"])
+    def api_export_pdf(generation_id):
+        """PDF ファイルとしてダウンロード（4種: 介護看護/調理 × 前半/後半）。
+
+        クエリ: ?group=care|cooking & half=first|second
+        """
+        group = request.args.get("group", "care")
+        if group not in ("care", "cooking"):
+            group = "care"
+        half = request.args.get("half", "first")
+        if half not in ("first", "second"):
+            half = "first"
+
+        payload = _build_export_payload(generation_id)
+        if payload is None:
+            return jsonify({"error": "該当するシフトデータがありません"}), 404
+        shifts_data, warnings_data, staff_list_data, year, month, oncall_map = payload
+
+        buf = export_pdf(
+            shifts_data, warnings_data, staff_list_data, year, month,
+            group=group, half=half, oncall_map=oncall_map,
+        )
+        # ファイル名: shift_{kaigokango|chori}_{zenhan|kohan}_YYYY-MM.pdf
+        group_part = "chori" if group == "cooking" else "kaigokango"
+        half_part = "kohan" if half == "second" else "zenhan"
+        filename = f"shift_{group_part}_{half_part}_{year:04d}-{month:02d}.pdf"
+
+        return send_file(
+            buf,
+            mimetype="application/pdf",
             as_attachment=True,
             download_name=filename,
         )

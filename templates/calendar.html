@@ -67,6 +67,25 @@
                     class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors text-base">
                 CSV出力
             </button>
+            <div class="flex items-center gap-1">
+                <span class="text-sm text-gray-500 font-medium">PDF:</span>
+                <button onclick="exportPdf('care','first')"
+                        class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">
+                    介護看護 前半
+                </button>
+                <button onclick="exportPdf('care','second')"
+                        class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">
+                    介護看護 後半
+                </button>
+                <button onclick="exportPdf('cooking','first')"
+                        class="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">
+                    調理 前半
+                </button>
+                <button onclick="exportPdf('cooking','second')"
+                        class="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">
+                    調理 後半
+                </button>
+            </div>
         </div>
     </div>
 </div>

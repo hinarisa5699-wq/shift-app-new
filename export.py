@@ -9,6 +9,7 @@ CSV ファイルとして出力する。
 import calendar
 import csv
 import io
+import os
 from datetime import date
 from io import BytesIO
 
@@ -693,3 +694,273 @@ def export_csv(
 
     csv_string = "\ufeff" + output.getvalue()
     return csv_string
+
+
+# ---------------------------------------------------------------------------
+# PDF エクスポート（表示専用。Excel/CSV と同じ集計を再利用）
+# ---------------------------------------------------------------------------
+# 同梱 CJK フォント（システムフォントに依存しない＝Renderでも文字化けしない）
+_FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+_PDF_FONT_PATH = os.path.join(_FONT_DIR, "ipaexg.ttf")
+_PDF_FONT = "ipaexg"
+
+# PDF 色（RGB）
+_PDF_HEADER_BG = (68, 114, 196)
+_PDF_SAT_BG = (232, 240, 254)
+_PDF_SUN_BG = (253, 232, 232)
+_PDF_HOL_BG = (255, 243, 224)
+_PDF_SUMMARY_BG = (238, 242, 255)
+_PDF_ALERT_BG = (254, 226, 226)
+
+# サマリー行: ラベル → (summary_mapキー or 特殊, 警告種別)
+_PDF_CARE_SUMMARY = [
+    ("訪問午前", "day_am", "understaffed_day_am"),
+    ("訪問午後", "day_pm", "understaffed_day_pm"),
+    ("デイ午前", "visit_am", "understaffed_visit_am"),
+    ("デイ午後", "visit_pm", "understaffed_visit_pm"),
+    ("兼務者数", "dual", "dual_shortage"),
+    ("オンコール", "_phone", None),
+]
+_PDF_COOK_SUMMARY = [("調理配置数", "cook_total", "understaffed_cook")]
+
+
+def _pdf_weekend_color(d):
+    """日付列の背景色（祝日 > 土 > 日）。平日は None。"""
+    if jpholiday.is_holiday(d):
+        return _PDF_HOL_BG
+    wd = d.weekday()
+    if wd == 5:
+        return _PDF_SAT_BG
+    if wd == 6:
+        return _PDF_SUN_BG
+    return None
+
+
+def _pdf_wrap(pdf, text, max_w, fs):
+    """セル幅 max_w(mm) に収まるよう改行（CJKは空白が無いので文字単位で折返し）。"""
+    pdf.set_font(_PDF_FONT, "", fs)
+    lines = []
+    for raw in str(text).split("\n"):
+        if raw == "":
+            continue
+        cur = ""
+        for ch in raw:
+            if pdf.get_string_width(cur + ch) <= max_w - 1.2:
+                cur += ch
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = ch
+        if cur:
+            lines.append(cur)
+    return lines or [""]
+
+
+def export_pdf(
+    shifts_data: list,
+    warnings_data: list,
+    staff_list: list,
+    year: int,
+    month: int,
+    group: str = "care",
+    half: str = "first",
+    oncall_map: dict = None,
+) -> BytesIO:
+    """シフト表を PDF で出力する（A4横・1ページ）。表示専用。
+
+    group: "care"=介護・看護 / "cooking"=調理
+    half:  "first"=1〜15日 / "second"=16日〜末日
+    集計は Excel/CSV と同じ _build_daily_data を再利用する（二重集計しない）。
+    """
+    from fpdf import FPDF  # 遅延 import（未導入でも Excel/CSV は動く）
+
+    dates, assignment_map, summary_map, phone_duty_map, desk_slot_map, break_map, bath_map, meal_map = _build_daily_data(
+        shifts_data, staff_list, year, month
+    )
+    if oncall_map is not None:
+        phone_duty_map = {d: [n] for d, n in oncall_map.items() if n}
+
+    is_cook = (group == "cooking")
+    if is_cook:
+        gstaff = [s for s in staff_list if s.get("department") == "cooking"]
+        group_label = "調理"
+        summary_rows = _PDF_COOK_SUMMARY
+    else:
+        gstaff = [s for s in staff_list if s.get("department") != "cooking"]
+        group_label = "介護・看護"
+        summary_rows = _PDF_CARE_SUMMARY
+
+    if half == "second":
+        sel = [d for d in dates if d.day >= 16]
+        half_label = "後半"
+    else:
+        sel = [d for d in dates if d.day <= 15]
+        half_label = "前半"
+
+    pdf = FPDF(orientation="L", unit="mm", format="A4")
+    pdf.set_auto_page_break(False)
+    pdf.add_font(_PDF_FONT, "", _PDF_FONT_PATH)
+    pdf.set_margins(7, 7, 7)
+    pdf.add_page()
+    page_w = pdf.w
+    page_h = pdf.h
+
+    # --- タイトル ---
+    first_d = sel[0].day if sel else 1
+    last_d = sel[-1].day if sel else 1
+    title = f"{year}年{month}月 シフト表（{group_label} {half_label}：{first_d}〜{last_d}日）"
+    pdf.set_font(_PDF_FONT, "", 12)
+    pdf.set_xy(7, 7)
+    pdf.cell(page_w - 14, 7, title, align="C")
+
+    table_top = 16.0
+    usable_w = page_w - 14
+    usable_h = page_h - 7 - table_top
+
+    n_dates = len(sel)
+    name_w = 26.0
+    total_w = 11.0
+    date_w = (usable_w - name_w - total_w) / max(n_dates, 1)
+
+    header_rows = 2
+    body_rows = len(gstaff) + len(summary_rows)
+    total_rows = header_rows + body_rows
+    row_h = usable_h / max(total_rows, 1)
+
+    off_token = "cook_off" if is_cook else "off"
+
+    def cell_text(sid, d):
+        d_str = d.isoformat()
+        if is_cook:
+            asgn = assignment_map.get(d_str, {}).get(sid, "")
+            return ASSIGNMENT_LABELS.get(asgn, ""), asgn
+        asgn, text = _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map)
+        return text, asgn
+
+    staff_rows = []  # [(name_text, [cell_text...], work_days)]
+    for s in gstaff:
+        sid = s["id"]
+        name = _staff_name_label(s, is_cook)
+        cells = []
+        work = 0
+        for d in sel:
+            txt, asgn = cell_text(sid, d)
+            cells.append(txt)
+            if asgn not in (off_token, ""):
+                work += 1
+        staff_rows.append((name, cells, work))
+
+    summary_data = []  # [(label, [val...])]
+    for label, key, _wt in summary_rows:
+        vals = []
+        for d in sel:
+            d_str = d.isoformat()
+            if key == "_phone":
+                names = phone_duty_map.get(d_str, [])
+                vals.append(", ".join(names) if names else "")
+            else:
+                vals.append(str(summary_map.get(d_str, {}).get(key, 0)))
+        summary_data.append((label, vals))
+
+    # --- フォントサイズ自動調整: 最大行数が row_h に収まる最大サイズを選ぶ ---
+    def line_h(fs):
+        return fs * 0.3528 * 1.18
+
+    def fits(fs):
+        max_lines = 1
+        for name, cells, _w in staff_rows:
+            max_lines = max(max_lines, len(_pdf_wrap(pdf, name, name_w, fs)))
+            for c in cells:
+                max_lines = max(max_lines, len(_pdf_wrap(pdf, c, date_w, fs)))
+        for label, vals in summary_data:
+            for v in vals:
+                max_lines = max(max_lines, len(_pdf_wrap(pdf, v, date_w, fs)))
+        return max_lines * line_h(fs) <= row_h - 0.6
+
+    body_fs = 4.5
+    for fs in (8.0, 7.5, 7.0, 6.5, 6.0, 5.5, 5.0, 4.5):
+        if fits(fs):
+            body_fs = fs
+            break
+    header_fs = min(body_fs + 0.5, 8.0)
+    max_lines_per_cell = max(1, int((row_h - 0.6) / line_h(body_fs)))
+
+    def draw_cell(x, y, w, h, text, fs, *, fill=None, bold_color=None, align="C"):
+        if fill:
+            pdf.set_fill_color(*fill)
+            pdf.rect(x, y, w, h, style="DF")
+        else:
+            pdf.rect(x, y, w, h, style="D")
+        if text == "" or text is None:
+            return
+        lines = _pdf_wrap(pdf, text, w, fs)[:max_lines_per_cell]
+        pdf.set_font(_PDF_FONT, "", fs)
+        pdf.set_text_color(*(bold_color or (0, 0, 0)))
+        lh = line_h(fs)
+        ty = y + (h - lh * len(lines)) / 2
+        for ln in lines:
+            pdf.set_xy(x, ty)
+            pdf.cell(w, lh, ln, align=align)
+            ty += lh
+        pdf.set_text_color(0, 0, 0)
+
+    def has_warn(d_str, wtype):
+        if not wtype:
+            return False
+        for w in warnings_data:
+            if w.get("date") != d_str:
+                continue
+            wt = w.get("warning_type", "")
+            if wtype == "understaffed_cook":
+                if wt.startswith("understaffed_cook"):
+                    return True
+            elif wt == wtype:
+                return True
+        return False
+
+    # --- ヘッダー行（日付 / 曜日）---
+    y = table_top
+    draw_cell(7, y, name_w, row_h * 2, "職員名", header_fs,
+              fill=_PDF_HEADER_BG, bold_color=(255, 255, 255))
+    x = 7 + name_w
+    for d in sel:
+        draw_cell(x, y, date_w, row_h, f"{d.month}/{d.day}", header_fs,
+                  fill=_PDF_HEADER_BG, bold_color=(255, 255, 255))
+        wd = WEEKDAY_NAMES[d.weekday()]
+        if jpholiday.is_holiday(d):
+            wd = f"{wd}/祝"
+        draw_cell(x, y + row_h, date_w, row_h, wd, header_fs,
+                  fill=_pdf_weekend_color(d))
+        x += date_w
+    draw_cell(x, y, total_w, row_h * 2, "出勤\n日数", header_fs,
+              fill=_PDF_HEADER_BG, bold_color=(255, 255, 255))
+
+    # --- 職員行 ---
+    y = table_top + row_h * 2
+    for name, cells, work in staff_rows:
+        draw_cell(7, y, name_w, row_h, name, body_fs, align="L")
+        x = 7 + name_w
+        for i, d in enumerate(sel):
+            draw_cell(x, y, date_w, row_h, cells[i], body_fs,
+                      fill=_pdf_weekend_color(d))
+            x += date_w
+        draw_cell(x, y, total_w, row_h, str(work), body_fs)
+        y += row_h
+
+    # --- サマリー行 ---
+    for (label, key, wtype), (slabel, vals) in zip(summary_rows, summary_data):
+        draw_cell(7, y, name_w, row_h, slabel, body_fs, fill=_PDF_SUMMARY_BG, align="L")
+        x = 7 + name_w
+        for i, d in enumerate(sel):
+            alert = has_warn(d.isoformat(), wtype)
+            draw_cell(x, y, date_w, row_h, vals[i], body_fs,
+                      fill=_PDF_ALERT_BG if alert else _pdf_weekend_color(d),
+                      bold_color=(204, 0, 0) if alert else None)
+            x += date_w
+        draw_cell(x, y, total_w, row_h, "", body_fs)
+        y += row_h
+
+    buf = BytesIO()
+    buf.write(bytes(pdf.output()))
+    buf.seek(0)
+    return buf

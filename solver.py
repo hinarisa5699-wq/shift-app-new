@@ -325,7 +325,8 @@ def _stranded_reason(staff: dict, dept: str) -> str:
         parts.append("勤務可能時間帯=午前のみ")
     elif ts == "pm_only":
         parts.append("勤務可能時間帯=午後のみ")
-    if not staff.get("can_visit"):
+    # 「訪問兼務不可」は介護側のみの判定。調理スタッフには適用しない（依頼文22）。
+    if dept != "調理" and not staff.get("can_visit"):
         parts.append("訪問兼務不可")
     cond = "・".join(parts) if parts else "現在の設定"
     return (f"{staff.get('name', '?')}（{dept}）は設定（{cond}）により"

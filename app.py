@@ -609,6 +609,22 @@ def _sync_cooking_patterns():
         if n:
             changed = True
 
+    # 依頼文22: StaffAllowedPattern（許可シフトパターン）の旧調理コードを移行。
+    #   これを変換し損ねると、調理スタッフの許可集合が現行 cooking_* と一致せず
+    #   全パターン除外＝「割り当て可能パターンなし」で全日未配置になる。
+    for r in StaffAllowedPattern.query.filter(
+        StaffAllowedPattern.assignment_code.in_(list(_COOK_CODE_MIGRATE.keys()))
+    ).all():
+        new_code = _COOK_CODE_MIGRATE[r.assignment_code]
+        dup = StaffAllowedPattern.query.filter_by(
+            staff_id=r.staff_id, assignment_code=new_code
+        ).first()
+        if dup:
+            db.session.delete(r)  # 既に新コードがあれば重複削除
+        else:
+            r.assignment_code = new_code
+        changed = True
+
     # CookingComboRule を 1組=1行 へ正規化（旧コード移行込み）
     rules = CookingComboRule.query.order_by(CookingComboRule.id).all()
     combos = []  # 各要素 = 種類コードのフラットリスト
@@ -1816,7 +1832,9 @@ def create_app():
         for ap in all_allowed:
             if ap.staff_id not in allowed_patterns_map:
                 allowed_patterns_map[ap.staff_id] = set()
-            allowed_patterns_map[ap.staff_id].add(ap.assignment_code)
+            # 依頼文22: 旧調理コード cook_* が残っていても cooking_* に読み替える（防御）
+            code = _COOK_CODE_MIGRATE.get(ap.assignment_code, ap.assignment_code)
+            allowed_patterns_map[ap.staff_id].add(code)
 
         # 出勤可能日（whitelist）の取得: {staff_id: [YYYY-MM-DD, ...]}
         # 1日でも登録があれば、その職員は登録日のみ出勤可（solverで強制）。

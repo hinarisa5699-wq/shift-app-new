@@ -627,10 +627,7 @@ def export_csv(
         bath_role = bath_map.get(d_str, {}).get(sid)
         if bath_role:
             parts.append(f"{bath_role}介助")
-        # 休憩時間は表示しない（要望により非表示）
-        meal = meal_map.get(d_str, {}).get(sid)
-        if meal:
-            parts.append(f"食事:{meal}")
+        # 休憩時間・食事介助の時刻は表示しない（要望により非表示。Excel・画面と統一）
         desk_slots = desk_slot_map.get(d_str, {}).get(sid)
         if desk_slots:
             parts.append("相談（終日）" if set(desk_slots) >= {0, 1, 2, 3}

@@ -475,39 +475,93 @@
 </div>
 
 <!-- ================================================================
-     調理組み合わせルール
+     調理シフト種類マスタ（依頼文21）
      ================================================================ -->
-{% if cooking_combo_rules %}
 <div class="bg-white rounded-xl shadow-md p-8 max-w-3xl mt-8">
-    <h2 class="text-2xl font-bold text-primary-800 mb-4">調理の組み合わせルール</h2>
-    <p class="text-gray-600 mb-6">
-        調理スタッフのシフトパターンの日単位組み合わせを管理します。
-    </p>
+    <h2 class="text-2xl font-bold text-primary-800 mb-4">調理シフト種類</h2>
+    <p class="text-gray-600 mb-6">調理のシフト種類（名前＋出勤〜退勤時刻）を自由に追加・編集できます。</p>
+    <div class="space-y-2 mb-4">
+        {% for t in cooking_types %}
+        <div class="flex items-center gap-2 bg-amber-50 rounded-lg px-3 py-2 border border-amber-200">
+            <input type="text" value="{{ t.label }}"
+                   onchange="updateCookingType({{ t.id }}, 'label', this.value)"
+                   class="flex-1 px-2 py-1 border border-gray-300 rounded text-sm">
+            <input type="time" value="{{ t.start_time }}"
+                   onchange="updateCookingType({{ t.id }}, 'start_time', this.value)"
+                   class="px-2 py-1 border border-gray-300 rounded text-sm">
+            <span class="text-gray-400">〜</span>
+            <input type="time" value="{{ t.end_time }}"
+                   onchange="updateCookingType({{ t.id }}, 'end_time', this.value)"
+                   class="px-2 py-1 border border-gray-300 rounded text-sm">
+            <button onclick="deleteCookingType({{ t.id }})"
+                    class="bg-red-100 hover:bg-red-200 text-red-700 text-sm py-1 px-3 rounded">削除</button>
+        </div>
+        {% endfor %}
+    </div>
+    <div class="flex items-center gap-2 p-3 bg-gray-50 rounded-lg border border-gray-200">
+        <input type="text" id="new-cooking-type-label" placeholder="名前（例: ⑥ 15-19）"
+               class="flex-1 px-2 py-2 border border-gray-300 rounded text-sm">
+        <input type="time" id="new-cooking-type-start" value="06:00"
+               class="px-2 py-2 border border-gray-300 rounded text-sm">
+        <span class="text-gray-400">〜</span>
+        <input type="time" id="new-cooking-type-end" value="08:00"
+               class="px-2 py-2 border border-gray-300 rounded text-sm">
+        <button onclick="addCookingType()"
+                class="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-4 rounded text-sm">追加</button>
+    </div>
+</div>
 
-    <div class="space-y-3">
+<!-- ================================================================
+     調理組み合わせマスタ（依頼文21）
+     ================================================================ -->
+<div class="bg-white rounded-xl shadow-md p-8 max-w-3xl mt-8">
+    <h2 class="text-2xl font-bold text-primary-800 mb-4">調理の組み合わせ</h2>
+    <p class="text-gray-600 mb-6">1日の調理編成（A・B・C・D・E…）を追加・編集できます。各行に含める種類を選びます。</p>
+    <div class="space-y-3 mb-4">
         {% for rule in cooking_combo_rules %}
-        <div class="flex items-center justify-between bg-amber-50 rounded-lg px-4 py-3 border border-amber-200">
-            <div class="flex items-center gap-3">
-                <label class="flex items-center cursor-pointer">
-                    <input type="checkbox" {% if rule.is_active %}checked{% endif %}
-                           onchange="toggleCookingComboActive({{ rule.id }}, this.checked)"
-                           class="w-5 h-5 text-amber-600 border-gray-300 rounded focus:ring-amber-500">
+        <div class="bg-amber-50 rounded-lg px-4 py-3 border border-amber-200">
+            <div class="flex items-center gap-2 mb-2">
+                <input type="checkbox" {% if rule.is_active %}checked{% endif %}
+                       onchange="toggleCookingComboActive({{ rule.id }}, this.checked)"
+                       class="w-5 h-5 text-amber-600 border-gray-300 rounded focus:ring-amber-500">
+                <input type="text" value="{{ rule.name }}"
+                       onchange="updateCookingComboName({{ rule.id }}, this.value)"
+                       class="font-medium text-gray-800 px-2 py-1 border border-gray-300 rounded text-sm w-40">
+                <button onclick="deleteCookingCombo({{ rule.id }})"
+                        class="ml-auto bg-red-100 hover:bg-red-200 text-red-700 text-sm py-1 px-3 rounded">削除</button>
+            </div>
+            <div class="flex flex-wrap gap-2" data-combo-row="{{ rule.id }}">
+                {% for t in cooking_types %}
+                <label class="inline-flex items-center text-sm bg-white border border-gray-200 rounded px-2 py-1 cursor-pointer has-[:checked]:bg-amber-100 has-[:checked]:border-amber-500">
+                    <input type="checkbox" value="{{ t.code }}"
+                           {% if t.code in rule.allowed_patterns %}checked{% endif %}
+                           onchange="updateCookingComboPatterns({{ rule.id }})"
+                           class="w-4 h-4 text-amber-600 border-gray-300 rounded">
+                    <span class="ml-1">{{ t.label }}</span>
                 </label>
-                <div>
-                    <span class="text-base font-medium text-gray-800">{{ rule.name }}</span>
-                    <div class="text-xs text-gray-500 mt-1">
-                        {% set patterns = rule.allowed_patterns_json | default('[]', true) %}
-                        {% for p in patterns | tojson | default('[]') %}
-                        {% endfor %}
-                        パターン数: {{ (patterns | length) if patterns is iterable else 0 }}
-                    </div>
-                </div>
+                {% endfor %}
             </div>
         </div>
         {% endfor %}
     </div>
+    <div class="p-3 bg-gray-50 rounded-lg border border-gray-200">
+        <div class="flex items-center gap-2 mb-2">
+            <input type="text" id="new-combo-name" placeholder="組み合わせ名（例: E）"
+                   class="px-2 py-2 border border-gray-300 rounded text-sm w-40">
+            <span class="text-sm text-gray-500">含める種類を選択 →</span>
+        </div>
+        <div class="flex flex-wrap gap-2 mb-3" id="new-combo-patterns">
+            {% for t in cooking_types %}
+            <label class="inline-flex items-center text-sm bg-white border border-gray-200 rounded px-2 py-1 cursor-pointer has-[:checked]:bg-amber-100 has-[:checked]:border-amber-500">
+                <input type="checkbox" value="{{ t.code }}" class="w-4 h-4 text-amber-600 border-gray-300 rounded">
+                <span class="ml-1">{{ t.label }}</span>
+            </label>
+            {% endfor %}
+        </div>
+        <button onclick="addCookingCombo()"
+                class="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-4 rounded text-sm">組み合わせを追加</button>
+    </div>
 </div>
-{% endif %}
 
 <!-- ================================================================
      資格マスタ管理

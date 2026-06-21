@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+import re
 import threading
 import uuid
 import sqlite3
@@ -68,11 +69,11 @@ _PATTERN_CODE_TO_ASSIGNMENT = {
     "care_4": "day_pattern4",
     "care_5": "early",
     "care_6": "late",
-    "cooking_1": "cook_early",
-    "cooking_2": "cook_morning",
-    "cooking_3": "cook_late",
-    "cooking_4": "cook_long",
-    "cooking_5": "cook_mid",
+    "cooking_1": "cooking_1",
+    "cooking_2": "cooking_2",
+    "cooking_3": "cooking_3",
+    "cooking_4": "cooking_4",
+    "cooking_5": "cooking_5",
 }
 
 _VALID_ALLOWED_BY_GROUP = {
@@ -542,10 +543,10 @@ _INITIAL_PLACEMENT_RULES = [
 #   ・①②③⑤  ・①②③  ・④③⑤  ・④③
 #   （③12-19は毎日必須。朝は「①+②」か「④」。⑤9-15は任意で追加）
 _COOKING_COMBOS = [
-    ["cook_early", "cook_morning", "cook_late", "cook_mid"],  # ①②③⑤
-    ["cook_early", "cook_morning", "cook_late"],              # ①②③
-    ["cook_long", "cook_late", "cook_mid"],                   # ④③⑤
-    ["cook_long", "cook_late"],                               # ④③
+    ["cooking_1", "cooking_2", "cooking_3", "cooking_5"],  # ①②③⑤
+    ["cooking_1", "cooking_2", "cooking_3"],              # ①②③
+    ["cooking_4", "cooking_3", "cooking_5"],                   # ④③⑤
+    ["cooking_4", "cooking_3"],                               # ④③
 ]
 
 _INITIAL_COOKING_COMBO = {
@@ -558,50 +559,102 @@ _INITIAL_COOKING_COMBO = {
 # ---------------------------------------------------------------------------
 # 調理シフトパターンの整合（既存DBにも変更1〜3を反映・冪等）
 # ---------------------------------------------------------------------------
+# 旧調理コード → 新コード（依頼文21: cooking_* に統一）
+_COOK_CODE_MIGRATE = {
+    "cook_early": "cooking_1",
+    "cook_morning": "cooking_2",
+    "cook_late": "cooking_3",
+    "cook_long": "cooking_4",
+    "cook_mid": "cooking_5",
+}
+# 既存4組み合わせの内容→名前（A=①②③ / B=④③ / C=①②③⑤ / D=④③⑤）
+_COMBO_NAME_BY_CONTENT = {
+    frozenset(["cooking_1", "cooking_2", "cooking_3"]): "A",
+    frozenset(["cooking_4", "cooking_3"]): "B",
+    frozenset(["cooking_1", "cooking_2", "cooking_3", "cooking_5"]): "C",
+    frozenset(["cooking_4", "cooking_3", "cooking_5"]): "D",
+}
+
+
 def _sync_cooking_patterns():
-    """既存DBの調理パターン定義を最新仕様へ揃える（起動ごとに冪等実行）。
-    調理5パターン: ①6-8 / ②8-13 / ③12-19 / ④6-13 / ⑤9-15。
-    組み合わせは _COOKING_COMBOS の4通りに統一。
-    ※ ShiftPattern/CookingComboRule のシードは既存行を更新しないため、ここで補正する。
+    """調理マスタの整合・移行（起動ごとに冪等実行）。依頼文21対応。
+    - 調理5種類(ShiftPattern cooking_1〜5)が無ければ既定で作成（既存は上書きしない＝編集を尊重）。
+    - 旧コード cook_*→cooking_* を GeneratedShift・CookingComboRule に移行。
+    - 組み合わせを「1組=1行（name=A/B/C/D…＋種類コードのフラットリスト）」へ正規化。
     """
     changed = False
 
-    # 調理パターンの正しい時間（コード→(label, start, end)）
+    # 調理5種類: 無ければ作成（既存は上書きしない）
     cook_defs = {
-        "cooking_1": ("(1) 6:00-8:00", "06:00", "08:00", 5),
-        "cooking_2": ("(2) 8:00-13:00", "08:00", "13:00", 6),
-        "cooking_3": ("(3) 12:00-19:00", "12:00", "19:00", 7),
-        "cooking_4": ("(4) 6:00-13:00", "06:00", "13:00", 8),
-        "cooking_5": ("(5) 9:00-15:00", "09:00", "15:00", 9),
+        "cooking_1": ("① 6:00-8:00", "06:00", "08:00", 5),
+        "cooking_2": ("② 8:00-13:00", "08:00", "13:00", 6),
+        "cooking_3": ("③ 12:00-19:00", "12:00", "19:00", 7),
+        "cooking_4": ("④ 6:00-13:00", "06:00", "13:00", 8),
+        "cooking_5": ("⑤ 9:00-15:00", "09:00", "15:00", 9),
     }
     for code, (label, start, end, order) in cook_defs.items():
-        p = ShiftPattern.query.filter_by(code=code).first()
-        if p is None:
+        if ShiftPattern.query.filter_by(code=code).first() is None:
             db.session.add(ShiftPattern(
                 code=code, staff_group="cooking", label=label,
                 start_time=start, end_time=end, has_break=False, break_minutes=0,
                 display_order=order, period="full", covers_am=True, covers_pm=True,
             ))
             changed = True
-        elif p.start_time != start or p.end_time != end or p.label != label:
-            p.label = label
-            p.start_time = start
-            p.end_time = end
-            p.covers_am = True
-            p.covers_pm = True
+
+    # GeneratedShift の旧調理コードを移行
+    for old, new in _COOK_CODE_MIGRATE.items():
+        n = GeneratedShift.query.filter_by(assignment=old).update(
+            {"assignment": new}, synchronize_session=False
+        )
+        if n:
             changed = True
 
-    # 組み合わせルールを4通り(_COOKING_COMBOS)に統一（旧①〜⑧/セットルールは取り消し）
-    desired = json.dumps(_COOKING_COMBOS)
-    rules = CookingComboRule.query.all()
-    if not rules:
-        db.session.add(CookingComboRule(**_INITIAL_COOKING_COMBO))
+    # CookingComboRule を 1組=1行 へ正規化（旧コード移行込み）
+    rules = CookingComboRule.query.order_by(CookingComboRule.id).all()
+    combos = []  # 各要素 = 種類コードのフラットリスト
+    for r in rules:
+        try:
+            pats = json.loads(r.allowed_patterns_json or "[]")
+        except (ValueError, TypeError):
+            pats = []
+        # 旧形式(1行に複数組=リストのリスト) と 新形式(1行1組=フラットリスト) の両対応
+        groups = pats if (pats and all(isinstance(p, list) for p in pats)) else ([pats] if pats else [])
+        for g in groups:
+            migrated = [_COOK_CODE_MIGRATE.get(c, c) for c in g if isinstance(c, str)]
+            if migrated and migrated not in combos:
+                combos.append(migrated)
+
+    # 望ましい状態（1組=1行・cooking_*）と現状が一致していれば触らない（冪等）
+    desired_rows = []
+    used = set()
+    for combo in combos:
+        name = _COMBO_NAME_BY_CONTENT.get(frozenset(combo))
+        if not name:
+            for i in range(26):
+                cand = chr(ord("A") + i)
+                if cand not in used and cand not in _COMBO_NAME_BY_CONTENT.values():
+                    name = cand
+                    break
+            name = name or f"組{len(desired_rows)+1}"
+        used.add(name)
+        desired_rows.append((name, combo))
+
+    current_ok = (
+        len(rules) == len(desired_rows)
+        and all(
+            (json.loads(r.allowed_patterns_json or "[]") == combo)
+            for r, (name, combo) in zip(rules, desired_rows)
+        )
+    )
+    if not current_ok and desired_rows:
+        for r in rules:
+            db.session.delete(r)
+        db.session.flush()
+        for name, combo in desired_rows:
+            db.session.add(CookingComboRule(
+                name=name, allowed_patterns_json=json.dumps(combo), is_active=True,
+            ))
         changed = True
-    else:
-        for rule in rules:
-            if rule.allowed_patterns_json != desired:
-                rule.allowed_patterns_json = desired
-                changed = True
 
     if changed:
         db.session.commit()
@@ -897,11 +950,18 @@ def create_app():
         s = ShiftSettings.query.first()
         qualifications = Qualification.query.order_by(Qualification.display_order).all()
         placement_rules = PlacementRule.query.order_by(PlacementRule.id).all()
-        cooking_combo_rules = CookingComboRule.query.order_by(CookingComboRule.id).all()
+        cooking_combo_rules = [
+            r.to_dict() for r in CookingComboRule.query.order_by(CookingComboRule.id).all()
+        ]
+        cooking_types = [
+            r.to_dict() for r in ShiftPattern.query.filter_by(staff_group="cooking")
+            .order_by(ShiftPattern.display_order).all()
+        ]
         return render_template("settings.html", settings=s,
                                qualifications=qualifications,
                                placement_rules=placement_rules,
-                               cooking_combo_rules=cooking_combo_rules)
+                               cooking_combo_rules=cooking_combo_rules,
+                               cooking_types=cooking_types)
 
     @app.route("/calendar")
     def calendar_page():
@@ -1579,6 +1639,101 @@ def create_app():
         db.session.commit()
         return jsonify(rule.to_dict())
 
+    @app.route("/api/cooking_combo_rules", methods=["POST"])
+    def api_cooking_combo_create():
+        """調理組み合わせ（1組=1行）を追加。allowed_patterns=種類コードのフラットリスト。"""
+        data = request.get_json(silent=True) or {}
+        patterns = data.get("allowed_patterns") or []
+        if not isinstance(patterns, list) or not patterns:
+            return jsonify({"error": "含める種類を1つ以上選択してください"}), 400
+        rule = CookingComboRule(
+            name=(data.get("name") or "").strip() or "新しい組み合わせ",
+            allowed_patterns_json=json.dumps(patterns),
+            is_active=data.get("is_active", True),
+        )
+        db.session.add(rule)
+        db.session.commit()
+        return jsonify(rule.to_dict()), 201
+
+    @app.route("/api/cooking_combo_rules/<int:rule_id>", methods=["DELETE"])
+    def api_cooking_combo_delete(rule_id):
+        """調理組み合わせ行を削除。"""
+        rule = CookingComboRule.query.get_or_404(rule_id)
+        db.session.delete(rule)
+        db.session.commit()
+        return jsonify({"message": "削除しました"})
+
+    # -----------------------------------------------------------------
+    # API ルート — 調理シフト種類マスタ（ShiftPattern staff_group='cooking'）
+    # -----------------------------------------------------------------
+    @app.route("/api/cooking_types", methods=["GET"])
+    def api_cooking_types_list():
+        rows = (ShiftPattern.query.filter_by(staff_group="cooking")
+                .order_by(ShiftPattern.display_order).all())
+        return jsonify([r.to_dict() for r in rows])
+
+    @app.route("/api/cooking_types", methods=["POST"])
+    def api_cooking_type_create():
+        """調理シフト種類を追加（コードは cooking_N を自動採番）。"""
+        data = request.get_json(silent=True) or {}
+        label = (data.get("label") or "").strip()
+        start = (data.get("start_time") or "").strip()
+        end = (data.get("end_time") or "").strip()
+        if not label or not start or not end:
+            return jsonify({"error": "名前・出勤時刻・退勤時刻は必須です"}), 400
+        # 既存 cooking_N の最大Nの次を採番
+        max_n = 0
+        for p in ShiftPattern.query.filter_by(staff_group="cooking").all():
+            m = re.match(r"^cooking_(\d+)$", p.code or "")
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+        code = f"cooking_{max_n + 1}"
+        max_order = db.session.query(db.func.max(ShiftPattern.display_order)).scalar() or 0
+        p = ShiftPattern(
+            code=code, staff_group="cooking", label=label,
+            start_time=start, end_time=end, has_break=False, break_minutes=0,
+            display_order=max_order + 1, period="full", covers_am=True, covers_pm=True,
+        )
+        db.session.add(p)
+        db.session.commit()
+        return jsonify(p.to_dict()), 201
+
+    @app.route("/api/cooking_types/<int:type_id>", methods=["PUT"])
+    def api_cooking_type_update(type_id):
+        """調理シフト種類の名前・時刻を編集（コードは不変）。"""
+        p = ShiftPattern.query.get_or_404(type_id)
+        if p.staff_group != "cooking":
+            return jsonify({"error": "調理種類ではありません"}), 400
+        data = request.get_json(silent=True) or {}
+        if data.get("label") is not None:
+            p.label = (data["label"] or "").strip() or p.label
+        if data.get("start_time") is not None:
+            p.start_time = (data["start_time"] or "").strip()
+        if data.get("end_time") is not None:
+            p.end_time = (data["end_time"] or "").strip()
+        db.session.commit()
+        return jsonify(p.to_dict())
+
+    @app.route("/api/cooking_types/<int:type_id>", methods=["DELETE"])
+    def api_cooking_type_delete(type_id):
+        """調理シフト種類を削除（組み合わせで使用中なら拒否）。"""
+        p = ShiftPattern.query.get_or_404(type_id)
+        if p.staff_group != "cooking":
+            return jsonify({"error": "調理種類ではありません"}), 400
+        for r in CookingComboRule.query.all():
+            try:
+                pats = json.loads(r.allowed_patterns_json or "[]")
+            except (ValueError, TypeError):
+                pats = []
+            flat = []
+            for g in (pats if (pats and all(isinstance(x, list) for x in pats)) else [pats]):
+                flat.extend(g if isinstance(g, list) else [g])
+            if p.code in flat:
+                return jsonify({"error": f"組み合わせ「{r.name}」で使用中のため削除できません"}), 409
+        db.session.delete(p)
+        db.session.commit()
+        return jsonify({"message": "削除しました"})
+
     # -----------------------------------------------------------------
     # API ルート — シフト生成
     # -----------------------------------------------------------------
@@ -1646,6 +1801,14 @@ def create_app():
         # 調理組み合わせルールの取得
         cooking_combo_rules = CookingComboRule.query.filter_by(is_active=True).all()
         cooking_combo_data = [r.to_dict() for r in cooking_combo_rules]
+
+        # 依頼文21: 調理シフト種類マスタ（ShiftPattern cooking）を solver へ渡す
+        cooking_types_data = [
+            {"code": p.code, "label": p.label,
+             "start_time": p.start_time, "end_time": p.end_time}
+            for p in ShiftPattern.query.filter_by(staff_group="cooking")
+            .order_by(ShiftPattern.display_order).all()
+        ]
 
         # 許可アサインメント制限の取得
         all_allowed = StaffAllowedPattern.query.all()
@@ -1726,6 +1889,7 @@ def create_app():
             "counselor_desk_count": getattr(settings_obj, 'counselor_desk_count', 1) or 1,
             "placement_rules": placement_rules_data,
             "cooking_combo_rules": cooking_combo_data,
+            "cooking_types": cooking_types_data,
         }
 
         # --- オンコール（電話当番）を生成前に確定 ---
@@ -1967,6 +2131,11 @@ def create_app():
                     }
                     for st in all_staff
                 ],
+                # 調理シフト種類マスタのラベル（画面表示で新種類を正しく表示する用）
+                "cook_labels": {
+                    p.code: p.label
+                    for p in ShiftPattern.query.filter_by(staff_group="cooking").all()
+                },
             }
         )
 
@@ -2066,7 +2235,13 @@ def create_app():
         oncall_rows = OncallAssignment.query.filter_by(generation_id=generation_id).all()
         oncall_map = {r.date.isoformat(): (r.staff.name if r.staff else "") for r in oncall_rows}
 
-        return shifts_data, warnings_data, staff_list_data, year, month, oncall_map
+        # 調理シフト種類マスタのラベル（新種類の Excel/CSV/PDF 表示用）
+        cook_labels = {
+            p.code: p.label
+            for p in ShiftPattern.query.filter_by(staff_group="cooking").all()
+        }
+
+        return shifts_data, warnings_data, staff_list_data, year, month, oncall_map, cook_labels
 
     @app.route("/api/export/<generation_id>/excel", methods=["GET"])
     def api_export_excel(generation_id):
@@ -2074,9 +2249,9 @@ def create_app():
         payload = _build_export_payload(generation_id)
         if payload is None:
             return jsonify({"error": "該当するシフトデータがありません"}), 404
-        shifts_data, warnings_data, staff_list_data, year, month, oncall_map = payload
+        shifts_data, warnings_data, staff_list_data, year, month, oncall_map, cook_labels = payload
 
-        buf = export_excel(shifts_data, warnings_data, staff_list_data, year, month, oncall_map=oncall_map)
+        buf = export_excel(shifts_data, warnings_data, staff_list_data, year, month, oncall_map=oncall_map, cook_labels=cook_labels)
         # ファイル名: シフト{役割}{YYMMDD}.xlsx（役割=ログイン中ユーザー、日付=JST）
         role = session.get("role", "")
         filename = f"シフト{role}{_now_jst().strftime('%y%m%d')}.xlsx"
@@ -2094,9 +2269,9 @@ def create_app():
         payload = _build_export_payload(generation_id)
         if payload is None:
             return jsonify({"error": "該当するシフトデータがありません"}), 404
-        shifts_data, warnings_data, staff_list_data, year, month, oncall_map = payload
+        shifts_data, warnings_data, staff_list_data, year, month, oncall_map, cook_labels = payload
 
-        csv_string = export_csv(shifts_data, warnings_data, staff_list_data, year, month, oncall_map=oncall_map)
+        csv_string = export_csv(shifts_data, warnings_data, staff_list_data, year, month, oncall_map=oncall_map, cook_labels=cook_labels)
         role = session.get("role", "")
         filename = f"シフト{role}{_now_jst().strftime('%y%m%d')}.csv"
 
@@ -2126,11 +2301,11 @@ def create_app():
         payload = _build_export_payload(generation_id)
         if payload is None:
             return jsonify({"error": "該当するシフトデータがありません"}), 404
-        shifts_data, warnings_data, staff_list_data, year, month, oncall_map = payload
+        shifts_data, warnings_data, staff_list_data, year, month, oncall_map, cook_labels = payload
 
         buf = export_pdf(
             shifts_data, warnings_data, staff_list_data, year, month,
-            group=group, half=half, oncall_map=oncall_map,
+            group=group, half=half, oncall_map=oncall_map, cook_labels=cook_labels,
         )
         # ファイル名: shift_{kaigokango|chori}_{zenhan|kohan}_YYYY-MM.pdf
         group_part = "chori" if group == "cooking" else "kaigokango"

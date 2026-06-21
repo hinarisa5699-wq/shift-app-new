@@ -43,11 +43,11 @@ const ASSIGNMENT_MAP = {
     visit_pm:        { label: 'デイ午後のみ',     badgeClass: 'badge-visit-pm'  },
     day_p3_visit_pm: { label: '兼務(訪問→デイ)',  badgeClass: 'badge-dual-a'    },
     visit_am_day_p4: { label: '兼務(デイ→訪問)',  badgeClass: 'badge-dual-b'    },
-    cook_early:      { label: '①6-8',            badgeClass: 'badge-cook-1'    },
-    cook_morning:    { label: '②8-13',           badgeClass: 'badge-cook-2'    },
-    cook_late:       { label: '③12-19',          badgeClass: 'badge-cook-3'    },
-    cook_long:       { label: '④6-13',           badgeClass: 'badge-cook-4'    },
-    cook_mid:        { label: '⑤9-15',           badgeClass: 'badge-cook-2'    },
+    cooking_1:      { label: '①6-8',            badgeClass: 'badge-cook-1'    },
+    cooking_2:    { label: '②8-13',           badgeClass: 'badge-cook-2'    },
+    cooking_3:       { label: '③12-19',          badgeClass: 'badge-cook-3'    },
+    cooking_4:       { label: '④6-13',           badgeClass: 'badge-cook-4'    },
+    cooking_5:        { label: '⑤9-15',           badgeClass: 'badge-cook-2'    },
     // 旧名の後方互換
     day_am:          { label: '訪問午前のみ',     badgeClass: 'badge-day-am'   },
     day_pm:          { label: '訪問午後のみ',     badgeClass: 'badge-day-pm'   },
@@ -256,6 +256,18 @@ function generateShift() {
 function renderCalendar(data, year, month) {
     const table = document.getElementById('calendar-table');
     if (!table) return;
+
+    // 調理シフト種類マスタのラベルを取り込む（新種類の表示用。既存①〜⑤は上書きしない）
+    if (data.cook_labels) {
+        const cookBadges = ['badge-cook-1', 'badge-cook-2', 'badge-cook-3', 'badge-cook-4'];
+        let bi = 0;
+        for (const code of Object.keys(data.cook_labels)) {
+            if (data.cook_labels[code] && !ASSIGNMENT_MAP[code]) {
+                ASSIGNMENT_MAP[code] = { label: data.cook_labels[code], badgeClass: cookBadges[bi % 4] };
+                bi++;
+            }
+        }
+    }
 
     const shifts = data.shifts || [];
     const staffList = data.staff_list || [];
@@ -902,6 +914,68 @@ function toggleCookingComboActive(ruleId, isActive) {
         .catch(error => {
             alert('更新に失敗しました: ' + error.message);
         });
+}
+
+/* ---- 調理シフト種類マスタ（依頼文21）---- */
+function addCookingType() {
+    const label = document.getElementById('new-cooking-type-label').value.trim();
+    const start = document.getElementById('new-cooking-type-start').value;
+    const end = document.getElementById('new-cooking-type-end').value;
+    if (!label) { alert('種類の名前を入力してください。'); return; }
+    fetchWithCsrf('/api/cooking_types', {
+        method: 'POST',
+        body: JSON.stringify({ label: label, start_time: start, end_time: end }),
+    })
+        .then(r => { if (!r.ok) return r.json().then(j => { throw new Error(j.error || '追加失敗'); }); location.reload(); })
+        .catch(e => alert('調理種類の追加に失敗しました: ' + e.message));
+}
+
+function updateCookingType(typeId, field, value) {
+    const body = {}; body[field] = value;
+    fetchWithCsrf(`/api/cooking_types/${typeId}`, { method: 'PUT', body: JSON.stringify(body) })
+        .then(r => { if (!r.ok) throw new Error('更新失敗'); })
+        .catch(e => alert('調理種類の更新に失敗しました: ' + e.message));
+}
+
+function deleteCookingType(typeId) {
+    if (!confirm('この調理シフト種類を削除しますか？')) return;
+    fetchWithCsrf(`/api/cooking_types/${typeId}`, { method: 'DELETE' })
+        .then(r => { if (!r.ok) return r.json().then(j => { throw new Error(j.error || '削除失敗'); }); location.reload(); })
+        .catch(e => alert('削除に失敗しました: ' + e.message));
+}
+
+/* ---- 調理組み合わせマスタ（依頼文21）---- */
+function updateCookingComboName(ruleId, name) {
+    fetchWithCsrf(`/api/cooking_combo_rules/${ruleId}`, { method: 'PUT', body: JSON.stringify({ name: name }) })
+        .then(r => { if (!r.ok) throw new Error('更新失敗'); })
+        .catch(e => alert('名前の更新に失敗しました: ' + e.message));
+}
+
+function updateCookingComboPatterns(ruleId) {
+    const row = document.querySelector(`[data-combo-row="${ruleId}"]`);
+    const patterns = Array.from(row.querySelectorAll('input[type="checkbox"]:checked')).map(el => el.value);
+    fetchWithCsrf(`/api/cooking_combo_rules/${ruleId}`, { method: 'PUT', body: JSON.stringify({ allowed_patterns: patterns }) })
+        .then(r => { if (!r.ok) throw new Error('更新失敗'); })
+        .catch(e => alert('組み合わせの更新に失敗しました: ' + e.message));
+}
+
+function addCookingCombo() {
+    const name = document.getElementById('new-combo-name').value.trim();
+    const patterns = Array.from(document.querySelectorAll('#new-combo-patterns input[type="checkbox"]:checked')).map(el => el.value);
+    if (patterns.length === 0) { alert('含める種類を1つ以上選択してください。'); return; }
+    fetchWithCsrf('/api/cooking_combo_rules', {
+        method: 'POST',
+        body: JSON.stringify({ name: name, allowed_patterns: patterns }),
+    })
+        .then(r => { if (!r.ok) return r.json().then(j => { throw new Error(j.error || '追加失敗'); }); location.reload(); })
+        .catch(e => alert('組み合わせの追加に失敗しました: ' + e.message));
+}
+
+function deleteCookingCombo(ruleId) {
+    if (!confirm('この組み合わせを削除しますか？')) return;
+    fetchWithCsrf(`/api/cooking_combo_rules/${ruleId}`, { method: 'DELETE' })
+        .then(r => { if (!r.ok) throw new Error('削除失敗'); location.reload(); })
+        .catch(e => alert('削除に失敗しました: ' + e.message));
 }
 
 /* ============================================

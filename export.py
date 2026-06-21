@@ -42,11 +42,11 @@ ASSIGNMENT_LABELS = {
     "visit_pm":        "デイ午後のみ",
     "day_p3_visit_pm": "兼務(訪問→デイ)",
     "visit_am_day_p4": "兼務(デイ→訪問)",
-    "cook_early":      "調理①6-8",
-    "cook_morning":    "調理②8-13",
-    "cook_late":       "調理③12-19",
-    "cook_long":       "調理④6-13",
-    "cook_mid":        "調理⑤9-15",
+    "cooking_1":      "調理①6-8",
+    "cooking_2":    "調理②8-13",
+    "cooking_3":       "調理③12-19",
+    "cooking_4":       "調理④6-13",
+    "cooking_5":        "調理⑤9-15",
     # 旧名の後方互換
     "day_am":          "訪問午前のみ",
     "day_pm":          "訪問午後のみ",
@@ -67,11 +67,11 @@ ASSIGNMENT_FILL = {
     "visit_pm":        PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid"),
     "day_p3_visit_pm": PatternFill(start_color="EDE9FE", end_color="EDE9FE", fill_type="solid"),
     "visit_am_day_p4": PatternFill(start_color="EDE9FE", end_color="EDE9FE", fill_type="solid"),
-    "cook_early":      PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid"),
-    "cook_morning":    PatternFill(start_color="FDE68A", end_color="FDE68A", fill_type="solid"),
-    "cook_late":       PatternFill(start_color="FCD34D", end_color="FCD34D", fill_type="solid"),
-    "cook_long":       PatternFill(start_color="FBBF24", end_color="FBBF24", fill_type="solid"),
-    "cook_mid":        PatternFill(start_color="FDE68A", end_color="FDE68A", fill_type="solid"),
+    "cooking_1":      PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid"),
+    "cooking_2":    PatternFill(start_color="FDE68A", end_color="FDE68A", fill_type="solid"),
+    "cooking_3":       PatternFill(start_color="FCD34D", end_color="FCD34D", fill_type="solid"),
+    "cooking_4":       PatternFill(start_color="FBBF24", end_color="FBBF24", fill_type="solid"),
+    "cooking_5":        PatternFill(start_color="FDE68A", end_color="FDE68A", fill_type="solid"),
     # 旧名の後方互換
     "day_am":          PatternFill(start_color="E0F2FE", end_color="E0F2FE", fill_type="solid"),
     "day_pm":          PatternFill(start_color="BAE6FD", end_color="BAE6FD", fill_type="solid"),
@@ -133,7 +133,7 @@ _VISIT_PM_SET = {"visit_pm", "day_p3_visit_pm", "day_am_visit_pm"}
 # 兼務
 _DUAL_SET = {"day_p3_visit_pm", "visit_am_day_p4", "day_am_visit_pm", "visit_am_day_pm"}
 # 調理
-_COOK_SET = {"cook_early", "cook_morning", "cook_late", "cook_long", "cook_mid"}
+_COOK_SET = {"cooking_1", "cooking_2", "cooking_3", "cooking_4", "cooking_5"}
 _NURSE_PT_NAME_ALIASES = {"看護師", "PT", "理学療法士"}
 _NURSE_PT_CODE_ALIASES = {"nurse", "pt"}
 
@@ -232,7 +232,8 @@ def _build_daily_data(shifts_data, staff_list, year, month):
                 visit_pm += 1
             if asgn in _DUAL_SET:
                 dual += 1
-            if asgn in _COOK_SET:
+            # 調理配置数: 種類マスタ化対応で cooking_* を前方一致で計数（新種類も含む）
+            if asgn.startswith("cooking_") or asgn in _COOK_SET:
                 cook_total += 1
 
         summary_map[d_str] = {
@@ -496,6 +497,16 @@ def _write_group_sheet(
 # ---------------------------------------------------------------------------
 # Excel エクスポート
 # ---------------------------------------------------------------------------
+def _register_cook_labels(cook_labels):
+    """調理シフト種類マスタのラベルを取り込む（既存①〜⑤のラベルは保持＝setdefault）。
+    新しく追加された種類(cooking_6…)のラベル表示に使う。"""
+    if not cook_labels:
+        return
+    for code, label in cook_labels.items():
+        if label:
+            ASSIGNMENT_LABELS.setdefault(code, label)
+
+
 def export_excel(
     shifts_data: list,
     warnings_data: list,
@@ -503,12 +514,14 @@ def export_excel(
     year: int,
     month: int,
     oncall_map: dict = None,
+    cook_labels: dict = None,
 ) -> BytesIO:
     """Excel 形式でシフト表を出力する。
 
     レイアウトは「縦＝職員名・横＝日付」。介護スタッフと調理スタッフを
     別シート（1 枚目＝介護、2 枚目＝調理）に分けて出力する。
     """
+    _register_cook_labels(cook_labels)
     wb = Workbook()
 
     dates, assignment_map, summary_map, phone_duty_map, desk_slot_map, break_map, bath_map, meal_map = _build_daily_data(
@@ -598,6 +611,7 @@ def export_csv(
     year: int,
     month: int,
     oncall_map: dict = None,
+    cook_labels: dict = None,
 ) -> str:
     """CSV 形式でシフト表を出力する。
 
@@ -605,6 +619,7 @@ def export_csv(
     介護スタッフ・調理スタッフのブロックを順に出力する（CSV はシートを
     持てないため、空行で区切る）。
     """
+    _register_cook_labels(cook_labels)
     dates, assignment_map, summary_map, phone_duty_map, desk_slot_map, break_map, bath_map, meal_map = _build_daily_data(
         shifts_data, staff_list, year, month
     )
@@ -765,6 +780,7 @@ def export_pdf(
     group: str = "care",
     half: str = "first",
     oncall_map: dict = None,
+    cook_labels: dict = None,
 ) -> BytesIO:
     """シフト表を PDF で出力する（A4横・1ページ）。表示専用。
 
@@ -772,6 +788,7 @@ def export_pdf(
     half:  "first"=1〜15日 / "second"=16日〜末日
     集計は Excel/CSV と同じ _build_daily_data を再利用する（二重集計しない）。
     """
+    _register_cook_labels(cook_labels)
     from fpdf import FPDF  # 遅延 import（未導入でも Excel/CSV は動く）
 
     dates, assignment_map, summary_map, phone_duty_map, desk_slot_map, break_map, bath_map, meal_map = _build_daily_data(

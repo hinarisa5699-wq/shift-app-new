@@ -120,14 +120,30 @@ ASSIGNMENT_TIME_RANGES = {
 # 各アサインメントの勤務分数（end - start）。看護師の「合計勤務時間」判定に使用。
 ASSIGNMENT_MINUTES = {a: (e - s) for a, (s, e) in ASSIGNMENT_TIME_RANGES.items()}
 
-# 調理アサインメントの勤務時間帯（分単位）
+# 調理アサインメントの勤務時間帯（分単位）— 既定（①〜⑤）。
+# 依頼文21: 実運用ではこれを「調理シフト種類マスタ(ShiftPattern cooking)」から
+# 動的に構築する（_build_cooking_maps）。本定数は既定値／後方互換用。
 COOK_ASSIGNMENT_TIME_RANGES = {
-    "cook_early":   (6 * 60,  8 * 60),    # ① 6:00-8:00
-    "cook_morning": (8 * 60,  13 * 60),   # ② 8:00-13:00
-    "cook_late":    (12 * 60, 19 * 60),   # ③ 12:00-19:00
-    "cook_long":    (6 * 60,  13 * 60),   # ④ 6:00-13:00
-    "cook_mid":     (9 * 60,  15 * 60),   # ⑤ 9:00-15:00
+    "cooking_1": (6 * 60,  8 * 60),    # ① 6:00-8:00
+    "cooking_2": (8 * 60,  13 * 60),   # ② 8:00-13:00
+    "cooking_3": (12 * 60, 19 * 60),   # ③ 12:00-19:00
+    "cooking_4": (6 * 60,  13 * 60),   # ④ 6:00-13:00
+    "cooking_5": (9 * 60,  15 * 60),   # ⑤ 9:00-15:00
 }
+
+# 調理カバレッジの固定3区間（分）: [6:00-8:00) / [8:00-12:00) / [12:00-19:00)
+_COOK_INTERVALS = [(6 * 60, 8 * 60), (8 * 60, 12 * 60), (12 * 60, 19 * 60)]
+
+
+def _cook_coverage_from_ranges(time_ranges):
+    """各種類の勤務時間と各区間の重なりが2時間(120分)以上なら、その区間を充足(1)。
+    依頼文21 決定1の導出ルール（既存5種類の COOK_COVERAGE を完全再現）。"""
+    def overlap(a, b):
+        return max(0, min(a[1], b[1]) - max(a[0], b[0]))
+    return {
+        code: tuple(1 if overlap(rng, iv) >= 120 else 0 for iv in _COOK_INTERVALS)
+        for code, rng in time_ranges.items()
+    }
 
 
 def _hhmm_to_min(value):
@@ -176,26 +192,33 @@ _COUNSELOR_QUAL_NAMES = {"相談員", "生活相談員"}
 # ===========================================================================
 # 調理職員向け アサインメント定数
 # ===========================================================================
-COOK_ASSIGNMENTS = [
-    "cook_off",       # 休み
-    "cook_early",     # ① 6:00-8:00
-    "cook_morning",   # ② 8:00-13:00
-    "cook_late",      # ③ 12:00-19:00
-    "cook_long",      # ④ 6:00-13:00
-    "cook_mid",       # ⑤ 9:00-15:00
-]
+# 既定の働く調理アサインメント（①〜⑤）。実運用では種類マスタから動的構築。
+COOK_WORKING_ASSIGNMENTS = list(COOK_ASSIGNMENT_TIME_RANGES.keys())
+COOK_ASSIGNMENTS = ["cook_off"] + COOK_WORKING_ASSIGNMENTS
 
-COOK_WORKING_ASSIGNMENTS = [a for a in COOK_ASSIGNMENTS if a != "cook_off"]
+# 時間帯カバレッジ: 既定は時刻から導出（既存5種類と完全一致）。区間 [6-8)/[8-12)/[12-19)。
+COOK_COVERAGE = _cook_coverage_from_ranges(COOK_ASSIGNMENT_TIME_RANGES)
 
-# 時間帯カバレッジマップ
-# intervals: [6-8), [8-12), [12-19)
-COOK_COVERAGE = {
-    "cook_early":   (1, 0, 0),     # ① 6:00-8:00 → [6-8)
-    "cook_morning": (0, 1, 0),     # ② 8:00-13:00 → [8-12)
-    "cook_late":    (0, 0, 1),     # ③ 12:00-19:00 → [12-19)
-    "cook_long":    (1, 1, 0),     # ④ 6:00-13:00 → [6-8), [8-12)
-    "cook_mid":     (0, 1, 1),     # ⑤ 9:00-15:00 → [8-12)の一部, [12-19)の一部
-}
+
+def _build_cooking_maps(cooking_types):
+    """調理シフト種類マスタ [{code, start_time, end_time}, ...] から
+    (working_codes, time_ranges{code:(start_min,end_min)}, coverage{code:tuple}) を構築。
+    cooking_types が空なら既定(①〜⑤)を返す。
+    """
+    if not cooking_types:
+        return (list(COOK_WORKING_ASSIGNMENTS),
+                dict(COOK_ASSIGNMENT_TIME_RANGES),
+                dict(COOK_COVERAGE))
+    codes, ranges = [], {}
+    for t in cooking_types:
+        code = t.get("code")
+        s = _hhmm_to_min(t.get("start_time") or t.get("start"))
+        e = _hhmm_to_min(t.get("end_time") or t.get("end"))
+        if not code or s is None or e is None:
+            continue
+        codes.append(code)
+        ranges[code] = (s, e)
+    return codes, ranges, _cook_coverage_from_ranges(ranges)
 
 
 def _staff_has_any_qualification(
@@ -482,7 +505,7 @@ def assign_oncall(eligible_staff: list, dates: list, max_consecutive: int = 1):
 _FIXED_BREAK = {
     "day_p3_visit_pm": "12:30",  # 兼務A: 12:30-13:30
     "visit_am_day_p4": "12:30",  # 兼務B: 12:30-13:30
-    "cook_long":       "08:00",  # 調理通し: 8:00-9:00
+    "cooking_4":       "08:00",  # 調理通し: 8:00-9:00
 }
 
 # ずらし対象パターン（フルタイム勤務）
@@ -2671,6 +2694,7 @@ def _solve_cooking_with_fallback(
     staff_ids = list(staff_by_id.keys())
     closed_days_set = set(settings.get("closed_days", [5, 6]))
     cooking_combo_rules = settings.get("cooking_combo_rules", [])
+    cooking_types = settings.get("cooking_types", [])  # 調理シフト種類マスタ
 
     # 設定値から時間帯別最低人数を動的に構築
     # intervals: [6-8), [8-12), [13-19)
@@ -2683,6 +2707,7 @@ def _solve_cooking_with_fallback(
         off_request_set, closed_days_set, cook_min_staff,
         cooking_combo_rules=cooking_combo_rules,
         allowed_patterns=allowed_patterns or {},
+        cooking_types=cooking_types,
         use_slack=False,
     )
     if shifts_data is not None:
@@ -2694,6 +2719,7 @@ def _solve_cooking_with_fallback(
         off_request_set, closed_days_set, cook_min_staff,
         cooking_combo_rules=cooking_combo_rules,
         allowed_patterns=allowed_patterns or {},
+        cooking_types=cooking_types,
         use_slack=True,
     )
     if shifts_data is not None:
@@ -2720,6 +2746,7 @@ def _solve_cooking(
     closed_days_set, cook_min_staff,
     cooking_combo_rules: list = None,
     allowed_patterns: dict = None,
+    cooking_types: list = None,
     use_slack: bool = False,
 ):
     """
@@ -2727,6 +2754,10 @@ def _solve_cooking(
     """
     if cooking_combo_rules is None:
         cooking_combo_rules = []
+
+    # 依頼文21: 調理シフト種類マスタから動的に構築（空なら既定①〜⑤）。
+    cook_working, cook_time_ranges, cook_coverage = _build_cooking_maps(cooking_types)
+    cook_assignments = ["cook_off"] + cook_working
 
     model = cp_model.CpModel()
     num_days = len(all_dates)
@@ -2738,7 +2769,7 @@ def _solve_cooking(
     x = {}
     for s in staff_ids:
         for d_idx in range(num_days):
-            for a in COOK_ASSIGNMENTS:
+            for a in cook_assignments:
                 x[s, d_idx, a] = model.new_bool_var(f"ck_s{s}_d{d_idx}_{a}")
 
     # ==================================================================
@@ -2746,7 +2777,7 @@ def _solve_cooking(
     # ==================================================================
     for s in staff_ids:
         for d_idx in range(num_days):
-            model.add_exactly_one(x[s, d_idx, a] for a in COOK_ASSIGNMENTS)
+            model.add_exactly_one(x[s, d_idx, a] for a in cook_assignments)
 
     # ==================================================================
     # 制約: 休業日は全員 cook_off
@@ -2791,7 +2822,7 @@ def _solve_cooking(
         we = _hhmm_to_min(info.get("work_end_time"))
         if ws is None and we is None:
             continue
-        for a, (a_start, a_end) in COOK_ASSIGNMENT_TIME_RANGES.items():
+        for a, (a_start, a_end) in cook_time_ranges.items():
             if (ws is not None and a_start < ws) or (we is not None and a_end > we):
                 for d_idx in range(num_days):
                     model.add(x[s, d_idx, a] == 0)
@@ -2847,7 +2878,7 @@ def _solve_cooking(
         for s in staff_ids:
             if s in allowed_patterns:
                 allowed = set(allowed_patterns[s])
-                for a in COOK_ASSIGNMENTS:
+                for a in cook_assignments:
                     if a != "cook_off" and a not in allowed:
                         for d_idx in range(num_days):
                             model.add(x[s, d_idx, a] == 0)
@@ -2895,14 +2926,19 @@ def _solve_cooking(
                     model.add(sum(working_vars) + deficit >= adj_min)
                     cook_min_pw_penalties.append(deficit)
 
-    # 有効な調理組み合わせ（4通り）を収集
+    # 有効な調理組み合わせを収集。
+    #   新形式: 1行=1組（allowed_patterns はコードのフラットリスト）
+    #   旧形式: 1行に複数組（リストのリスト）— 両対応。
     combo_patterns = []
     for r in cooking_combo_rules:
-        if r.get("is_active", True):
-            for pat in r.get("allowed_patterns", []):
-                pat_norm = [a for a in pat if a in COOK_WORKING_ASSIGNMENTS]
-                if pat_norm and pat_norm not in combo_patterns:
-                    combo_patterns.append(pat_norm)
+        if not r.get("is_active", True):
+            continue
+        pats = r.get("allowed_patterns", [])
+        groups = pats if (pats and all(isinstance(p, list) for p in pats)) else ([pats] if pats else [])
+        for pat in groups:
+            pat_norm = [a for a in pat if a in cook_working]
+            if pat_norm and pat_norm not in combo_patterns:
+                combo_patterns.append(pat_norm)
     combo_active = bool(combo_patterns)
 
     # ==================================================================
@@ -2934,7 +2970,7 @@ def _solve_cooking(
                 pv = model.new_bool_var(f"cook_pat_d{d_idx}_p{p_idx}")
                 sel_vars.append(pv)
                 pset = set(pattern)
-                for a in COOK_WORKING_ASSIGNMENTS:
+                for a in cook_working:
                     cnt = sum(x[s, d_idx, a] for s in staff_ids)
                     if a in pset:
                         model.add(cnt == 1).only_enforce_if(pv)
@@ -2942,7 +2978,7 @@ def _solve_cooking(
                         model.add(cnt == 0).only_enforce_if(pv)
             # none: 全調理アサインメントを0に
             none_var = model.new_bool_var(f"cook_none_d{d_idx}")
-            for a in COOK_WORKING_ASSIGNMENTS:
+            for a in cook_working:
                 model.add(sum(x[s, d_idx, a] for s in staff_ids) == 0).only_enforce_if(none_var)
             sel_vars.append(none_var)
             none_by_day[d_idx] = none_var
@@ -2955,7 +2991,7 @@ def _solve_cooking(
     for d_idx in range(num_days):
         if d_idx in closed_day_indices:
             continue
-        for a in COOK_WORKING_ASSIGNMENTS:
+        for a in cook_working:
             model.add(sum(x[s, d_idx, a] for s in staff_ids) <= 1)
 
     # ==================================================================
@@ -2966,9 +3002,9 @@ def _solve_cooking(
             continue
         for iv in range(num_intervals):
             coverage_count = sum(
-                x[s, d_idx, a] * COOK_COVERAGE[a][iv]
+                x[s, d_idx, a] * cook_coverage[a][iv]
                 for s in staff_ids
-                for a in COOK_WORKING_ASSIGNMENTS
+                for a in cook_working
             )
             if use_slack:
                 model.add(
@@ -2987,7 +3023,7 @@ def _solve_cooking(
         work_count[s] = sum(
             x[s, d_idx, a]
             for d_idx in range(num_days)
-            for a in COOK_WORKING_ASSIGNMENTS
+            for a in cook_working
         )
 
     max_work = model.new_int_var(0, num_days, "cook_max_work")
@@ -3039,7 +3075,7 @@ def _solve_cooking(
     for d_idx, dt in enumerate(all_dates):
         date_str = dt.strftime("%Y-%m-%d")
         for s in staff_ids:
-            for a in COOK_ASSIGNMENTS:
+            for a in cook_assignments:
                 if solver.value(x[s, d_idx, a]) == 1:
                     if a != "cook_off":
                         shifts_data.append({

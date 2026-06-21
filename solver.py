@@ -27,6 +27,7 @@ CARE_ASSIGNMENTS = [
     "visit_am_day_p4",   # AM訪問+④デイ（兼務パターンB）
     "early",             # 早番 7:30-16:30（訪問営業日=AM訪問+PMデイ／非営業日=終日デイ）
     "late",              # 遅番 9:30-18:30（終日デイ）
+    "nurse_short",       # 看護師短時間 9:30-13:30（看護師のみ選択可・必須枠ではない）
 ]
 
 CARE_WORKING_ASSIGNMENTS = [a for a in CARE_ASSIGNMENTS if a != "off"]
@@ -73,12 +74,12 @@ PRESENT_AT_15 = {
 # 時間帯制限: am_only の職員が取れないアサインメント（午後を含む全パターン）
 AM_ONLY_FORBIDDEN = {
     "day_pattern1", "day_pattern2", "day_pattern4", "visit_pm",
-    "day_p3_visit_pm", "visit_am_day_p4", "early", "late",
+    "day_p3_visit_pm", "visit_am_day_p4", "early", "late", "nurse_short",
 }
 # 時間帯制限: pm_only の職員が取れないアサインメント（午前を含む全パターン）
 PM_ONLY_FORBIDDEN = {
     "day_pattern1", "day_pattern2", "day_pattern3", "visit_am",
-    "visit_am_day_p4", "day_p3_visit_pm", "early", "late",
+    "visit_am_day_p4", "day_p3_visit_pm", "early", "late", "nurse_short",
 }
 
 # 事業所にいるアサインメント（電話当番可能 = デイ系のみ）
@@ -106,6 +107,7 @@ ASSIGNMENT_TIME_RANGES = {
     "visit_am_day_p4": (8 * 60 + 30, 17 * 60 + 30),   # 兼務B(午前訪問→午後デイ)
     "early":           (7 * 60 + 30, 16 * 60 + 30),   # 早番 7:30-16:30
     "late":            (9 * 60 + 30, 18 * 60 + 30),   # 遅番 9:30-18:30
+    "nurse_short":     (9 * 60 + 30, 13 * 60 + 30),   # 看護師短時間 9:30-13:30
 }
 
 # 調理アサインメントの勤務時間帯（分単位）
@@ -1343,6 +1345,8 @@ def _solve_care_with_fallback(
             "gender": s.get("gender", ""),
             "has_phone_duty": s.get("has_phone_duty", False),
             "qualification_ids": s.get("qualification_ids", []),
+            "qualification_codes": s.get("qualification_codes", []),
+            "qualification_names": s.get("qualification_names", []),
             "weekend_constraint": s.get("weekend_constraint", ""),
             "min_days_per_week": s.get("min_days_per_week", 0),
             "holiday_ng": s.get("holiday_ng", False),
@@ -1634,6 +1638,22 @@ def _solve_care(
         s for s in staff_ids
         if not nurse_pt_qual_ids.intersection(set(staff_by_id[s].get("qualification_ids", [])))
     ] if nurse_pt_qual_ids else staff_ids
+
+    # 看護師（資格コード"nurse"／名称"看護師"）を堅牢に特定。
+    #   - 短時間枠 nurse_short(9:30-13:30) は看護師のみ割り当て可。
+    #   - 毎日1名以上の看護師配置ルールで使用。
+    nurse_ids = {
+        s for s in staff_ids
+        if _staff_has_any_qualification(
+            staff_by_id[s], codes=_NURSE_QUAL_CODES, names=_NURSE_QUAL_NAMES
+        )
+    }
+
+    # nurse_short は看護師以外には割り当てない（看護師の選択肢として追加するのみ）
+    for s in staff_ids:
+        if s not in nurse_ids:
+            for d_idx in range(num_days):
+                model.add(x[s, d_idx, "nurse_short"] == 0)
 
     # ==================================================================
     # 制約: 訪問非営業日は訪問系アサインメント不可
@@ -1933,12 +1953,15 @@ def _solve_care(
     slack_counselor_full_day = {}
     slack_early = {}
     slack_late = {}
+    slack_nurse = {}   # 看護師0名（配置不能）の日を許容するスラック
 
     if use_slack:
         for d_idx in range(num_days):
             if require_early_late:
                 slack_early[d_idx] = model.new_int_var(0, max(min_early_staff, 1), f"slack_early_{d_idx}")
                 slack_late[d_idx] = model.new_int_var(0, max(min_late_staff, 1), f"slack_late_{d_idx}")
+            if nurse_ids:
+                slack_nurse[d_idx] = model.new_bool_var(f"slack_nurse_{d_idx}")
             slack_day_am[d_idx] = model.new_int_var(
                 0, len(staff_ids), f"slack_day_am_{d_idx}"
             )
@@ -2111,6 +2134,22 @@ def _solve_care(
                 model.add(late_count >= min_late_staff)
 
     # ==================================================================
+    # 制約: 毎日 看護師を1名以上配置（時間帯・パターンは問わない）。
+    #   各看護師の個別制約（休み希望・勤務不可曜日・出勤可能日・祝日NG等）は
+    #   別制約で厳守済み。どうしても1名も置けない日はスラックで許容し、
+    #   「看護師0名」を警告として報告する（無理な割り当てはしない）。
+    # ==================================================================
+    if nurse_ids:
+        for d_idx in non_closed_days:
+            nurse_working = sum(
+                x[s, d_idx, a] for s in nurse_ids for a in CARE_WORKING_ASSIGNMENTS
+            )
+            if use_slack:
+                model.add(nurse_working + slack_nurse[d_idx] >= 1)
+            else:
+                model.add(nurse_working >= 1)
+
+    # ==================================================================
     # 制約: 相談員ローテON時は、原則として相談員を最低2名出勤させる
     # 1名だけでは4スロットを休憩非重複で埋め切れないため。
     # ==================================================================
@@ -2251,6 +2290,8 @@ def _solve_care(
             all_slack_terms.extend([slack_staff_9[d], slack_staff_11[d], slack_staff_13[d], slack_staff_15[d]])
             if require_early_late:
                 all_slack_terms.extend([slack_early[d], slack_late[d]])
+            if nurse_ids:
+                all_slack_terms.append(slack_nurse[d])
             if min_counselor_staff > 0 and counselor_staff_ids:
                 all_slack_terms.append(slack_counselor_staff[d])
             if min_full_day_counselor > 0 and counselor_staff_ids:
@@ -2260,6 +2301,7 @@ def _solve_care(
         max_slack_terms_per_day = (
             8
             + (2 if require_early_late else 0)
+            + (1 if nurse_ids else 0)
             + (1 if min_counselor_staff > 0 and counselor_staff_ids else 0)
             + (1 if min_full_day_counselor > 0 and counselor_staff_ids else 0)
             + (1 if min_dual > 0 else 0)
@@ -2356,6 +2398,16 @@ def _solve_care(
                         "date": date_str,
                         "warning_type": "late_unassigned",
                         "message": f"遅番(9:30-18:30): {_sl}名不足（遅番未配置）",
+                    })
+
+            # 看護師0名（配置不能）の警告
+            if nurse_ids and d_idx not in closed_day_indices and d_idx in slack_nurse:
+                if solver.value(slack_nurse[d_idx]) > 0:
+                    warnings_data.append({
+                        "date": date_str,
+                        "warning_type": "no_nurse_on_duty",
+                        "message": "この日は看護師を1名も配置できません"
+                                   "（全看護師が休み希望・勤務不可曜日・出勤可能日外・祝日不可のいずれか）。",
                     })
 
             val = solver.value(slack_visit_am[d_idx])

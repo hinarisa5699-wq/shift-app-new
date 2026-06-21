@@ -243,6 +243,19 @@
                 </div>
             </div>
 
+            <!-- 看護師専用パターン（区分=看護師のときのみ表示） -->
+            <div id="allowed-nurse-patterns" class="mb-2">
+                <p class="text-sm font-medium text-gray-600 mb-2">看護師専用</p>
+                <div class="flex flex-wrap gap-2">
+                    <label class="inline-flex items-center cursor-pointer bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 hover:bg-pink-50 hover:border-pink-300 transition-colors has-[:checked]:bg-pink-100 has-[:checked]:border-pink-500 text-sm">
+                        <input type="checkbox" name="allowed_patterns" value="nurse_short"
+                               {% if 'nurse_short' in allowed_pattern_codes %}checked{% endif %}
+                               class="w-4 h-4 text-pink-600 border-gray-300 rounded focus:ring-pink-500">
+                        <span class="ml-2 font-medium text-gray-700">看護9:30-13:30</span>
+                    </label>
+                </div>
+            </div>
+
             <!-- 調理スタッフ用パターン -->
             <div id="allowed-cook-patterns" class="mb-2">
                 <p class="text-sm font-medium text-gray-600 mb-2">調理スタッフ</p>
@@ -414,6 +427,7 @@ function toggleCareFields() {
     const group = document.getElementById('job_category');
     if (!group) return;
     const isCooking = group.value === 'cooking';
+    const isNurse = group.value === 'nurse_rehab';
     ['care-only-fields', 'care-only-time-slots'].forEach(function(id) {
         const el = document.getElementById(id);
         if (el) el.style.display = isCooking ? 'none' : 'block';
@@ -421,8 +435,11 @@ function toggleCareFields() {
     // 許可パターンの部門別表示切替
     const carePatterns = document.getElementById('allowed-care-patterns');
     const cookPatterns = document.getElementById('allowed-cook-patterns');
+    const nursePatterns = document.getElementById('allowed-nurse-patterns');
     if (carePatterns) carePatterns.style.display = isCooking ? 'none' : 'block';
     if (cookPatterns) cookPatterns.style.display = isCooking ? 'block' : 'none';
+    // 看護9:30-13:30 は区分=看護師のときのみ表示
+    if (nursePatterns) nursePatterns.style.display = (isNurse && !isCooking) ? 'block' : 'none';
 }
 // Run on page load
 document.addEventListener('DOMContentLoaded', function() {

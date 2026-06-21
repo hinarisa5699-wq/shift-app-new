@@ -1838,7 +1838,7 @@ def _solve_care(
                 # ※ このコードに存在しないアサインメント(旧バージョンの early/late 等)は
                 #   CARE_WORKING_ASSIGNMENTS ガードでスキップし、KeyError を避ける。
                 for a in ("day_pattern1", "day_pattern2", "day_pattern3",
-                          "day_pattern4", "early", "late"):
+                          "day_pattern4", "early", "late", "nurse_short"):
                     if a in CARE_WORKING_ASSIGNMENTS and a not in allowed:
                         for d_idx in range(num_days):
                             model.add(x[s, d_idx, a] == 0)

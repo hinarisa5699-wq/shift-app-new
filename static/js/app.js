@@ -143,6 +143,7 @@ function loadShifts(year, month) {
                 renderConfirmation(data.confirmation);
                 showElement('calendar-container');
                 showElement('export-buttons');
+                showElement('excel-to-pdf-box');
                 hideElement('no-data-message');
             } else if (hasWarnings) {
                 // W-13: シフト0件でも警告があれば表示
@@ -546,6 +547,64 @@ function exportPdf(group, half) {
         return;
     }
     window.location.href = `/api/export/${currentGenerationId}/pdf?group=${group}&half=${half}`;
+}
+
+// Excel出力（4分割: group=care|cooking, half=first|second）
+function exportExcelSplit(group, half) {
+    if (!currentGenerationId) {
+        alert('エクスポートするシフトデータがありません。先にシフトを生成してください。');
+        return;
+    }
+    window.location.href = `/api/export/${currentGenerationId}/excel?group=${group}&half=${half}`;
+}
+
+// 依頼文23-B: 手直しExcelをアップロードしてPDF化（保存データは変更しない）
+function excelToPdf() {
+    const fileInput = document.getElementById('excel-to-pdf-file');
+    const group = document.getElementById('excel-to-pdf-group').value;
+    const half = document.getElementById('excel-to-pdf-half').value;
+    if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+        alert('Excelファイルを選択してください。');
+        return;
+    }
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    formData.append('group', group);
+    formData.append('half', half);
+
+    // FormData送信ではContent-Typeをブラウザに任せる（境界付与のため）。CSRFのみ手動付与。
+    fetch('/api/export/excel-to-pdf', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': getCsrfToken() },
+        body: formData,
+    })
+        .then(async (response) => {
+            if (!response.ok) {
+                let msg = 'PDFの作成に失敗しました。';
+                try {
+                    const err = await response.json();
+                    if (err && err.error) msg = err.error;
+                } catch (e) { /* ignore */ }
+                throw new Error(msg);
+            }
+            const disposition = response.headers.get('Content-Disposition') || '';
+            let filename = `shift_${group}_${half}_from_excel.pdf`;
+            const m = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i);
+            if (m && m[1]) filename = decodeURIComponent(m[1]);
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(url);
+        })
+        .catch((error) => {
+            console.error('Error creating PDF from Excel:', error);
+            alert(error.message || 'PDFの作成に失敗しました。');
+        });
 }
 
 /* ============================================

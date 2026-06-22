@@ -59,34 +59,53 @@
                     class="hidden bg-gray-500 hover:bg-gray-600 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors text-base">
                 確定解除
             </button>
-            <button onclick="exportShift('excel')"
-                    class="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors text-base">
-                Excel出力
-            </button>
             <button onclick="exportShift('csv')"
                     class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors text-base">
                 CSV出力
             </button>
             <div class="flex items-center gap-1">
+                <span class="text-sm text-gray-500 font-medium">Excel:</span>
+                <button onclick="exportExcelSplit('care','first')"
+                        class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">介護看護 前半</button>
+                <button onclick="exportExcelSplit('care','second')"
+                        class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">介護看護 後半</button>
+                <button onclick="exportExcelSplit('cooking','first')"
+                        class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">調理 前半</button>
+                <button onclick="exportExcelSplit('cooking','second')"
+                        class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">調理 後半</button>
+            </div>
+            <div class="flex items-center gap-1">
                 <span class="text-sm text-gray-500 font-medium">PDF:</span>
                 <button onclick="exportPdf('care','first')"
-                        class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">
-                    介護看護 前半
-                </button>
+                        class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">介護看護 前半</button>
                 <button onclick="exportPdf('care','second')"
-                        class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">
-                    介護看護 後半
-                </button>
+                        class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">介護看護 後半</button>
                 <button onclick="exportPdf('cooking','first')"
-                        class="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">
-                    調理 前半
-                </button>
+                        class="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">調理 前半</button>
                 <button onclick="exportPdf('cooking','second')"
-                        class="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">
-                    調理 後半
-                </button>
+                        class="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-3 rounded-lg shadow transition-colors text-sm">調理 後半</button>
             </div>
         </div>
+    </div>
+
+    <!-- 依頼文23-B: 手直しExcel → PDF -->
+    <div id="excel-to-pdf-box" class="hidden mt-3 bg-white rounded-xl shadow-md p-4">
+        <div class="flex flex-wrap items-center gap-3">
+            <span class="text-base font-semibold text-gray-700">ExcelからPDF作成:</span>
+            <input type="file" id="excel-to-pdf-file" accept=".xlsx"
+                   class="text-sm border border-gray-300 rounded-lg px-2 py-2">
+            <select id="excel-to-pdf-group" class="text-sm border border-gray-300 rounded-lg px-2 py-2 bg-white">
+                <option value="care">介護看護</option>
+                <option value="cooking">調理</option>
+            </select>
+            <select id="excel-to-pdf-half" class="text-sm border border-gray-300 rounded-lg px-2 py-2 bg-white">
+                <option value="first">前半（1〜15日）</option>
+                <option value="second">後半（16日〜月末）</option>
+            </select>
+            <button onclick="excelToPdf()"
+                    class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg shadow transition-colors text-sm">PDFを作成</button>
+        </div>
+        <p class="text-gray-400 text-xs mt-2">アプリのExcel出力形式（手直し済みでOK）をアップロードすると、その内容でPDFを作成します。保存データは変更しません。</p>
     </div>
 </div>
 

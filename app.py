@@ -50,7 +50,10 @@ from solver import (
     generate_shift, assign_oncall, CARE_ASSIGNMENTS, COOK_ASSIGNMENTS,
     _period_from_time_window,
 )
-from export import export_excel, export_csv, export_pdf
+from export import (
+    export_excel, export_csv, export_pdf,
+    export_excel_group_half, export_pdf_from_excel,
+)
 
 
 def safe_int(value, default=0):
@@ -2277,16 +2280,32 @@ def create_app():
 
     @app.route("/api/export/<generation_id>/excel", methods=["GET"])
     def api_export_excel(generation_id):
-        """Excel ファイルとしてダウンロード"""
+        """Excel ダウンロード。
+        group/half クエリ指定時は PDFと同じ4分割（1シート）、無指定なら従来の全月2シート。
+        """
         payload = _build_export_payload(generation_id)
         if payload is None:
             return jsonify({"error": "該当するシフトデータがありません"}), 404
         shifts_data, warnings_data, staff_list_data, year, month, oncall_map, cook_labels = payload
 
-        buf = export_excel(shifts_data, warnings_data, staff_list_data, year, month, oncall_map=oncall_map, cook_labels=cook_labels)
-        # ファイル名: シフト{役割}{YYMMDD}.xlsx（役割=ログイン中ユーザー、日付=JST）
+        group = request.args.get("group")
+        half = request.args.get("half")
         role = session.get("role", "")
-        filename = f"シフト{role}{_now_jst().strftime('%y%m%d')}.xlsx"
+        if group in ("care", "cooking") and half in ("first", "second"):
+            # 依頼文23-A: 4分割Excel（介護看護/調理 × 前半/後半）
+            buf = export_excel_group_half(
+                shifts_data, warnings_data, staff_list_data, year, month,
+                group=group, half=half, oncall_map=oncall_map, cook_labels=cook_labels,
+            )
+            group_part = "chori" if group == "cooking" else "kaigokango"
+            half_part = "kohan" if half == "second" else "zenhan"
+            filename = f"shift_{group_part}_{half_part}_{year:04d}-{month:02d}.xlsx"
+        else:
+            buf = export_excel(
+                shifts_data, warnings_data, staff_list_data, year, month,
+                oncall_map=oncall_map, cook_labels=cook_labels,
+            )
+            filename = f"シフト{role}{_now_jst().strftime('%y%m%d')}.xlsx"
 
         return send_file(
             buf,
@@ -2344,6 +2363,36 @@ def create_app():
         half_part = "kohan" if half == "second" else "zenhan"
         filename = f"shift_{group_part}_{half_part}_{year:04d}-{month:02d}.pdf"
 
+        return send_file(
+            buf,
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=filename,
+        )
+
+    @app.route("/api/export/excel-to-pdf", methods=["POST"])
+    def api_export_excel_to_pdf():
+        """依頼文23-B: アップロードされた（手直し済み）Excelの内容から該当PDFを作る。
+        アプリの保存データは一切使わない・変更しない。フォーム: file, group, half。
+        """
+        f = request.files.get("file")
+        if f is None or not f.filename:
+            return jsonify({"error": "Excelファイルを選択してください"}), 400
+        group = request.form.get("group", "care")
+        if group not in ("care", "cooking"):
+            group = "care"
+        half = request.form.get("half", "first")
+        if half not in ("first", "second"):
+            half = "first"
+        try:
+            file_bytes = f.read()
+            buf = export_pdf_from_excel(file_bytes, group=group, half=half)
+        except Exception as e:  # 形式不一致など
+            return jsonify({"error": f"Excelの読み取りに失敗しました: {e}"}), 400
+
+        group_part = "chori" if group == "cooking" else "kaigokango"
+        half_part = "kohan" if half == "second" else "zenhan"
+        filename = f"shift_{group_part}_{half_part}_from_excel.pdf"
         return send_file(
             buf,
             mimetype="application/pdf",

@@ -10,11 +10,12 @@ import calendar
 import csv
 import io
 import os
+import re
 from datetime import date
 from io import BytesIO
 
 import jpholiday
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.comments import Comment
 from openpyxl.styles import (
     Alignment,
@@ -771,48 +772,14 @@ def _pdf_wrap(pdf, text, max_w, fs):
     return lines or [""]
 
 
-def export_pdf(
-    shifts_data: list,
-    warnings_data: list,
-    staff_list: list,
-    year: int,
-    month: int,
-    group: str = "care",
-    half: str = "first",
-    oncall_map: dict = None,
-    cook_labels: dict = None,
-) -> BytesIO:
-    """シフト表を PDF で出力する（A4横・1ページ）。表示専用。
-
-    group: "care"=介護・看護 / "cooking"=調理
-    half:  "first"=1〜15日 / "second"=16日〜末日
-    集計は Excel/CSV と同じ _build_daily_data を再利用する（二重集計しない）。
+def _render_pdf_table(title, sel_dates, staff_rows, summary_rows):
+    """共通PDF描画（A4横・1ページ）。データ元は DB でも Excel でもよい。
+    title:        タイトル文字列
+    sel_dates:    列に対応する date のリスト（曜日/祝日色・M/D見出し用）
+    staff_rows:   [(name, [cell_text, ...], work_str), ...]
+    summary_rows: [(label, [val_str, ...], [alert_bool, ...]), ...]
     """
-    _register_cook_labels(cook_labels)
-    from fpdf import FPDF  # 遅延 import（未導入でも Excel/CSV は動く）
-
-    dates, assignment_map, summary_map, phone_duty_map, desk_slot_map, break_map, bath_map, meal_map = _build_daily_data(
-        shifts_data, staff_list, year, month
-    )
-    if oncall_map is not None:
-        phone_duty_map = {d: [n] for d, n in oncall_map.items() if n}
-
-    is_cook = (group == "cooking")
-    if is_cook:
-        gstaff = [s for s in staff_list if s.get("department") == "cooking"]
-        group_label = "調理"
-        summary_rows = _PDF_COOK_SUMMARY
-    else:
-        gstaff = [s for s in staff_list if s.get("department") != "cooking"]
-        group_label = "介護・看護"
-        summary_rows = _PDF_CARE_SUMMARY
-
-    if half == "second":
-        sel = [d for d in dates if d.day >= 16]
-        half_label = "後半"
-    else:
-        sel = [d for d in dates if d.day <= 15]
-        half_label = "前半"
+    from fpdf import FPDF  # 遅延 import
 
     pdf = FPDF(orientation="L", unit="mm", format="A4")
     pdf.set_auto_page_break(False)
@@ -822,10 +789,6 @@ def export_pdf(
     page_w = pdf.w
     page_h = pdf.h
 
-    # --- タイトル ---
-    first_d = sel[0].day if sel else 1
-    last_d = sel[-1].day if sel else 1
-    title = f"{year}年{month}月 シフト表（{group_label} {half_label}：{first_d}〜{last_d}日）"
     pdf.set_font(_PDF_FONT, "", 12)
     pdf.set_xy(7, 7)
     pdf.cell(page_w - 14, 7, title, align="C")
@@ -833,53 +796,13 @@ def export_pdf(
     table_top = 16.0
     usable_w = page_w - 14
     usable_h = page_h - 7 - table_top
-
-    n_dates = len(sel)
+    n_dates = len(sel_dates)
     name_w = 26.0
     total_w = 11.0
     date_w = (usable_w - name_w - total_w) / max(n_dates, 1)
-
-    header_rows = 2
-    body_rows = len(gstaff) + len(summary_rows)
-    total_rows = header_rows + body_rows
+    total_rows = 2 + len(staff_rows) + len(summary_rows)
     row_h = usable_h / max(total_rows, 1)
 
-    off_token = "cook_off" if is_cook else "off"
-
-    def cell_text(sid, d):
-        d_str = d.isoformat()
-        if is_cook:
-            asgn = assignment_map.get(d_str, {}).get(sid, "")
-            return ASSIGNMENT_LABELS.get(asgn, ""), asgn
-        asgn, text = _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map)
-        return text, asgn
-
-    staff_rows = []  # [(name_text, [cell_text...], work_days)]
-    for s in gstaff:
-        sid = s["id"]
-        name = _staff_name_label(s, is_cook)
-        cells = []
-        work = 0
-        for d in sel:
-            txt, asgn = cell_text(sid, d)
-            cells.append(txt)
-            if asgn not in (off_token, ""):
-                work += 1
-        staff_rows.append((name, cells, work))
-
-    summary_data = []  # [(label, [val...])]
-    for label, key, _wt in summary_rows:
-        vals = []
-        for d in sel:
-            d_str = d.isoformat()
-            if key == "_phone":
-                names = phone_duty_map.get(d_str, [])
-                vals.append(", ".join(names) if names else "")
-            else:
-                vals.append(str(summary_map.get(d_str, {}).get(key, 0)))
-        summary_data.append((label, vals))
-
-    # --- フォントサイズ自動調整: 最大行数が row_h に収まる最大サイズを選ぶ ---
     def line_h(fs):
         return fs * 0.3528 * 1.18
 
@@ -889,7 +812,7 @@ def export_pdf(
             max_lines = max(max_lines, len(_pdf_wrap(pdf, name, name_w, fs)))
             for c in cells:
                 max_lines = max(max_lines, len(_pdf_wrap(pdf, c, date_w, fs)))
-        for label, vals in summary_data:
+        for label, vals, _al in summary_rows:
             for v in vals:
                 max_lines = max(max_lines, len(_pdf_wrap(pdf, v, date_w, fs)))
         return max_lines * line_h(fs) <= row_h - 0.6
@@ -921,6 +844,108 @@ def export_pdf(
             ty += lh
         pdf.set_text_color(0, 0, 0)
 
+    # --- ヘッダー行（日付 / 曜日）---
+    y = table_top
+    draw_cell(7, y, name_w, row_h * 2, "職員名", header_fs,
+              fill=_PDF_HEADER_BG, bold_color=(255, 255, 255))
+    x = 7 + name_w
+    for d in sel_dates:
+        draw_cell(x, y, date_w, row_h, f"{d.month}/{d.day}", header_fs,
+                  fill=_PDF_HEADER_BG, bold_color=(255, 255, 255))
+        wd = WEEKDAY_NAMES[d.weekday()]
+        if jpholiday.is_holiday(d):
+            wd = f"{wd}/祝"
+        draw_cell(x, y + row_h, date_w, row_h, wd, header_fs, fill=_pdf_weekend_color(d))
+        x += date_w
+    draw_cell(x, y, total_w, row_h * 2, "出勤\n日数", header_fs,
+              fill=_PDF_HEADER_BG, bold_color=(255, 255, 255))
+
+    # --- 職員行 ---
+    y = table_top + row_h * 2
+    for name, cells, work in staff_rows:
+        draw_cell(7, y, name_w, row_h, name, body_fs, align="L")
+        x = 7 + name_w
+        for i, d in enumerate(sel_dates):
+            draw_cell(x, y, date_w, row_h, cells[i] if i < len(cells) else "", body_fs,
+                      fill=_pdf_weekend_color(d))
+            x += date_w
+        draw_cell(x, y, total_w, row_h, str(work), body_fs)
+        y += row_h
+
+    # --- サマリー行 ---
+    for label, vals, alerts in summary_rows:
+        draw_cell(7, y, name_w, row_h, label, body_fs, fill=_PDF_SUMMARY_BG, align="L")
+        x = 7 + name_w
+        for i, d in enumerate(sel_dates):
+            alert = alerts[i] if i < len(alerts) else False
+            draw_cell(x, y, date_w, row_h, vals[i] if i < len(vals) else "", body_fs,
+                      fill=_PDF_ALERT_BG if alert else _pdf_weekend_color(d),
+                      bold_color=(204, 0, 0) if alert else None)
+            x += date_w
+        draw_cell(x, y, total_w, row_h, "", body_fs)
+        y += row_h
+
+    buf = BytesIO()
+    buf.write(bytes(pdf.output()))
+    buf.seek(0)
+    return buf
+
+
+def _pdf_group_meta(group):
+    is_cook = (group == "cooking")
+    return is_cook, ("調理" if is_cook else "介護・看護"), (_PDF_COOK_SUMMARY if is_cook else _PDF_CARE_SUMMARY)
+
+
+def _half_dates(dates, half):
+    if half == "second":
+        return [d for d in dates if d.day >= 16], "後半"
+    return [d for d in dates if d.day <= 15], "前半"
+
+
+def export_pdf(
+    shifts_data: list,
+    warnings_data: list,
+    staff_list: list,
+    year: int,
+    month: int,
+    group: str = "care",
+    half: str = "first",
+    oncall_map: dict = None,
+    cook_labels: dict = None,
+) -> BytesIO:
+    """DB由来データから PDF を出力する（A4横・1ページ・表示専用）。
+    group: "care"=介護・看護 / "cooking"=調理 / half: "first"=1〜15 / "second"=16〜末
+    """
+    _register_cook_labels(cook_labels)
+    dates, assignment_map, summary_map, phone_duty_map, desk_slot_map, break_map, bath_map, meal_map = _build_daily_data(
+        shifts_data, staff_list, year, month
+    )
+    if oncall_map is not None:
+        phone_duty_map = {d: [n] for d, n in oncall_map.items() if n}
+
+    is_cook, group_label, summary_defs = _pdf_group_meta(group)
+    gstaff = [s for s in staff_list if (s.get("department") == "cooking") == is_cook]
+    sel, half_label = _half_dates(dates, half)
+    off_token = "cook_off" if is_cook else "off"
+
+    def cell_text(sid, d):
+        d_str = d.isoformat()
+        if is_cook:
+            asgn = assignment_map.get(d_str, {}).get(sid, "")
+            return ASSIGNMENT_LABELS.get(asgn, ""), asgn
+        return _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map)
+
+    staff_rows = []
+    for s in gstaff:
+        sid = s["id"]
+        cells, work = [], 0
+        for d in sel:
+            txt, asgn = cell_text(sid, d)
+            cells.append(txt)
+            if asgn not in (off_token, ""):
+                work += 1
+        staff_rows.append((_staff_name_label(s, is_cook), cells, str(work)))
+
     def has_warn(d_str, wtype):
         if not wtype:
             return False
@@ -935,49 +960,127 @@ def export_pdf(
                 return True
         return False
 
-    # --- ヘッダー行（日付 / 曜日）---
-    y = table_top
-    draw_cell(7, y, name_w, row_h * 2, "職員名", header_fs,
-              fill=_PDF_HEADER_BG, bold_color=(255, 255, 255))
-    x = 7 + name_w
-    for d in sel:
-        draw_cell(x, y, date_w, row_h, f"{d.month}/{d.day}", header_fs,
-                  fill=_PDF_HEADER_BG, bold_color=(255, 255, 255))
-        wd = WEEKDAY_NAMES[d.weekday()]
-        if jpholiday.is_holiday(d):
-            wd = f"{wd}/祝"
-        draw_cell(x, y + row_h, date_w, row_h, wd, header_fs,
-                  fill=_pdf_weekend_color(d))
-        x += date_w
-    draw_cell(x, y, total_w, row_h * 2, "出勤\n日数", header_fs,
-              fill=_PDF_HEADER_BG, bold_color=(255, 255, 255))
+    summary_rows = []
+    for label, key, wtype in summary_defs:
+        vals, alerts = [], []
+        for d in sel:
+            d_str = d.isoformat()
+            if key == "_phone":
+                names = phone_duty_map.get(d_str, [])
+                vals.append(", ".join(names) if names else "")
+            else:
+                vals.append(str(summary_map.get(d_str, {}).get(key, 0)))
+            alerts.append(has_warn(d_str, wtype))
+        summary_rows.append((label, vals, alerts))
 
-    # --- 職員行 ---
-    y = table_top + row_h * 2
-    for name, cells, work in staff_rows:
-        draw_cell(7, y, name_w, row_h, name, body_fs, align="L")
-        x = 7 + name_w
-        for i, d in enumerate(sel):
-            draw_cell(x, y, date_w, row_h, cells[i], body_fs,
-                      fill=_pdf_weekend_color(d))
-            x += date_w
-        draw_cell(x, y, total_w, row_h, str(work), body_fs)
-        y += row_h
+    first_d = sel[0].day if sel else 1
+    last_d = sel[-1].day if sel else 1
+    title = f"{year}年{month}月 シフト表（{group_label} {half_label}：{first_d}〜{last_d}日）"
+    return _render_pdf_table(title, sel, staff_rows, summary_rows)
 
-    # --- サマリー行 ---
-    for (label, key, wtype), (slabel, vals) in zip(summary_rows, summary_data):
-        draw_cell(7, y, name_w, row_h, slabel, body_fs, fill=_PDF_SUMMARY_BG, align="L")
-        x = 7 + name_w
-        for i, d in enumerate(sel):
-            alert = has_warn(d.isoformat(), wtype)
-            draw_cell(x, y, date_w, row_h, vals[i], body_fs,
-                      fill=_PDF_ALERT_BG if alert else _pdf_weekend_color(d),
-                      bold_color=(204, 0, 0) if alert else None)
-            x += date_w
-        draw_cell(x, y, total_w, row_h, "", body_fs)
-        y += row_h
 
+# 調理/介護サマリーのラベル（Excel解析でスタッフ行と区別する用）
+_PDF_SUMMARY_LABELS = {
+    "訪問午前", "訪問午後", "デイ午前", "デイ午後", "兼務者数", "オンコール", "調理配置数",
+}
+
+
+def export_pdf_from_excel(file_bytes, group: str = "care", half: str = "first") -> BytesIO:
+    """アプリのExcel出力形式（手直し済み）から、該当PDFを描画する。
+    保存データは一切使わない＝アップロードされたExcelのセル内容を忠実に描画。警告は再計算しない。
+    """
+    is_cook, group_label, _ = _pdf_group_meta(group)
+    sheet_name = "調理スタッフ" if is_cook else "介護スタッフ"
+    wb = load_workbook(BytesIO(file_bytes), data_only=True)
+    ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb[wb.sheetnames[0]]
+
+    # ヘッダ行（「職員名」セル）を特定
+    header_row = name_col = None
+    for r in range(1, min(ws.max_row, 8) + 1):
+        for c in range(1, min(ws.max_column, 6) + 1):
+            if str(ws.cell(row=r, column=c).value or "").strip() == "職員名":
+                header_row, name_col = r, c
+                break
+        if header_row:
+            break
+    if header_row is None:
+        raise ValueError("Excelの形式を認識できません（『職員名』ヘッダが見つかりません）。")
+
+    # 日付列(M/D)と出勤日数列
+    date_cols = []  # (col, month, day)
+    total_col = None
+    for c in range(name_col + 1, ws.max_column + 1):
+        v = str(ws.cell(row=header_row, column=c).value or "").strip()
+        mm = re.match(r"^(\d{1,2})/(\d{1,2})$", v)
+        if mm:
+            date_cols.append((c, int(mm.group(1)), int(mm.group(2))))
+        elif "出勤" in v:
+            total_col = c
+    if not date_cols:
+        raise ValueError("日付列(M/D)が見つかりません。アプリのExcel出力形式か確認してください。")
+
+    title_text = str(ws.cell(row=1, column=1).value or "")
+    ym = re.search(r"(\d{4})\s*年", title_text)
+    year = int(ym.group(1)) if ym else date.today().year
+    month = date_cols[0][1]
+
+    def in_half(day):
+        return (day <= 15) if half != "second" else (day >= 16)
+    sel_cols = [t for t in date_cols if in_half(t[2])] or date_cols
+    sel_dates = [date(year, mth, day) for (_c, mth, day) in sel_cols]
+
+    staff_rows, summary_rows = [], []
+    for r in range(header_row + 2, ws.max_row + 1):
+        label = str(ws.cell(row=r, column=name_col).value or "").strip()
+        if not label:
+            continue
+        cells = [str(ws.cell(row=r, column=c).value or "").strip() for (c, _m, _d) in sel_cols]
+        if label in _PDF_SUMMARY_LABELS:
+            summary_rows.append((label, cells, [False] * len(cells)))
+        else:
+            work = str(ws.cell(row=r, column=total_col).value or "").strip() if total_col else ""
+            staff_rows.append((label, cells, work))
+
+    half_label = "後半" if half == "second" else "前半"
+    first_d = sel_cols[0][2]
+    last_d = sel_cols[-1][2]
+    title = f"{year}年{month}月 シフト表（{group_label} {half_label}：{first_d}〜{last_d}日）"
+    return _render_pdf_table(title, sel_dates, staff_rows, summary_rows)
+
+
+def export_excel_group_half(
+    shifts_data: list,
+    warnings_data: list,
+    staff_list: list,
+    year: int,
+    month: int,
+    group: str = "care",
+    half: str = "first",
+    oncall_map: dict = None,
+    cook_labels: dict = None,
+) -> BytesIO:
+    """Excelを「PDFと同じ4分割」で出力（1シート）。データ・並びは既存Excelと同じ。"""
+    _register_cook_labels(cook_labels)
+    dates, assignment_map, summary_map, phone_duty_map, desk_slot_map, break_map, bath_map, meal_map = _build_daily_data(
+        shifts_data, staff_list, year, month
+    )
+    if oncall_map is not None:
+        phone_duty_map = {d: [n] for d, n in oncall_map.items() if n}
+
+    is_cook = (group == "cooking")
+    gstaff = [s for s in staff_list if (s.get("department") == "cooking") == is_cook]
+    sel, _ = _half_dates(dates, half)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "調理スタッフ" if is_cook else "介護スタッフ"
+    _write_group_sheet(
+        ws, gstaff, sel, year, month,
+        assignment_map=assignment_map, summary_map=summary_map,
+        phone_duty_map=phone_duty_map, desk_slot_map=desk_slot_map,
+        bath_map=bath_map, warnings_data=warnings_data, is_cook=is_cook,
+    )
     buf = BytesIO()
-    buf.write(bytes(pdf.output()))
+    wb.save(buf)
     buf.seek(0)
     return buf

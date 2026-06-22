@@ -841,10 +841,24 @@ def create_app():
                 db.session.add(PlacementRule(**rule_copy))
             db.session.commit()
 
-        # 依頼文18-A: 既存DBの「看護師/PT 9-16時」配置ルールを無効化（看護師条件は
-        #   solver の「合計2時間以上」に統一）。既に無効/不在なら何もしない（冪等）。
-        for r in PlacementRule.query.filter(PlacementRule.name.like("看護師/PT%")).all():
-            if r.is_active:
+        # 依頼文18-A / 依頼文20: 看護師の配置条件は solver 側の「合計2時間以上」判定に
+        #   一本化済み。看護師を対象とする人数ベースの配置ルール（qualification_min）は
+        #   重複・残骸であり、しかも nurse_short(看護9:30-13:30) を数えられず誤警告
+        #   「配置ルール未達: 看護師…」を出すため、無効化する。
+        #   対象: 看護師資格を含む qualification_min ルール／名前が「看護師…」で始まるルール。
+        #   （相談員・男性などのルールには触れない。既に無効/不在なら冪等）。
+        _nurse_qual_ids = {
+            q.id for q in Qualification.query.filter(Qualification.code.in_(["nurse"])).all()
+        }
+        for r in PlacementRule.query.filter_by(rule_type="qualification_min").all():
+            if not r.is_active:
+                continue
+            try:
+                tq = set(json.loads(r.target_qualification_ids_json or "[]"))
+            except (ValueError, TypeError):
+                tq = set()
+            name = r.name or ""
+            if (tq & _nurse_qual_ids) or name.startswith("看護師"):
                 r.is_active = False
         db.session.commit()
 

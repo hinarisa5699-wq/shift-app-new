@@ -312,8 +312,10 @@ def _write_group_sheet(
     bath_map,
     warnings_data,
     is_cook,
+    fit_one_page=False,
 ):
-    """1 グループ（介護 or 調理）を「縦＝職員名・横＝日付」で 1 シートに書き込む。"""
+    """1 グループ（介護 or 調理）を「縦＝職員名・横＝日付」で 1 シートに書き込む。
+    fit_one_page=True のとき、印刷時に横もA4横1ページに収める（依頼文25・4分割向け）。"""
     num_days = len(dates)
     name_col = 1
     first_date_col = 2
@@ -484,7 +486,8 @@ def _write_group_sheet(
     ws.row_dimensions[header_row2].height = 30   # 祝日名の折り返し用
 
     ws.page_setup.orientation = "landscape"
-    ws.page_setup.fitToWidth = 0    # 横は日付ぶん複数ページに分割
+    # 依頼文25: 4分割（前半15日/後半16日）は横もA4横1ページに収める
+    ws.page_setup.fitToWidth = 1 if fit_one_page else 0   # 0=日付ぶん複数ページ
     ws.page_setup.fitToHeight = 1   # 縦（職員）は 1 ページに収める
     ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
     ws.page_margins = PageMargins(
@@ -772,6 +775,35 @@ def _pdf_wrap(pdf, text, max_w, fs):
     return lines or [""]
 
 
+def _pdf_line_h(fs):
+    """フォントサイズ(pt)に対する1行の高さ(mm)。"""
+    return fs * 0.3528 * 1.18
+
+
+def _pick_body_fs(pdf, staff_rows, summary_rows, name_w, date_w, row_h,
+                  fs_max=22.0, fs_min=4.0, step=0.5):
+    """依頼文25: 1行高 row_h に収まる範囲で最大の本文フォントサイズ(pt)を選ぶ。
+    行数が少ない（=row_h が大きい）シートほど大きい値が返る。"""
+    def fits(fs):
+        max_lines = 1
+        for name, cells, _w in staff_rows:
+            max_lines = max(max_lines, len(_pdf_wrap(pdf, name, name_w, fs)))
+            for c in cells:
+                max_lines = max(max_lines, len(_pdf_wrap(pdf, c, date_w, fs)))
+        for label, vals, _al in summary_rows:
+            max_lines = max(max_lines, len(_pdf_wrap(pdf, label, name_w, fs)))
+            for v in vals:
+                max_lines = max(max_lines, len(_pdf_wrap(pdf, v, date_w, fs)))
+        return max_lines * _pdf_line_h(fs) <= row_h - 0.6
+
+    fs = fs_max
+    while fs >= fs_min:
+        if fits(fs):
+            return fs
+        fs -= step
+    return fs_min
+
+
 def _render_pdf_table(title, sel_dates, staff_rows, summary_rows):
     """共通PDF描画（A4横・1ページ）。データ元は DB でも Excel でもよい。
     title:        タイトル文字列
@@ -781,49 +813,44 @@ def _render_pdf_table(title, sel_dates, staff_rows, summary_rows):
     """
     from fpdf import FPDF  # 遅延 import
 
+    # 依頼文25: A4横ちょうど1枚に収めつつ、ページいっぱいに最大の文字で描画する。
+    # 余白を最小化し、行高は行数に応じて usable_h を等分（行数の少ない調理は行が高く＝文字が大きくなる）、
+    # 文字サイズは「1枚に収まる範囲で最大」を自動選択する。
+    MARGIN = 4.0          # 余白（mm）最小限
+    TITLE_H = 7.0         # タイトル帯の高さ
+    GAP = 1.5             # タイトルと表の隙間
+
     pdf = FPDF(orientation="L", unit="mm", format="A4")
     pdf.set_auto_page_break(False)
     pdf.add_font(_PDF_FONT, "", _PDF_FONT_PATH)
-    pdf.set_margins(7, 7, 7)
+    pdf.set_margins(MARGIN, MARGIN, MARGIN)
     pdf.add_page()
     page_w = pdf.w
     page_h = pdf.h
 
-    pdf.set_font(_PDF_FONT, "", 12)
-    pdf.set_xy(7, 7)
-    pdf.cell(page_w - 14, 7, title, align="C")
-
-    table_top = 16.0
-    usable_w = page_w - 14
-    usable_h = page_h - 7 - table_top
+    table_top = MARGIN + TITLE_H + GAP
+    usable_w = page_w - MARGIN * 2
+    usable_h = page_h - MARGIN - table_top
     n_dates = len(sel_dates)
-    name_w = 26.0
-    total_w = 11.0
+    name_w = 30.0
+    total_w = 13.0
     date_w = (usable_w - name_w - total_w) / max(n_dates, 1)
-    total_rows = 2 + len(staff_rows) + len(summary_rows)
+    total_rows = 2 + len(staff_rows) + len(summary_rows)  # ヘッダー2行ぶん
     row_h = usable_h / max(total_rows, 1)
 
     def line_h(fs):
-        return fs * 0.3528 * 1.18
+        return _pdf_line_h(fs)
 
-    def fits(fs):
-        max_lines = 1
-        for name, cells, _w in staff_rows:
-            max_lines = max(max_lines, len(_pdf_wrap(pdf, name, name_w, fs)))
-            for c in cells:
-                max_lines = max(max_lines, len(_pdf_wrap(pdf, c, date_w, fs)))
-        for label, vals, _al in summary_rows:
-            for v in vals:
-                max_lines = max(max_lines, len(_pdf_wrap(pdf, v, date_w, fs)))
-        return max_lines * line_h(fs) <= row_h - 0.6
-
-    body_fs = 4.5
-    for fs in (8.0, 7.5, 7.0, 6.5, 6.0, 5.5, 5.0, 4.5):
-        if fits(fs):
-            body_fs = fs
-            break
-    header_fs = min(body_fs + 0.5, 8.0)
+    # 上限を大きく取り、収まる最大サイズを選ぶ（調理など行数が少ないシートは大きくなる）
+    body_fs = _pick_body_fs(pdf, staff_rows, summary_rows, name_w, date_w, row_h)
+    header_fs = min(body_fs + 0.5, 22.0)
     max_lines_per_cell = max(1, int((row_h - 0.6) / line_h(body_fs)))
+
+    # タイトル（表幅に合わせ、フォントは表より少し大きく）
+    title_fs = min(max(body_fs, 11.0), 16.0)
+    pdf.set_font(_PDF_FONT, "", title_fs)
+    pdf.set_xy(MARGIN, MARGIN)
+    pdf.cell(usable_w, TITLE_H, title, align="C")
 
     def draw_cell(x, y, w, h, text, fs, *, fill=None, bold_color=None, align="C"):
         if fill:
@@ -846,9 +873,9 @@ def _render_pdf_table(title, sel_dates, staff_rows, summary_rows):
 
     # --- ヘッダー行（日付 / 曜日）---
     y = table_top
-    draw_cell(7, y, name_w, row_h * 2, "職員名", header_fs,
+    draw_cell(MARGIN, y, name_w, row_h * 2, "職員名", header_fs,
               fill=_PDF_HEADER_BG, bold_color=(255, 255, 255))
-    x = 7 + name_w
+    x = MARGIN + name_w
     for d in sel_dates:
         draw_cell(x, y, date_w, row_h, f"{d.month}/{d.day}", header_fs,
                   fill=_PDF_HEADER_BG, bold_color=(255, 255, 255))
@@ -863,8 +890,8 @@ def _render_pdf_table(title, sel_dates, staff_rows, summary_rows):
     # --- 職員行 ---
     y = table_top + row_h * 2
     for name, cells, work in staff_rows:
-        draw_cell(7, y, name_w, row_h, name, body_fs, align="L")
-        x = 7 + name_w
+        draw_cell(MARGIN, y, name_w, row_h, name, body_fs, align="L")
+        x = MARGIN + name_w
         for i, d in enumerate(sel_dates):
             draw_cell(x, y, date_w, row_h, cells[i] if i < len(cells) else "", body_fs,
                       fill=_pdf_weekend_color(d))
@@ -874,8 +901,8 @@ def _render_pdf_table(title, sel_dates, staff_rows, summary_rows):
 
     # --- サマリー行 ---
     for label, vals, alerts in summary_rows:
-        draw_cell(7, y, name_w, row_h, label, body_fs, fill=_PDF_SUMMARY_BG, align="L")
-        x = 7 + name_w
+        draw_cell(MARGIN, y, name_w, row_h, label, body_fs, fill=_PDF_SUMMARY_BG, align="L")
+        x = MARGIN + name_w
         for i, d in enumerate(sel_dates):
             alert = alerts[i] if i < len(alerts) else False
             draw_cell(x, y, date_w, row_h, vals[i] if i < len(vals) else "", body_fs,
@@ -1081,6 +1108,7 @@ def export_excel_group_half(
         assignment_map=assignment_map, summary_map=summary_map,
         phone_duty_map=phone_duty_map, desk_slot_map=desk_slot_map,
         bath_map=bath_map, warnings_data=warnings_data, is_cook=is_cook,
+        fit_one_page=True,
     )
     buf = BytesIO()
     wb.save(buf)

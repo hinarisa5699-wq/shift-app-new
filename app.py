@@ -45,7 +45,9 @@ from models import (
     db, Staff, DayOffRequest, ShiftSettings, GeneratedShift, ShiftWarning,
     ShiftPattern, Qualification, StaffQualification, PlacementRule, CookingComboRule,
     StaffAllowedPattern, StaffWorkableDate, OncallAssignment, ShiftConfirmation,
+    ParkingSlot, ParkingAssignment,
 )
+from parking import assign_parking
 from solver import (
     generate_shift, assign_oncall, CARE_ASSIGNMENTS, COOK_ASSIGNMENTS,
     _period_from_time_window,
@@ -292,6 +294,11 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE staff ADD COLUMN work_start_time VARCHAR(5) NOT NULL DEFAULT ''")
     if "work_end_time" not in columns:
         cursor.execute("ALTER TABLE staff ADD COLUMN work_end_time VARCHAR(5) NOT NULL DEFAULT ''")
+    # --- 駐車場（依頼文24）---
+    if "car_commute" not in columns:
+        cursor.execute("ALTER TABLE staff ADD COLUMN car_commute BOOLEAN DEFAULT 0")
+    if "parking_slot" not in columns:
+        cursor.execute("ALTER TABLE staff ADD COLUMN parking_slot VARCHAR(10) NOT NULL DEFAULT ''")
 
     # ShiftSettings テーブル
     columns = [row[1] for row in cursor.execute("PRAGMA table_info(shift_settings)").fetchall()]
@@ -715,6 +722,54 @@ def _load_users():
 # ログイン不要でアクセスできるエンドポイント
 _PUBLIC_ENDPOINTS = {"login", "static"}
 
+# 駐車場割り当て（依頼文24）で「出勤」とみなさない assignment
+_PARKING_OFF_TOKENS = {"", "off", "cook_off"}
+
+
+def _save_parking_assignments(generation_id, year, month, shifts_data):
+    """生成後の駐車枠割り当てを計算して DB に保存する（commit は呼び出し側）。
+    シフト生成(solver)には一切干渉しない、純粋な後処理。
+    """
+    slot_numbers = [
+        s.slot_number
+        for s in ParkingSlot.query.order_by(ParkingSlot.display_order, ParkingSlot.id).all()
+    ]
+    car_staff_rows = Staff.query.filter_by(car_commute=True).all()
+    if not car_staff_rows:
+        return  # 車通勤者がいなければ何もしない
+    car_ids = {s.id for s in car_staff_rows}
+    car_staff = [{"id": s.id, "parking_slot": s.parking_slot or ""} for s in car_staff_rows]
+
+    # その日に出勤する車通勤者の集合を作る
+    working_by_date = {}
+    for item in shifts_data:
+        sid = item["staff_id"]
+        if sid not in car_ids:
+            continue
+        if (item.get("assignment") or "") in _PARKING_OFF_TOKENS:
+            continue
+        d = item["date"]
+        d_iso = d if isinstance(d, str) else d.isoformat()
+        working_by_date.setdefault(d_iso, set()).add(sid)
+
+    if not slot_numbers and not working_by_date:
+        return
+
+    month_dates = [
+        date(year, month, d) for d in range(1, calendar.monthrange(year, month)[1] + 1)
+    ]
+    assignment = assign_parking(month_dates, working_by_date, car_staff, slot_numbers)
+
+    for d_iso, per_staff in assignment.items():
+        d_obj = datetime.strptime(d_iso, "%Y-%m-%d").date()
+        for sid, label in per_staff.items():
+            db.session.add(ParkingAssignment(
+                generation_id=generation_id,
+                date=d_obj,
+                staff_id=sid,
+                label=label,
+            ))
+
 
 # ---------------------------------------------------------------------------
 # アプリケーションファクトリ
@@ -890,6 +945,12 @@ def create_app():
         # 調理パターンの整合（変更1〜3を既存DBへも反映）
         _sync_cooking_patterns()
 
+        # 駐車枠マスタ 初期データ（依頼文24）: 未登録なら 4/7/8 を投入
+        if ParkingSlot.query.count() == 0:
+            for i, num in enumerate(["4", "7", "8"]):
+                db.session.add(ParkingSlot(slot_number=num, display_order=i))
+            db.session.commit()
+
     # -----------------------------------------------------------------
     # W-6: セキュリティヘッダ
     # -----------------------------------------------------------------
@@ -1039,6 +1100,8 @@ def create_app():
             fixed_days_off=fixed_days_off,
             weekend_constraint=request.form.get("weekend_constraint", ""),
             holiday_ng="holiday_ng" in request.form,
+            car_commute="car_commute" in request.form,
+            parking_slot=(request.form.get("parking_slot", "") or "").strip(),
         )
         db.session.add(staff)
         db.session.flush()  # IDを取得
@@ -1113,6 +1176,9 @@ def create_app():
         staff.fixed_days_off = fixed_days_off
         staff.weekend_constraint = request.form.get("weekend_constraint", "")
         staff.holiday_ng = "holiday_ng" in request.form
+        # 駐車場（依頼文24）— 車通勤は care/cooking どちらも対象
+        staff.car_commute = "car_commute" in request.form
+        staff.parking_slot = (request.form.get("parking_slot", "") or "").strip()
 
         # 資格の更新（全削除→再追加。相談員は「相談員可」チェックで別途管理）
         counselor_qid = _counselor_qual_id()
@@ -1564,6 +1630,53 @@ def create_app():
         return jsonify({"message": "削除しました"}), 200
 
     # -----------------------------------------------------------------
+    # API ルート — 駐車枠マスタ（依頼文24）
+    # -----------------------------------------------------------------
+    @app.route("/api/parking_slots", methods=["GET"])
+    def api_parking_slots_list():
+        """駐車枠一覧（表示順）"""
+        slots = ParkingSlot.query.order_by(ParkingSlot.display_order, ParkingSlot.id).all()
+        return jsonify([s.to_dict() for s in slots])
+
+    @app.route("/api/parking_slots", methods=["POST"])
+    def api_parking_slot_create():
+        """駐車枠の追加"""
+        data = request.get_json(silent=True) or {}
+        num = str(data.get("slot_number", "")).strip()
+        if not num:
+            return jsonify({"error": "枠番号は必須です"}), 400
+        if ParkingSlot.query.filter_by(slot_number=num).first():
+            return jsonify({"error": "この枠番号は既に登録されています"}), 409
+        max_order = db.session.query(db.func.max(ParkingSlot.display_order)).scalar()
+        s = ParkingSlot(slot_number=num, display_order=(max_order or 0) + 1)
+        db.session.add(s)
+        db.session.commit()
+        return jsonify(s.to_dict()), 201
+
+    @app.route("/api/parking_slots/<int:slot_id>", methods=["PUT"])
+    def api_parking_slot_update(slot_id):
+        """駐車枠の編集（番号変更）"""
+        s = ParkingSlot.query.get_or_404(slot_id)
+        data = request.get_json(silent=True) or {}
+        num = str(data.get("slot_number", "")).strip()
+        if not num:
+            return jsonify({"error": "枠番号は必須です"}), 400
+        dup = ParkingSlot.query.filter_by(slot_number=num).first()
+        if dup and dup.id != slot_id:
+            return jsonify({"error": "この枠番号は既に登録されています"}), 409
+        s.slot_number = num
+        db.session.commit()
+        return jsonify(s.to_dict()), 200
+
+    @app.route("/api/parking_slots/<int:slot_id>", methods=["DELETE"])
+    def api_parking_slot_delete(slot_id):
+        """駐車枠の削除"""
+        s = ParkingSlot.query.get_or_404(slot_id)
+        db.session.delete(s)
+        db.session.commit()
+        return jsonify({"message": "削除しました"}), 200
+
+    # -----------------------------------------------------------------
     # API ルート — 配置ルール
     # -----------------------------------------------------------------
     @app.route("/api/placement_rules", methods=["GET"])
@@ -2009,6 +2122,10 @@ def create_app():
                 OncallAssignment.date >= first_day,
                 OncallAssignment.date <= last_day,
             ).delete()
+            ParkingAssignment.query.filter(
+                ParkingAssignment.date >= first_day,
+                ParkingAssignment.date <= last_day,
+            ).delete()
 
             # シフト結果を DB に保存
             saved_shifts = []
@@ -2069,6 +2186,10 @@ def create_app():
                 )
                 db.session.add(warn)
                 saved_warnings.append(warn)
+
+            # --- 駐車場の割り当て（依頼文24）：solver非干渉の後処理 ---
+            #   各営業日に出勤する車通勤者へ枠を割り当て、溢れは「コイン」。
+            _save_parking_assignments(generation_id, year, month, shifts_data)
 
             db.session.commit()
         except Exception as e:
@@ -2143,6 +2264,15 @@ def create_app():
         ).all()
         oncall_map = {r.date.isoformat(): (r.staff.name if r.staff else "") for r in oncall_rows}
 
+        # 駐車場（依頼文24）: 日付→{staff_id: ラベル("4"/"7"/"8"/"コイン")}
+        parking_rows = ParkingAssignment.query.filter(
+            ParkingAssignment.date >= first_day,
+            ParkingAssignment.date <= last_day,
+        ).all()
+        parking_map = {}
+        for r in parking_rows:
+            parking_map.setdefault(r.date.isoformat(), {})[str(r.staff_id)] = r.label
+
         # 確定情報（この月）
         conf = ShiftConfirmation.query.filter_by(year=year, month=month).first()
 
@@ -2155,6 +2285,7 @@ def create_app():
                 "warnings": [w.to_dict() for w in warnings],
                 "holidays": holidays,
                 "oncall": oncall_map,
+                "parking": parking_map,
                 "confirmation": conf.to_dict() if conf else None,
                 "staff_list": [
                     {
@@ -2163,6 +2294,7 @@ def create_app():
                         "department": st.staff_group,
                         "qualifications": staff_qual_names.get(st.id, []),
                         "qualification_codes": staff_qual_codes.get(st.id, []),
+                        "car_commute": st.car_commute or False,
                     }
                     for st in all_staff
                 ],
@@ -2225,6 +2357,11 @@ def create_app():
         year = first_date.year
         month = first_date.month
 
+        # 駐車場（依頼文24）: (date, staff_id) → ラベル。各シフト項目に付与して
+        #   Excel/PDF のセルに表示できるようにする（生成ロジックには非干渉）。
+        parking_rows = ParkingAssignment.query.filter_by(generation_id=generation_id).all()
+        parking_lookup = {(r.date.isoformat(), r.staff_id): r.label for r in parking_rows}
+
         shifts_data = []
         for s in shifts:
             d = {
@@ -2236,6 +2373,7 @@ def create_app():
                 "break_start": s.break_start,
                 "bath_role": s.bath_role,
                 "meal_assist": s.meal_assist,
+                "parking_label": parking_lookup.get((s.date.isoformat(), s.staff_id)),
             }
             # ③ 相談員事務スロット
             if s.counselor_desk_slots:

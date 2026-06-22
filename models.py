@@ -59,6 +59,11 @@ class Staff(db.Model):
     work_start_time = db.Column(db.String(5), default="", nullable=False)  # "HH:MM" 空欄可
     work_end_time = db.Column(db.String(5), default="", nullable=False)    # "HH:MM" 空欄可
 
+    # --- 駐車場（依頼文24）---
+    car_commute = db.Column(db.Boolean, default=False)  # True = 車通勤（駐車枠が必要）
+    parking_slot = db.Column(db.String(10), default="", nullable=False)
+    # 固定枠番号（例 "4"/"7"/"8"）。空欄ならローテーション扱い。
+
     # リレーション
     day_off_requests = db.relationship(
         "DayOffRequest", backref="staff", lazy=True, cascade="all, delete-orphan"
@@ -103,6 +108,8 @@ class Staff(db.Model):
             "can_bath_assist": self.can_bath_assist or False,
             "work_start_time": self.work_start_time or "",
             "work_end_time": self.work_end_time or "",
+            "car_commute": self.car_commute or False,
+            "parking_slot": self.parking_slot or "",
         }
 
 
@@ -176,6 +183,53 @@ class OncallAssignment(db.Model):
             "date": self.date.isoformat(),
             "staff_id": self.staff_id,
             "staff_name": self.staff.name if self.staff else None,
+        }
+
+
+class ParkingSlot(db.Model):
+    """駐車枠マスタ（依頼文24）
+    車通勤者に割り当てる枠番号の一覧（初期値 4/7/8）。後から編集できる。
+    """
+    __tablename__ = "parking_slot"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    slot_number = db.Column(db.String(10), unique=True, nullable=False)  # "4"/"7"/"8"
+    display_order = db.Column(db.Integer, default=0)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "slot_number": self.slot_number,
+            "display_order": self.display_order or 0,
+        }
+
+
+class ParkingAssignment(db.Model):
+    """駐車枠の割り当て（依頼文24）
+    生成後に営業日ごと自動で振る。シフト生成(solver)とは独立。
+    label は枠番号 or "コイン"（溢れ先）。生成IDごとに保持し同月再生成で置き換える。
+    """
+    __tablename__ = "parking_assignment"
+
+    id = db.Column(db.Integer, primary_key=True)
+    generation_id = db.Column(db.String(36), nullable=False)
+    date = db.Column(db.Date, nullable=False)
+    staff_id = db.Column(db.Integer, db.ForeignKey("staff.id"), nullable=False)
+    label = db.Column(db.String(20), nullable=False)  # "4"/"7"/"8" または "コイン"
+
+    __table_args__ = (
+        db.UniqueConstraint("generation_id", "date", "staff_id", name="uq_parking_gen_date_staff"),
+    )
+
+    staff = db.relationship("Staff")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "generation_id": self.generation_id,
+            "date": self.date.isoformat(),
+            "staff_id": self.staff_id,
+            "label": self.label,
         }
 
 

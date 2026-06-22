@@ -274,6 +274,18 @@ function renderCalendar(data, year, month) {
     const staffList = data.staff_list || [];
     const holidays = data.holidays || {};
     const oncallMap = data.oncall || {};  // {date: 氏名} オンコール担当
+    const parkingMap = data.parking || {};  // 駐車場 {date: {staff_id: "4"/"7"/"8"/"コイン"}}
+
+    // 駐車場バッジ（車通勤・出勤者のみ map に存在）
+    function parkingBadge(dateStr, staffId) {
+        const byStaff = parkingMap[dateStr];
+        const label = byStaff && byStaff[staffId];
+        if (!label) return '';
+        if (label === 'コイン') {
+            return ' <span class="badge" style="background:#9ca3af;color:#fff">コイン</span>';
+        }
+        return ` <span class="badge" style="background:#7c3aed;color:#fff">P${escapeHtml(label)}</span>`;
+    }
 
     const careStaff = staffList.filter(s => s.department !== 'cooking');
     const cookingStaff = staffList.filter(s => s.department === 'cooking');
@@ -383,7 +395,7 @@ function renderCalendar(data, year, month) {
         const badge = info
             ? `<span class="badge ${info.badgeClass}">${info.label}</span>`
             : `<span class="badge badge-off">${escapeHtml(assignment)}</span>`;
-        return `${badge}${bathDisplay}${phoneBadge}${deskLabel}`;
+        return `${badge}${bathDisplay}${phoneBadge}${parkingBadge(dateStr, s.id)}${deskLabel}`;
     }
 
     // 職員名セル（資格併記）
@@ -458,9 +470,10 @@ function renderCalendar(data, year, month) {
                 if (a && a !== 'cook_off') {
                     work++;
                     const info = ASSIGNMENT_MAP[a];
-                    cell = info
+                    const baseBadge = info
                         ? `<span class="badge ${info.badgeClass}">${info.label}</span>`
                         : `<span class="badge badge-off">${escapeHtml(a)}</span>`;
+                    cell = `${baseBadge}${parkingBadge(m.dateStr, s.id)}`;
                 } else {
                     cell = '<span class="badge badge-off">休</span>';
                 }

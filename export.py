@@ -298,6 +298,31 @@ def _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map):
     return asgn, text
 
 
+def _build_parking_map(shifts_data):
+    """依頼文24: shifts_data の parking_label から {date_iso: {staff_id: ラベル}} を作る。"""
+    pm = {}
+    for item in (shifts_data or []):
+        lab = item.get("parking_label")
+        if lab:
+            pm.setdefault(item["date"], {})[item["staff_id"]] = lab
+    return pm
+
+
+def _parking_tag(label):
+    """駐車枠ラベルの表示文字（枠番号は P付き、溢れは「コイン」）。"""
+    if not label:
+        return ""
+    return "コイン" if label == "コイン" else f"P{label}"
+
+
+def _append_parking(text, parking_map, d_str, sid):
+    """セル本文に駐車場ラベルを改行で追記（車通勤・出勤者のみ map に存在）。"""
+    tag = _parking_tag((parking_map or {}).get(d_str, {}).get(sid))
+    if not tag:
+        return text
+    return f"{text}\n{tag}" if text else tag
+
+
 def _write_group_sheet(
     ws,
     group_staff,
@@ -313,6 +338,7 @@ def _write_group_sheet(
     warnings_data,
     is_cook,
     fit_one_page=False,
+    parking_map=None,
 ):
     """1 グループ（介護 or 調理）を「縦＝職員名・横＝日付」で 1 シートに書き込む。
     fit_one_page=True のとき、印刷時に横もA4横1ページに収める（依頼文25・4分割向け）。"""
@@ -400,6 +426,9 @@ def _write_group_sheet(
                 text = ASSIGNMENT_LABELS.get(asgn, "")
             else:
                 asgn, text = _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map)
+
+            # 駐車場（依頼文24）: 車通勤・出勤者のセルに枠/コインを追記
+            text = _append_parking(text, parking_map, d_str, sid)
 
             cell = ws.cell(row=row, column=col, value=text)
             cell.font = NORMAL_FONT
@@ -535,6 +564,7 @@ def export_excel(
     if oncall_map is not None:
         phone_duty_map = {d: [n] for d, n in oncall_map.items() if n}
 
+    parking_map = _build_parking_map(shifts_data)
     care_staff = [s for s in staff_list if s.get("department") != "cooking"]
     cook_staff = [s for s in staff_list if s.get("department") == "cooking"]
 
@@ -550,6 +580,7 @@ def export_excel(
         bath_map=bath_map,
         warnings_data=warnings_data,
         is_cook=False,
+        parking_map=parking_map,
     )
 
     # --- 2 枚目: 調理スタッフ ---
@@ -564,6 +595,7 @@ def export_excel(
             bath_map=bath_map,
             warnings_data=warnings_data,
             is_cook=True,
+            parking_map=parking_map,
         )
 
     # --- 警告シート ---
@@ -954,13 +986,18 @@ def export_pdf(
     gstaff = [s for s in staff_list if (s.get("department") == "cooking") == is_cook]
     sel, half_label = _half_dates(dates, half)
     off_token = "cook_off" if is_cook else "off"
+    parking_map = _build_parking_map(shifts_data)
 
     def cell_text(sid, d):
+        """(表示テキスト, assignmentコード) を返す。care/cook で順序を統一。"""
         d_str = d.isoformat()
         if is_cook:
             asgn = assignment_map.get(d_str, {}).get(sid, "")
-            return ASSIGNMENT_LABELS.get(asgn, ""), asgn
-        return _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map)
+            text = ASSIGNMENT_LABELS.get(asgn, "")
+        else:
+            asgn, text = _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map)
+        text = _append_parking(text, parking_map, d_str, sid)
+        return text, asgn
 
     staff_rows = []
     for s in gstaff:
@@ -1108,7 +1145,7 @@ def export_excel_group_half(
         assignment_map=assignment_map, summary_map=summary_map,
         phone_duty_map=phone_duty_map, desk_slot_map=desk_slot_map,
         bath_map=bath_map, warnings_data=warnings_data, is_cook=is_cook,
-        fit_one_page=True,
+        fit_one_page=True, parking_map=_build_parking_map(shifts_data),
     )
     buf = BytesIO()
     wb.save(buf)

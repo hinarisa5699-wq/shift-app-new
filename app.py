@@ -2278,6 +2278,15 @@ def create_app():
 
         return shifts_data, warnings_data, staff_list_data, year, month, oncall_map, cook_labels
 
+    def _jp_export_filename(year, month, group, half, ext):
+        """依頼文26: 分かりやすい日本語のダウンロード名を生成する。
+        例: シフト表_2026年7月_介護看護_前半.pdf
+        非ASCII名はsend_file(Werkzeug)がfilename*=UTF-8''で自動エンコードする。
+        """
+        group_jp = "調理" if group == "cooking" else "介護看護"
+        half_jp = "後半" if half == "second" else "前半"
+        return f"シフト表_{year}年{month}月_{group_jp}_{half_jp}.{ext}"
+
     @app.route("/api/export/<generation_id>/excel", methods=["GET"])
     def api_export_excel(generation_id):
         """Excel ダウンロード。
@@ -2297,9 +2306,7 @@ def create_app():
                 shifts_data, warnings_data, staff_list_data, year, month,
                 group=group, half=half, oncall_map=oncall_map, cook_labels=cook_labels,
             )
-            group_part = "chori" if group == "cooking" else "kaigokango"
-            half_part = "kohan" if half == "second" else "zenhan"
-            filename = f"shift_{group_part}_{half_part}_{year:04d}-{month:02d}.xlsx"
+            filename = _jp_export_filename(year, month, group, half, "xlsx")
         else:
             buf = export_excel(
                 shifts_data, warnings_data, staff_list_data, year, month,
@@ -2358,10 +2365,8 @@ def create_app():
             shifts_data, warnings_data, staff_list_data, year, month,
             group=group, half=half, oncall_map=oncall_map, cook_labels=cook_labels,
         )
-        # ファイル名: shift_{kaigokango|chori}_{zenhan|kohan}_YYYY-MM.pdf
-        group_part = "chori" if group == "cooking" else "kaigokango"
-        half_part = "kohan" if half == "second" else "zenhan"
-        filename = f"shift_{group_part}_{half_part}_{year:04d}-{month:02d}.pdf"
+        # ファイル名（依頼文26）: シフト表_{年}年{月}月_{介護看護|調理}_{前半|後半}.pdf
+        filename = _jp_export_filename(year, month, group, half, "pdf")
 
         return send_file(
             buf,
@@ -2386,13 +2391,12 @@ def create_app():
             half = "first"
         try:
             file_bytes = f.read()
-            buf = export_pdf_from_excel(file_bytes, group=group, half=half)
+            buf, year, month = export_pdf_from_excel(file_bytes, group=group, half=half)
         except Exception as e:  # 形式不一致など
             return jsonify({"error": f"Excelの読み取りに失敗しました: {e}"}), 400
 
-        group_part = "chori" if group == "cooking" else "kaigokango"
-        half_part = "kohan" if half == "second" else "zenhan"
-        filename = f"shift_{group_part}_{half_part}_from_excel.pdf"
+        # 依頼文26: アップロード由来でも同じ日本語命名（対象月はExcelから取得）
+        filename = _jp_export_filename(year, month, group, half, "pdf")
         return send_file(
             buf,
             mimetype="application/pdf",

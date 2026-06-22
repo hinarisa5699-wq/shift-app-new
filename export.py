@@ -1045,7 +1045,9 @@ def export_pdf_from_excel(file_bytes, group: str = "care", half: str = "first") 
     first_d = sel_cols[0][2]
     last_d = sel_cols[-1][2]
     title = f"{year}年{month}月 シフト表（{group_label} {half_label}：{first_d}〜{last_d}日）"
-    return _render_pdf_table(title, sel_dates, staff_rows, summary_rows)
+    buf = _render_pdf_table(title, sel_dates, staff_rows, summary_rows)
+    # 依頼文26: ファイル名に対象月を入れるため year/month も返す
+    return buf, year, month
 
 
 def export_excel_group_half(

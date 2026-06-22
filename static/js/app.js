@@ -588,9 +588,15 @@ function excelToPdf() {
                 throw new Error(msg);
             }
             const disposition = response.headers.get('Content-Disposition') || '';
-            let filename = `shift_${group}_${half}_from_excel.pdf`;
-            const m = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i);
-            if (m && m[1]) filename = decodeURIComponent(m[1]);
+            let filename = 'シフト表.pdf';
+            // filename*=UTF-8''<percent-encoded> を優先（日本語名）、無ければ filename= にフォールバック
+            const mStar = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+            const mPlain = disposition.match(/filename="?([^";]+)"?/i);
+            if (mStar && mStar[1]) {
+                filename = decodeURIComponent(mStar[1]);
+            } else if (mPlain && mPlain[1]) {
+                filename = mPlain[1];
+            }
             const blob = await response.blob();
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');

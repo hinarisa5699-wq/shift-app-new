@@ -370,6 +370,7 @@ def generate_shift(
     day_off_requests: list,
     settings: dict,
     allowed_patterns: dict = None,
+    locked_shifts: list = None,
 ) -> tuple[list, list]:
     """
     シフトを自動生成する。
@@ -379,9 +380,27 @@ def generate_shift(
     allowed_patterns: {staff_id: set(assignment_codes)} or None
         エントリがある職員 → そのアサインメントのみ許可
         エントリがない職員 → 全アサインメント許可
+
+    locked_shifts: 固定職員の既存シフト dict のリスト（依頼文28）or None
+        各要素は {"date": "YYYY-MM-DD", "staff_id", "assignment", + 役割列...}。
+        固定職員はソルバーで既存アサインメントにピン留めし（人数・在籍・重複の計算に
+        算入）、生成結果からは除外して返す（既存シフトは呼び出し側＝app.py が温存する）。
+        後処理（入浴・相談・食事）も固定職員の既存役割を『使用済み』として扱い、
+        残り職員に二重割当しない。
     """
     if allowed_patterns is None:
         allowed_patterns = {}
+    if locked_shifts is None:
+        locked_shifts = []
+
+    # 固定職員：ピン留め用のアサインメント辞書を作る
+    care_ids = {s["id"] for s in care_staff}
+    cook_ids = {s["id"] for s in cook_staff}
+    locked_ids = {it["staff_id"] for it in locked_shifts}
+    locked_assignments = {}
+    for it in locked_shifts:
+        locked_assignments.setdefault(it["staff_id"], {})[it["date"]] = it["assignment"]
+    locked_care_shifts = [it for it in locked_shifts if it["staff_id"] in care_ids]
 
     num_days = calendar.monthrange(year, month)[1]
     all_dates = [datetime.date(year, month, d) for d in range(1, num_days + 1)]
@@ -396,12 +415,18 @@ def generate_shift(
     care_shifts, care_warnings = _solve_care_with_fallback(
         year, month, all_dates, care_staff, day_off_requests, settings,
         allowed_patterns=allowed_patterns,
+        locked_assignments=locked_assignments,
     )
+    # 固定職員は生成結果から除外（既存シフトは app.py が温存）。
+    if locked_ids:
+        care_shifts = [it for it in care_shifts if it["staff_id"] not in locked_ids]
 
     # --- 介護フロアの役割・休憩割当（後処理）---
     # お風呂当番(中2/外1)・相談員(1日1名・終日)・食事介助・固定休憩をまとめて付与。
+    # 固定職員の既存役割(locked_care_shifts)は『使用済み』として数え、二重割当を防ぐ。
     care_shifts, role_warnings = _assign_care_roles(
-        care_shifts, care_staff, settings, all_dates
+        care_shifts, care_staff, settings, all_dates,
+        locked_shifts=locked_care_shifts,
     )
     care_warnings.extend(role_warnings)
 
@@ -409,7 +434,10 @@ def generate_shift(
     cook_shifts, cook_warnings = _solve_cooking_with_fallback(
         year, month, all_dates, cook_staff, day_off_requests, settings,
         allowed_patterns=allowed_patterns,
+        locked_assignments=locked_assignments,
     )
+    if locked_ids:
+        cook_shifts = [it for it in cook_shifts if it["staff_id"] not in locked_ids]
 
     # --- ① 調理の休憩時間（固定のみ）---
     cook_shifts = _assign_break_times(cook_shifts, all_dates)
@@ -688,7 +716,7 @@ _MEAL_MID = "12:30-13:00"          # 中介助（休憩明けに後半をカバ�
 _COUNSELOR_FULL_DAY_SLOTS = [0, 1, 2, 3]
 
 
-def _assign_care_roles(shifts_data, care_staff, settings, all_dates):
+def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shifts=None):
     """介護フロアの役割と休憩を1日単位で割り当てる。
 
     変更1: 相談員は1日1名のみ、終日相談/事務（counselor_desk_slots=[0,1,2,3]）。
@@ -697,9 +725,20 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates):
     変更4: 食事介助（看護師・リハ=12:00-13:00 通し、介護職員担当2名=12:00-12:30、
             中介助2名=12:30-13:00、残りは休憩明け要員でカバー）。
 
+    locked_shifts（依頼文28）: 固定職員の既存シフト dict のリスト。これらは shifts_data に
+        含まれず再割当しないが、その日の役割枠（相談員1名・入浴 中2外1・食事介助2名）を
+        『使用済み』として数え、残り職員に二重割当・超過が生じないようにする。
+
     Returns: (shifts_data, warnings)
     """
     warnings = []
+    if locked_shifts is None:
+        locked_shifts = []
+
+    # 固定職員の既存役割を日付別に集計（枠の使用済み数を差し引くため）
+    locked_by_date = {}
+    for it in locked_shifts:
+        locked_by_date.setdefault(it["date"], []).append(it)
 
     # --- 職員区分の特定 ---
     nurse_pt_ids = {
@@ -745,6 +784,15 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates):
 
         item_by_sid = {it["staff_id"]: it for it in day_items}
 
+        # 固定職員（依頼文28）がその日に既に占有している役割枠を集計
+        locked_items_today = locked_by_date.get(d_str, [])
+        locked_counselor = any(it.get("counselor_desk_slots") for it in locked_items_today)
+        locked_mid = sum(1 for it in locked_items_today if it.get("bath_role") == "中")
+        locked_out = sum(1 for it in locked_items_today if it.get("bath_role") == "外")
+        locked_meal_care = sum(
+            1 for it in locked_items_today if it.get("meal_assist") == _MEAL_CARE_EARLY
+        )
+
         # フロア在籍の介護職員（看護師・リハを除く）と看護師・リハ
         floor_ids = [
             it["staff_id"] for it in day_items
@@ -765,12 +813,13 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates):
         forced_mid = late_ids[0] if late_ids else None
 
         # --- 変更1: 相談員 1日1名（終日相談）。遅番(中介助確保)は相談員にしない ---
+        # 固定職員が既に相談員枠を占有している日は、新たに相談員を立てない。
         selected_counselor = None
         working_counselors = [
             sid for sid in floor_ids
             if sid in counselor_ids and sid != forced_mid
         ]
-        if working_counselors:
+        if working_counselors and not locked_counselor:
             selected_counselor = min(
                 working_counselors,
                 key=lambda sid: (counselor_count.get(sid, 0), sid),
@@ -792,18 +841,21 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates):
             and (not bath_filter_active or sid in bath_capable_ids)
         ]
         bath_pool.sort(key=lambda sid: (bath_count.get(sid, 0), sid))
-        n_bath = _BATH_MID_COUNT + _BATH_OUT_COUNT
+        # 固定職員が既に占有している中/外の分だけ必要数を減らす（依頼文28）
+        need_mid = max(_BATH_MID_COUNT - locked_mid, 0)
+        need_out = max(_BATH_OUT_COUNT - locked_out, 0)
+        n_bath = need_mid + need_out
 
-        if forced_mid is not None:
-            # 遅番の人を中介助の1枠に固定し、残り中1・外1をプールから補充する。
-            remaining_mid = max(_BATH_MID_COUNT - 1, 0)
+        if forced_mid is not None and need_mid > 0:
+            # 遅番の人を中介助の1枠に固定し、残りの中・外をプールから補充する。
+            remaining_mid = max(need_mid - 1, 0)
             mid_ids = [forced_mid] + bath_pool[:remaining_mid]
-            out_ids = bath_pool[remaining_mid:remaining_mid + _BATH_OUT_COUNT]
+            out_ids = bath_pool[remaining_mid:remaining_mid + need_out]
             bath_selected = mid_ids + out_ids
         else:
             bath_selected = bath_pool[:n_bath]
-            mid_ids = bath_selected[:_BATH_MID_COUNT]
-            out_ids = bath_selected[_BATH_MID_COUNT:n_bath]
+            mid_ids = bath_selected[:need_mid]
+            out_ids = bath_selected[need_mid:n_bath]
 
         # 公平性カウンタ更新（遅番固定分は均等ローテに含めない）
         for sid in bath_selected:
@@ -834,7 +886,9 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates):
             if sid != selected_counselor and sid not in mid_ids
         ]
         meal_pool.sort(key=lambda sid: (meal_count.get(sid, 0), sid))
-        for sid in meal_pool[:_MEAL_CARE_COUNT]:
+        # 固定職員が既に占有している食事介助(12:00-12:30)枠の分だけ必要数を減らす
+        need_meal_care = max(_MEAL_CARE_COUNT - locked_meal_care, 0)
+        for sid in meal_pool[:need_meal_care]:
             meal_count[sid] = meal_count.get(sid, 0) + 1
             item_by_sid[sid]["meal_assist"] = _MEAL_CARE_EARLY
 
@@ -1357,7 +1411,7 @@ def _validate_onsite_staffing(shifts_data, all_dates, min_required, nurse_pt_sta
 # ===========================================================================
 def _solve_care_with_fallback(
     year, month, all_dates, care_staff, day_off_requests, settings,
-    allowed_patterns=None,
+    allowed_patterns=None, locked_assignments=None,
 ):
     """
     介護職員のシフトを生成する。
@@ -1501,6 +1555,7 @@ def _solve_care_with_fallback(
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
         use_slack=False,
+        locked_assignments=locked_assignments or {},
     )
     if shifts_data is not None:
         if _phone_no_eligible_warning:
@@ -1532,6 +1587,7 @@ def _solve_care_with_fallback(
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
         use_slack=True,
+        locked_assignments=locked_assignments or {},
     )
     if shifts_data is not None:
         if _phone_no_eligible_warning:
@@ -1573,6 +1629,7 @@ def _solve_care_with_fallback(
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
         use_slack=True,
+        locked_assignments=locked_assignments or {},
     )
     if shifts_data is not None:
         if relaxed_rule_names:
@@ -1629,9 +1686,15 @@ def _solve_care(
     min_early_staff: int = 1,
     min_late_staff: int = 1,
     use_slack: bool = False,
+    locked_assignments: dict = None,
 ):
     """
     介護職員の CP-SAT モデルを構築し解を求める。
+
+    locked_assignments: {staff_id: {date_iso: assignment_code}} or None（依頼文28）
+        固定職員。指定日のアサインメントに x をピン留めし、それ以外の日は休み(off)に
+        固定する。固定職員は各種「個人制約」の対象外（=既存シフトをそのまま温存）だが、
+        人数・在籍・重複などの全体制約には『埋まっている枠』として算入される。
     """
     if placement_rules is None:
         placement_rules = []
@@ -1641,6 +1704,8 @@ def _solve_care(
         oncall_forced_off = []
     if oncall_work_days is None:
         oncall_work_days = []
+    if locked_assignments is None:
+        locked_assignments = {}
 
     model = cp_model.CpModel()
     num_days = len(all_dates)
@@ -1697,6 +1762,26 @@ def _solve_care(
         return d_idx in visit_day_indices
 
     # ==================================================================
+    # 固定職員のピン留め（依頼文28）
+    #   locked_staff_ids: 既存シフトを温存し、生成対象外にする職員。
+    #   各日 x を「既存アサインメント」または「休み(off)」に固定する。
+    #   これにより人数・在籍・重複などの全体制約は固定分を『埋まっている枠』として
+    #   自動的に算入する。個人制約（曜日・希望休・許可パターン・連勤・週回数など）は
+    #   固定職員には課さない（free_staff_ids のみ対象）。
+    # ==================================================================
+    locked_staff_ids = {s for s in staff_ids if s in locked_assignments}
+    free_staff_ids = [s for s in staff_ids if s not in locked_staff_ids]
+    for s in locked_staff_ids:
+        day_map = locked_assignments.get(s) or {}
+        for d_idx, dt in enumerate(all_dates):
+            a = day_map.get(dt.isoformat())
+            if a in CARE_ASSIGNMENTS and a != "off":
+                model.add(x[s, d_idx, a] == 1)
+            else:
+                # 既存シフトが無い日（=休み）は off に固定
+                model.add(x[s, d_idx, "off"] == 1)
+
+    # ==================================================================
     # ② 看護師/PT判定（デイ人数・9時/15時制約の両方で使用）
     # ==================================================================
     nurse_pt_qual_ids = set()
@@ -1727,7 +1812,7 @@ def _solve_care(
                 model.add(x[s, d_idx, "nurse_short"] == 0)
 
     # ==================================================================
-    # 制約: 訪問非営業日は訪問系アサインメント不可
+    # 制約: 訪問非営業日（営業曜日外＋祝日）は訪問系アサインメント不可
     # ==================================================================
     for d_idx, dt in enumerate(all_dates):
         if d_idx in closed_day_indices:
@@ -1752,7 +1837,7 @@ def _solve_care(
     # ==================================================================
     # 制約: 勤務可能曜日の遵守
     # ==================================================================
-    for s in staff_ids:
+    for s in free_staff_ids:
         info = staff_by_id[s]
         avail_weekdays = set(info["available_days"])
         for d_idx, dt in enumerate(all_dates):
@@ -1888,7 +1973,9 @@ def _solve_care(
             continue
         _d = datetime.date.fromisoformat(_diso) if isinstance(_diso, str) else _diso
         _di = _date_to_idx.get(_d)
-        if _di is not None and _sid in staff_by_id:
+        # 固定職員（依頼文28）は既存シフトを温存するため、再計算したオンコールの
+        # 翌日休を課さない（ピン留めと衝突するのを防ぐ）。
+        if _di is not None and _sid in staff_by_id and _sid not in locked_staff_ids:
             model.add(x[_sid, _di, "off"] == 1)
 
     # ==================================================================
@@ -1953,7 +2040,7 @@ def _solve_care(
         if _di is not None and _sid in staff_by_id:
             oncall_day_idx_by_staff.setdefault(_sid, set()).add(_di)
 
-    for s in staff_ids:
+    for s in free_staff_ids:
         info = staff_by_id[s]
         max_con = info["max_consecutive_days"]
         window = max_con + 1
@@ -1975,7 +2062,7 @@ def _solve_care(
     # ==================================================================
     min_pw_penalties = []
     min_pw_hard_penalties = []
-    for s in staff_ids:
+    for s in free_staff_ids:
         info = staff_by_id[s]
         max_pw = info["max_days_per_week"]
         min_pw = info.get("min_days_per_week", 0)
@@ -2080,7 +2167,7 @@ def _solve_care(
         day_am_count = sum(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in DAY_AM_ASSIGNMENTS
         )
-        # 早番は訪問非営業日のみ「終日デイ」＝午前もデイにカウント（営業日はAM訪問のため除外）
+        # 早番は訪問非営業日（祝日含む）のみ「終日デイ」＝午前もデイにカウント（営業日はAM訪問のため除外）
         if not _is_visit_day(d_idx):
             day_am_count = day_am_count + sum(
                 x[s, d_idx, "early"] for s in non_nurse_pt_staff
@@ -2099,7 +2186,7 @@ def _solve_care(
         model.add(day_pm_count <= max_day_service)
 
     # ==================================================================
-    # 制約: 訪問介護午前はちょうど指定人数（休業日・訪問非営業日はスキップ）
+    # 制約: 訪問介護午前はちょうど指定人数（休業日・訪問非営業日・祝日はスキップ）
     # ==================================================================
     for d_idx, dt in enumerate(all_dates):
         if d_idx in closed_day_indices:
@@ -2117,7 +2204,7 @@ def _solve_care(
         model.add(visit_am_count <= min_visit_am)
 
     # ==================================================================
-    # 制約: 訪問介護午後はちょうど指定人数（休業日・訪問非営業日はスキップ）
+    # 制約: 訪問介護午後はちょうど指定人数（休業日・訪問非営業日・祝日はスキップ）
     # ==================================================================
     for d_idx, dt in enumerate(all_dates):
         if d_idx in closed_day_indices:
@@ -2163,7 +2250,7 @@ def _solve_care(
         count_11 = sum(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in PRESENT_AT_11
         )
-        # 早番は訪問非営業日のみ午前も事業所在籍（営業日はAM訪問で外出）
+        # 早番は訪問非営業日（祝日含む）のみ午前も事業所在籍（営業日はAM訪問で外出）
         if not _is_visit_day(d_idx):
             _early_present_am = sum(x[s, d_idx, "early"] for s in non_nurse_pt_staff)
             count_9 = count_9 + _early_present_am
@@ -2673,7 +2760,7 @@ def _add_placement_rules(
 # ===========================================================================
 def _solve_cooking_with_fallback(
     year, month, all_dates, cook_staff, day_off_requests, settings,
-    allowed_patterns=None,
+    allowed_patterns=None, locked_assignments=None,
 ):
     """
     調理職員のシフトを生成する。
@@ -2736,6 +2823,7 @@ def _solve_cooking_with_fallback(
         allowed_patterns=allowed_patterns or {},
         cooking_types=cooking_types,
         use_slack=False,
+        locked_assignments=locked_assignments or {},
     )
     if shifts_data is not None:
         return shifts_data, warnings_data
@@ -2748,6 +2836,7 @@ def _solve_cooking_with_fallback(
         allowed_patterns=allowed_patterns or {},
         cooking_types=cooking_types,
         use_slack=True,
+        locked_assignments=locked_assignments or {},
     )
     if shifts_data is not None:
         return shifts_data, warnings_data
@@ -2775,12 +2864,19 @@ def _solve_cooking(
     allowed_patterns: dict = None,
     cooking_types: list = None,
     use_slack: bool = False,
+    locked_assignments: dict = None,
 ):
     """
     調理職員の CP-SAT モデルを構築し解を求める。
+
+    locked_assignments: {staff_id: {date_iso: assignment_code}} or None（依頼文28）
+        固定職員。指定日のアサインメントにピン留めし、それ以外は cook_off に固定する。
+        人数制約には固定分を算入し、個人制約（連勤等）の対象外とする。
     """
     if cooking_combo_rules is None:
         cooking_combo_rules = []
+    if locked_assignments is None:
+        locked_assignments = {}
 
     # 依頼文21: 調理シフト種類マスタから動的に構築（空なら既定①〜⑤）。
     cook_working, cook_time_ranges, cook_coverage = _build_cooking_maps(cooking_types)
@@ -2814,6 +2910,22 @@ def _solve_cooking(
         if dt.weekday() in closed_days_set:
             closed_day_indices.add(d_idx)
             for s in staff_ids:
+                model.add(x[s, d_idx, "cook_off"] == 1)
+
+    # ==================================================================
+    # 固定職員のピン留め（依頼文28）
+    #   既存シフトを温存し生成対象外にする。各日 x を既存アサインメント or cook_off に
+    #   固定。人数制約には固定分を算入し、個人制約は free_staff_ids のみ対象とする。
+    # ==================================================================
+    locked_staff_ids = {s for s in staff_ids if s in locked_assignments}
+    free_staff_ids = [s for s in staff_ids if s not in locked_staff_ids]
+    for s in locked_staff_ids:
+        day_map = locked_assignments.get(s) or {}
+        for d_idx, dt in enumerate(all_dates):
+            a = day_map.get(dt.isoformat())
+            if a in cook_assignments and a != "cook_off":
+                model.add(x[s, d_idx, a] == 1)
+            else:
                 model.add(x[s, d_idx, "cook_off"] == 1)
 
     # ==================================================================
@@ -2913,7 +3025,7 @@ def _solve_cooking(
     # ==================================================================
     # 制約: 連勤上限
     # ==================================================================
-    for s in staff_ids:
+    for s in free_staff_ids:
         info = staff_by_id[s]
         max_con = info["max_consecutive_days"]
         window = max_con + 1
@@ -2926,7 +3038,7 @@ def _solve_cooking(
     # 制約: 週の勤務日数上限・下限（月曜始まり）
     # ==================================================================
     cook_min_pw_penalties = []
-    for s in staff_ids:
+    for s in free_staff_ids:
         info = staff_by_id[s]
         max_pw = info["max_days_per_week"]
         min_pw = info.get("min_days_per_week", 0)

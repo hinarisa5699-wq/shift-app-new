@@ -254,6 +254,25 @@ function generateShift() {
 /* ============================================
    カレンダー描画
    ============================================ */
+/* ============================================
+   依頼文28: 職員ごとのシフト固定 ON/OFF
+   ============================================ */
+function toggleShiftFix(staffId, makeFixed) {
+    const y = currentYear, m = currentMonth;
+    if (!y || !m) return;
+    fetchWithCsrf('/api/shift-fix', {
+        method: 'POST',
+        body: JSON.stringify({ staff_id: staffId, year: y, month: m, fixed: makeFixed }),
+    })
+        .then(r => r.json())
+        .then(res => {
+            if (res && res.error) { alert(res.error); loadShifts(y, m); return; }
+            // 固定状態は次回の再生成から反映される。表示を更新してチェック状態を確定。
+            loadShifts(y, m);
+        })
+        .catch(() => { alert('固定の切り替えに失敗しました。'); loadShifts(y, m); });
+}
+
 function renderCalendar(data, year, month) {
     const table = document.getElementById('calendar-table');
     if (!table) return;
@@ -272,6 +291,7 @@ function renderCalendar(data, year, month) {
 
     const shifts = data.shifts || [];
     const staffList = data.staff_list || [];
+    const fixedSet = new Set(data.fixed_staff_ids || []);  // 依頼文28: 固定中の職員ID
     const holidays = data.holidays || {};
     const oncallMap = data.oncall || {};  // {date: 氏名} オンコール担当
     const parkingMap = data.parking || {};  // 駐車場 {date: {staff_id: "4"/"7"/"8"/"コイン"}}
@@ -398,12 +418,18 @@ function renderCalendar(data, year, month) {
         return `${badge}${bathDisplay}${phoneBadge}${parkingBadge(dateStr, s.id)}${deskLabel}`;
     }
 
-    // 職員名セル（資格併記）
+    // 職員名セル（資格併記＋シフト固定トグル）
     function nameCellHtml(s, showQual) {
         const quals = (s.qualifications || []).join('/');
         const qualLabel = (showQual && quals)
             ? `<br><span style="font-weight:normal;font-size:9px;color:#9ca3af">${escapeHtml(quals)}</span>` : '';
-        return `<td class="staff-name-cell" style="text-align:left;font-weight:600;white-space:nowrap;background:#f9fafb;position:sticky;left:0;z-index:5">${escapeHtml(s.name)}${qualLabel}</td>`;
+        // 依頼文28: この月のシフトを固定（再生成の対象外）にするトグル
+        const isFixed = fixedSet.has(s.id);
+        const fixToggle =
+            `<br><label class="fix-toggle" style="font-weight:normal;font-size:10px;cursor:pointer;white-space:nowrap;color:${isFixed ? '#dc2626' : '#9ca3af'}"`
+            + ` title="ONにすると ${year}年${month}月 のこの職員のシフトを固定し、再生成しても変更しません">`
+            + `<input type="checkbox" ${isFixed ? 'checked' : ''} onchange="toggleShiftFix(${s.id}, this.checked)" style="vertical-align:middle"> ${isFixed ? '固定中' : '固定'}</label>`;
+        return `<td class="staff-name-cell" style="text-align:left;font-weight:600;white-space:nowrap;background:#f9fafb;position:sticky;left:0;z-index:5">${escapeHtml(s.name)}${qualLabel}${fixToggle}</td>`;
     }
 
     let html = '<thead>' + sectionTitleRow('介護スタッフ') + headerRowHtml() + '</thead><tbody>';

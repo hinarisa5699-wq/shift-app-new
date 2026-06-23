@@ -45,7 +45,7 @@ from models import (
     db, Staff, DayOffRequest, ShiftSettings, GeneratedShift, ShiftWarning,
     ShiftPattern, Qualification, StaffQualification, PlacementRule, CookingComboRule,
     StaffAllowedPattern, StaffWorkableDate, OncallAssignment, ShiftConfirmation,
-    ParkingSlot, ParkingAssignment,
+    ParkingSlot, ParkingAssignment, ShiftFix,
 )
 from parking import assign_parking
 from solver import (
@@ -2093,11 +2093,30 @@ def create_app():
                 (it["staff_id"], it["date"].isoformat()) for it in oncall_items
             ]
 
+        # --- 固定職員（依頼文28）の既存シフトを読み込む ---
+        #   固定職員は再生成の対象外。既存シフトをそのまま温存し、ソルバーには
+        #   「埋まっている枠」としてピン留めで渡す（人数・在籍・重複の整合を保つ）。
+        first_day = date(year, month, 1)
+        last_day = date(year, month, calendar.monthrange(year, month)[1])
+        fixed_ids = {
+            f.staff_id for f in ShiftFix.query.filter_by(year=year, month=month).all()
+        }
+        fixed_rows = []
+        locked_shifts = []
+        if fixed_ids:
+            fixed_rows = GeneratedShift.query.filter(
+                GeneratedShift.date >= first_day,
+                GeneratedShift.date <= last_day,
+                GeneratedShift.staff_id.in_(fixed_ids),
+            ).all()
+            locked_shifts = [r.to_dict() for r in fixed_rows]
+
         # ソルバー実行（ケアと調理を独立して解く）
         try:
             shifts_data, warnings_data = generate_shift(
                 year, month, care_dicts, cook_dicts, dayoff_dicts, settings_dict,
                 allowed_patterns=allowed_patterns_map,
+                locked_shifts=locked_shifts,
             )
         except Exception as e:
             app.logger.error("シフト生成中にエラーが発生しました", exc_info=True)
@@ -2108,12 +2127,14 @@ def create_app():
 
         try:
             # 既存の同月シフトを削除（最新結果のみ保持）
-            first_day = date(year, month, 1)
-            last_day = date(year, month, calendar.monthrange(year, month)[1])
-            GeneratedShift.query.filter(
+            #   固定職員（依頼文28）の行は削除しない（既存シフトを温存）。
+            gs_del = GeneratedShift.query.filter(
                 GeneratedShift.date >= first_day,
                 GeneratedShift.date <= last_day,
-            ).delete()
+            )
+            if fixed_ids:
+                gs_del = gs_del.filter(~GeneratedShift.staff_id.in_(fixed_ids))
+            gs_del.delete(synchronize_session=False)
             ShiftWarning.query.filter(
                 ShiftWarning.date >= first_day,
                 ShiftWarning.date <= last_day,
@@ -2187,9 +2208,18 @@ def create_app():
                 db.session.add(warn)
                 saved_warnings.append(warn)
 
+            # --- 固定職員（依頼文28）の既存行を新しい generation_id に付け替え ---
+            #   シフト内容（assignment・入浴・食事・相談・休憩・電話当番）は一切変えず、
+            #   月内の generation_id を統一するためだけに更新する。
+            for r in fixed_rows:
+                r.generation_id = generation_id
+
             # --- 駐車場の割り当て（依頼文24）：solver非干渉の後処理 ---
             #   各営業日に出勤する車通勤者へ枠を割り当て、溢れは「コイン」。
-            _save_parking_assignments(generation_id, year, month, shifts_data)
+            #   固定職員も「出勤している枠」として駐車計算に含める。
+            _save_parking_assignments(
+                generation_id, year, month, shifts_data + locked_shifts
+            )
 
             db.session.commit()
         except Exception as e:
@@ -2276,6 +2306,11 @@ def create_app():
         # 確定情報（この月）
         conf = ShiftConfirmation.query.filter_by(year=year, month=month).first()
 
+        # 固定職員（依頼文28）: この月に固定されている staff_id のリスト
+        fixed_staff_ids = [
+            f.staff_id for f in ShiftFix.query.filter_by(year=year, month=month).all()
+        ]
+
         return jsonify(
             {
                 "year": year,
@@ -2287,6 +2322,7 @@ def create_app():
                 "oncall": oncall_map,
                 "parking": parking_map,
                 "confirmation": conf.to_dict() if conf else None,
+                "fixed_staff_ids": fixed_staff_ids,
                 "staff_list": [
                     {
                         "id": st.id,
@@ -2305,6 +2341,52 @@ def create_app():
                 },
             }
         )
+
+    @app.route("/api/shift-fix/<int:year>/<int:month>", methods=["GET"])
+    def api_shift_fix_get(year, month):
+        """その月に固定されている職員ID一覧を返す（依頼文28）。"""
+        if month < 1 or month > 12 or year < 2000 or year > 2100:
+            return jsonify({"error": "year/month が不正です"}), 400
+        ids = [
+            f.staff_id for f in ShiftFix.query.filter_by(year=year, month=month).all()
+        ]
+        return jsonify({"year": year, "month": month, "fixed_staff_ids": ids})
+
+    @app.route("/api/shift-fix", methods=["POST"])
+    def api_shift_fix_set():
+        """職員のシフト固定 ON/OFF を切り替える（依頼文28）。
+        body: {staff_id, year, month, fixed: true/false}
+        fixed=true でエントリ追加（固定）、false で削除（解除）。
+        """
+        data = request.get_json(silent=True) or {}
+        try:
+            staff_id = int(data["staff_id"])
+            year = int(data["year"])
+            month = int(data["month"])
+            fixed = bool(data["fixed"])
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"error": "staff_id / year / month / fixed は必須です"}), 400
+
+        if month < 1 or month > 12 or year < 2000 or year > 2100:
+            return jsonify({"error": "year/month が不正です"}), 400
+
+        if Staff.query.get(staff_id) is None:
+            return jsonify({"error": "職員が見つかりません"}), 404
+
+        existing = ShiftFix.query.filter_by(
+            staff_id=staff_id, year=year, month=month
+        ).first()
+
+        if fixed:
+            if existing is None:
+                db.session.add(ShiftFix(staff_id=staff_id, year=year, month=month))
+        else:
+            if existing is not None:
+                db.session.delete(existing)
+        db.session.commit()
+
+        return jsonify({"status": "success", "staff_id": staff_id,
+                        "year": year, "month": month, "fixed": fixed})
 
     @app.route("/api/shifts/<int:year>/<int:month>/confirm", methods=["POST"])
     def api_shift_confirm(year, month):

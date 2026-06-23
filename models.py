@@ -258,6 +258,34 @@ class ShiftConfirmation(db.Model):
         }
 
 
+class ShiftFix(db.Model):
+    """職員ごとのシフト固定（依頼文28）
+    エントリがある (staff_id, year, month) は「固定」＝再生成の対象外。
+    既存シフトをそのまま残し、ソルバーの生成対象から除外する。
+    解除はエントリ削除で行う。
+    """
+    __tablename__ = "shift_fix"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    staff_id = db.Column(
+        db.Integer, db.ForeignKey("staff.id", ondelete="CASCADE"), nullable=False
+    )
+    year = db.Column(db.Integer, nullable=False)
+    month = db.Column(db.Integer, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint("staff_id", "year", "month", name="uq_shift_fix_staff_ym"),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "staff_id": self.staff_id,
+            "year": self.year,
+            "month": self.month,
+        }
+
+
 class ShiftSettings(db.Model):
     """シフト条件設定"""
     __tablename__ = "shift_settings"

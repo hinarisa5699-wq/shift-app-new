@@ -209,6 +209,12 @@ function generateShift() {
         body: JSON.stringify({ year: year, month: month }),
     })
         .then(response => {
+            // 依頼文30: サーバがHTML(タイムアウト502等)を返した場合に
+            // 「Unexpected token '<'」ではなく分かりやすいメッセージにする。
+            const ct = response.headers.get('content-type') || '';
+            if (!ct.includes('application/json')) {
+                throw new Error(`サーバーエラー（${response.status}）が発生しました。生成に時間がかかり過ぎた可能性があります。少し待ってから再度お試しください。`);
+            }
             if (!response.ok) {
                 return response.json().then(err => {
                     throw new Error(err.error || err.message || 'シフト生成に失敗しました。');

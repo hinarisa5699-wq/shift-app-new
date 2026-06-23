@@ -2504,8 +2504,10 @@ def _solve_care(
     # ソルバー実行
     # ==================================================================
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 45
-    solver.parameters.num_workers = 1
+    # 依頼文30: 本番(Render)の弱いCPU＋gunicornタイムアウトでワーカーが落ちないよう、
+    # 探索時間を短縮（45→25秒）。num_workers=8 で並列探索し短時間でも解の質を確保。
+    solver.parameters.max_time_in_seconds = 25
+    solver.parameters.num_workers = 8
     solver.parameters.random_seed = 0
 
     status = solver.solve(model)
@@ -3197,7 +3199,8 @@ def _solve_cooking(
     # ソルバー実行
     # ==================================================================
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 25
+    # 依頼文30: 調理は規模が小さく早く解けるため上限を短縮（25→15秒）。
+    solver.parameters.max_time_in_seconds = 15
     solver.parameters.num_workers = 8
 
     status = solver.solve(model)

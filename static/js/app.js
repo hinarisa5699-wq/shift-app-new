@@ -32,27 +32,27 @@ function fetchWithCsrf(url, options = {}) {
    配置タイプの定義
    ============================================ */
 const ASSIGNMENT_MAP = {
-    day_pattern1:    { label: '訪問8:30-17:30',  badgeClass: 'badge-day-full'  },
-    day_pattern2:    { label: '訪問9:00-16:00',  badgeClass: 'badge-day-p2'   },
-    day_pattern3:    { label: '訪問午前のみ',     badgeClass: 'badge-day-am'   },
-    day_pattern4:    { label: '訪問午後のみ',     badgeClass: 'badge-day-pm'   },
+    day_pattern1:    { label: 'デイ8:30-17:30',  badgeClass: 'badge-day-full'  },
+    day_pattern2:    { label: 'デイ9:00-16:00',  badgeClass: 'badge-day-p2'   },
+    day_pattern3:    { label: 'デイ午前のみ',     badgeClass: 'badge-day-am'   },
+    day_pattern4:    { label: 'デイ午後のみ',     badgeClass: 'badge-day-pm'   },
     early:           { label: '早番7:30-16:30',  badgeClass: 'badge-day-full' },
     late:            { label: '遅番9:30-18:30',  badgeClass: 'badge-day-p2'   },
     nurse_short:     { label: '看護9:30-13:30',  badgeClass: 'badge-visit-am' },
-    visit_am:        { label: 'デイ午前のみ',     badgeClass: 'badge-visit-am'  },
-    visit_pm:        { label: 'デイ午後のみ',     badgeClass: 'badge-visit-pm'  },
-    day_p3_visit_pm: { label: '兼務(訪問→デイ)',  badgeClass: 'badge-dual-a'    },
-    visit_am_day_p4: { label: '兼務(デイ→訪問)',  badgeClass: 'badge-dual-b'    },
+    visit_am:        { label: '訪問午前のみ',     badgeClass: 'badge-visit-am'  },
+    visit_pm:        { label: '訪問午後のみ',     badgeClass: 'badge-visit-pm'  },
+    day_p3_visit_pm: { label: '兼務(デイ→訪問)',  badgeClass: 'badge-dual-a'    },
+    visit_am_day_p4: { label: '兼務(訪問→デイ)',  badgeClass: 'badge-dual-b'    },
     cooking_1:      { label: '①6-8',            badgeClass: 'badge-cook-1'    },
     cooking_2:    { label: '②8-13',           badgeClass: 'badge-cook-2'    },
     cooking_3:       { label: '③12-19',          badgeClass: 'badge-cook-3'    },
     cooking_4:       { label: '④6-13',           badgeClass: 'badge-cook-4'    },
     cooking_5:        { label: '⑤9-15',           badgeClass: 'badge-cook-2'    },
     // 旧名の後方互換
-    day_am:          { label: '訪問午前のみ',     badgeClass: 'badge-day-am'   },
-    day_pm:          { label: '訪問午後のみ',     badgeClass: 'badge-day-pm'   },
-    day_am_visit_pm: { label: '兼務(訪問→デイ)',  badgeClass: 'badge-dual-a'   },
-    visit_am_day_pm: { label: '兼務(デイ→訪問)',  badgeClass: 'badge-dual-b'   },
+    day_am:          { label: 'デイ午前のみ',     badgeClass: 'badge-day-am'   },
+    day_pm:          { label: 'デイ午後のみ',     badgeClass: 'badge-day-pm'   },
+    day_am_visit_pm: { label: '兼務(デイ→訪問)',  badgeClass: 'badge-dual-a'   },
+    visit_am_day_pm: { label: '兼務(訪問→デイ)',  badgeClass: 'badge-dual-b'   },
 };
 
 // デイ午前に寄与するアサインメント
@@ -423,10 +423,10 @@ function renderCalendar(data, year, month) {
 
     // --- 介護スタッフ: サマリー行（日付ごとの配置数）---
     const careSummaryRows = [
-        ['訪問午前', DAY_AM_SET, 'understaffed_day_am', true],
-        ['訪問午後', DAY_PM_SET, 'understaffed_day_pm', true],
-        ['デイ午前', VISIT_AM_SET, 'understaffed_visit_am', false],
-        ['デイ午後', VISIT_PM_SET, 'understaffed_visit_pm', false],
+        ['デイ午前', DAY_AM_SET, 'understaffed_day_am', true],
+        ['デイ午後', DAY_PM_SET, 'understaffed_day_pm', true],
+        ['訪問午前', VISIT_AM_SET, 'understaffed_visit_am', false],
+        ['訪問午後', VISIT_PM_SET, 'understaffed_visit_pm', false],
         ['兼務者数', DUAL_SET, 'dual_shortage', false],
     ];
     careSummaryRows.forEach(([label, set, warnType, excludeNursePt]) => {

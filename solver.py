@@ -1680,6 +1680,23 @@ def _solve_care(
     non_closed_days = [d_idx for d_idx in range(num_days) if d_idx not in closed_day_indices]
 
     # ==================================================================
+    # 訪問の営業日判定（依頼文27）
+    #   訪問は「営業曜日(visit_operating_set)」の日に実施する。
+    #   既定 0,1,3,4（月火木金）＝ 水・土・日は訪問なし。
+    #   ※ 祝日は訪問する（依頼文27 追補: 祝日も営業曜日なら訪問あり）。
+    #   早番(early)も訪問営業日のみAM訪問・それ以外は終日デイになるため、
+    #   この判定を訪問関連の全制約で共通利用する。
+    # ==================================================================
+    visit_day_indices = {
+        d_idx for d_idx, dt in enumerate(all_dates)
+        if d_idx not in closed_day_indices
+        and dt.weekday() in visit_operating_set
+    }
+
+    def _is_visit_day(d_idx):
+        return d_idx in visit_day_indices
+
+    # ==================================================================
     # ② 看護師/PT判定（デイ人数・9時/15時制約の両方で使用）
     # ==================================================================
     nurse_pt_qual_ids = set()
@@ -1715,7 +1732,7 @@ def _solve_care(
     for d_idx, dt in enumerate(all_dates):
         if d_idx in closed_day_indices:
             continue
-        if dt.weekday() not in visit_operating_set:
+        if not _is_visit_day(d_idx):
             for s in staff_ids:
                 for a in VISIT_ASSIGNMENTS:
                     model.add(x[s, d_idx, a] == 0)
@@ -1851,7 +1868,7 @@ def _solve_care(
     for s in staff_ids:
         if not staff_by_id[s]["can_visit"]:
             for d_idx, dt in enumerate(all_dates):
-                if dt.weekday() in visit_operating_set:
+                if _is_visit_day(d_idx):
                     model.add(x[s, d_idx, "early"] == 0)
     # 早番・遅番は休業日には置かない（休業日は全員 off だが明示）
     for d_idx in closed_day_indices:
@@ -2064,7 +2081,7 @@ def _solve_care(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in DAY_AM_ASSIGNMENTS
         )
         # 早番は訪問非営業日のみ「終日デイ」＝午前もデイにカウント（営業日はAM訪問のため除外）
-        if all_dates[d_idx].weekday() not in visit_operating_set:
+        if not _is_visit_day(d_idx):
             day_am_count = day_am_count + sum(
                 x[s, d_idx, "early"] for s in non_nurse_pt_staff
             )
@@ -2087,7 +2104,7 @@ def _solve_care(
     for d_idx, dt in enumerate(all_dates):
         if d_idx in closed_day_indices:
             continue
-        if dt.weekday() not in visit_operating_set:
+        if not _is_visit_day(d_idx):
             continue
         visit_am_count = sum(
             x[s, d_idx, a] for s in staff_ids for a in VISIT_AM_ASSIGNMENTS
@@ -2105,7 +2122,7 @@ def _solve_care(
     for d_idx, dt in enumerate(all_dates):
         if d_idx in closed_day_indices:
             continue
-        if dt.weekday() not in visit_operating_set:
+        if not _is_visit_day(d_idx):
             continue
         visit_pm_count = sum(
             x[s, d_idx, a] for s in staff_ids for a in VISIT_PM_ASSIGNMENTS
@@ -2124,7 +2141,7 @@ def _solve_care(
         for d_idx, dt in enumerate(all_dates):
             if d_idx in closed_day_indices:
                 continue
-            if dt.weekday() not in visit_operating_set:
+            if not _is_visit_day(d_idx):
                 continue
             dual_count = sum(
                 x[s, d_idx, a] for s in staff_ids for a in DUAL_ASSIGNMENTS
@@ -2147,7 +2164,7 @@ def _solve_care(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in PRESENT_AT_11
         )
         # 早番は訪問非営業日のみ午前も事業所在籍（営業日はAM訪問で外出）
-        if all_dates[d_idx].weekday() not in visit_operating_set:
+        if not _is_visit_day(d_idx):
             _early_present_am = sum(x[s, d_idx, "early"] for s in non_nurse_pt_staff)
             count_9 = count_9 + _early_present_am
             count_11 = count_11 + _early_present_am
@@ -2276,13 +2293,22 @@ def _solve_care(
 
     # 総出勤日数（最小化対象）
     total_working_days = sum(work_count[s] for s in staff_ids)
-    total_min_pw_penalty = sum(min_pw_penalties) if min_pw_penalties else 0
+    # 週勤務回数の下限ペナルティ（依頼文27: 週N回を厳守する）。
+    #   従来は重み1で、総出勤日数の最小化(重み num_days+1)に容易に負けて
+    #   「週3回の人が月1回」になっていた。下限を破るコストを総出勤日数削減の
+    #   利得より十分大きく(=5倍)して、設定値を実質的に厳守する。
+    #   ※ 休み希望等との衝突で物理的に満たせない週もあるため、ハード制約には
+    #     せずソフト（高ペナルティ）に留め、無解化を防ぐ。
+    soft_pw_weight = (num_days + 1) * 5
+    total_min_pw_penalty = (
+        sum(min_pw_penalties) * soft_pw_weight if min_pw_penalties else 0
+    )
     day2_count = sum(
         x[s, d_idx, "day_pattern2"]
         for s in staff_ids
         for d_idx in range(num_days)
     )
-    # min==maxの固定日数制約は高ペナルティ（通常の10倍）
+    # min==maxの固定日数制約は最高ペナルティ（通常の10倍）
     hard_pw_weight = (num_days + 1) * 10
     total_min_pw_hard_penalty = (
         sum(min_pw_hard_penalties) * hard_pw_weight if min_pw_hard_penalties else 0

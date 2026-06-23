@@ -32,27 +32,27 @@ from openpyxl.worksheet.properties import PageSetupProperties
 # 定数: アサインメント → 日本語表示ラベル
 # ---------------------------------------------------------------------------
 ASSIGNMENT_LABELS = {
-    "day_pattern1":    "訪問8:30-17:30",
-    "day_pattern2":    "訪問9:00-16:00",
-    "day_pattern3":    "訪問午前のみ",
-    "day_pattern4":    "訪問午後のみ",
+    "day_pattern1":    "デイ8:30-17:30",
+    "day_pattern2":    "デイ9:00-16:00",
+    "day_pattern3":    "デイ午前のみ",
+    "day_pattern4":    "デイ午後のみ",
     "early":           "早番7:30-16:30",
     "late":            "遅番9:30-18:30",
     "nurse_short":     "看護9:30-13:30",
-    "visit_am":        "デイ午前のみ",
-    "visit_pm":        "デイ午後のみ",
-    "day_p3_visit_pm": "兼務(訪問→デイ)",
-    "visit_am_day_p4": "兼務(デイ→訪問)",
+    "visit_am":        "訪問午前のみ",
+    "visit_pm":        "訪問午後のみ",
+    "day_p3_visit_pm": "兼務(デイ→訪問)",
+    "visit_am_day_p4": "兼務(訪問→デイ)",
     "cooking_1":      "調理①6-8",
     "cooking_2":    "調理②8-13",
     "cooking_3":       "調理③12-19",
     "cooking_4":       "調理④6-13",
     "cooking_5":        "調理⑤9-15",
     # 旧名の後方互換
-    "day_am":          "訪問午前のみ",
-    "day_pm":          "訪問午後のみ",
-    "day_am_visit_pm": "兼務(訪問→デイ)",
-    "visit_am_day_pm": "兼務(デイ→訪問)",
+    "day_am":          "デイ午前のみ",
+    "day_pm":          "デイ午後のみ",
+    "day_am_visit_pm": "兼務(デイ→訪問)",
+    "visit_am_day_pm": "兼務(訪問→デイ)",
 }
 
 # カテゴリごとの背景色 (アサインメントセル)
@@ -84,9 +84,8 @@ ASSIGNMENT_FILL = {
 WEEKDAY_NAMES = ["月", "火", "水", "木", "金", "土", "日"]
 
 # サマリー列ヘッダー (ケア)
-# 注: 値の並びは [day_am, day_pm, visit_am, visit_pm, ...] のまま。
-# 表記入れ替え（訪問⇄デイ）の要望によりラベルのみ入れ替えている。
-SUMMARY_HEADERS = ["訪問午前", "訪問午後", "デイ午前", "デイ午後", "兼務者数", "オンコール"]
+# 値の並びは [day_am, day_pm, visit_am, visit_pm, ...]。ラベルは実体に一致させる。
+SUMMARY_HEADERS = ["デイ午前", "デイ午後", "訪問午前", "訪問午後", "兼務者数", "オンコール"]
 
 # サマリー列ヘッダー (調理)
 COOK_SUMMARY_HEADERS = ["調理配置数"]
@@ -454,10 +453,10 @@ def _write_group_sheet(
         summary_rows = [("調理配置数", "cook_total", "understaffed_cook")]
     else:
         summary_rows = [
-            ("訪問午前", "day_am", "understaffed_day_am"),
-            ("訪問午後", "day_pm", "understaffed_day_pm"),
-            ("デイ午前", "visit_am", "understaffed_visit_am"),
-            ("デイ午後", "visit_pm", "understaffed_visit_pm"),
+            ("デイ午前", "day_am", "understaffed_day_am"),
+            ("デイ午後", "day_pm", "understaffed_day_pm"),
+            ("訪問午前", "visit_am", "understaffed_visit_am"),
+            ("訪問午後", "visit_pm", "understaffed_visit_pm"),
             ("兼務者数", "dual", "dual_shortage"),
             ("オンコール", "_phone", None),
         ]
@@ -720,10 +719,10 @@ def export_csv(
             summary_rows = [("調理配置数", "cook_total")]
         else:
             summary_rows = [
-                ("訪問午前", "day_am"),
-                ("訪問午後", "day_pm"),
-                ("デイ午前", "visit_am"),
-                ("デイ午後", "visit_pm"),
+                ("デイ午前", "day_am"),
+                ("デイ午後", "day_pm"),
+                ("訪問午前", "visit_am"),
+                ("訪問午後", "visit_pm"),
                 ("兼務者数", "dual"),
                 ("オンコール", "_phone"),
             ]
@@ -765,10 +764,10 @@ _PDF_ALERT_BG = (254, 226, 226)
 
 # サマリー行: ラベル → (summary_mapキー or 特殊, 警告種別)
 _PDF_CARE_SUMMARY = [
-    ("訪問午前", "day_am", "understaffed_day_am"),
-    ("訪問午後", "day_pm", "understaffed_day_pm"),
-    ("デイ午前", "visit_am", "understaffed_visit_am"),
-    ("デイ午後", "visit_pm", "understaffed_visit_pm"),
+    ("デイ午前", "day_am", "understaffed_day_am"),
+    ("デイ午後", "day_pm", "understaffed_day_pm"),
+    ("訪問午前", "visit_am", "understaffed_visit_am"),
+    ("訪問午後", "visit_pm", "understaffed_visit_pm"),
     ("兼務者数", "dual", "dual_shortage"),
     ("オンコール", "_phone", None),
 ]

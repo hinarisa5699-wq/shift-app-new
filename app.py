@@ -341,6 +341,9 @@ def _run_migrations(app):
     # 調理：新人×ベテランのペア成立回数の目標値（依頼文28）
     if "cooking_pair_target" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN cooking_pair_target INTEGER DEFAULT 0")
+    # 相談員の介護業務参加モード（依頼文32・既定 off）
+    if "counselor_care_mode" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN counselor_care_mode VARCHAR(10) NOT NULL DEFAULT 'off'")
 
     # GeneratedShift テーブル
     columns = [row[1] for row in cursor.execute("PRAGMA table_info(generated_shift)").fetchall()]
@@ -1621,6 +1624,9 @@ def create_app():
         s.counselor_desk_count = safe_int(request.form.get("counselor_desk_count"), 1)
         # 調理 新人×ベテランのペア成立回数の目標値（依頼文28・0=無効）
         s.cooking_pair_target = max(0, safe_int(request.form.get("cooking_pair_target"), 0))
+        # 相談員の介護業務参加モード（依頼文32・off/soft/hard、既定off）
+        _ccm = (request.form.get("counselor_care_mode", "off") or "off").strip().lower()
+        s.counselor_care_mode = _ccm if _ccm in ("off", "soft", "hard") else "off"
         db.session.commit()
         flash("条件設定を保存しました。", "success")
         return redirect(url_for("settings"))
@@ -2066,6 +2072,7 @@ def create_app():
             "max_day_service": getattr(settings_obj, 'max_day_service', 0) or 0,
             "counselor_desk_enabled": getattr(settings_obj, 'counselor_desk_enabled', False) or False,
             "counselor_desk_count": getattr(settings_obj, 'counselor_desk_count', 1) or 1,
+            "counselor_care_mode": getattr(settings_obj, 'counselor_care_mode', 'off') or 'off',
             "placement_rules": placement_rules_data,
             "cooking_combo_rules": cooking_combo_data,
             "cooking_types": cooking_types_data,

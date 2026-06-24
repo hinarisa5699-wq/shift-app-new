@@ -336,6 +336,11 @@ class ShiftSettings(db.Model):
     counselor_desk_enabled = db.Column(db.Boolean, default=False)
     counselor_desk_count = db.Column(db.Integer, default=1)  # 同時事務人数
 
+    # 相談員の介護業務参加モード（依頼文32）: "off"/"soft"/"hard"
+    counselor_care_mode = db.Column(db.String(10), default="off", nullable=False)
+    # "off"=制限なし(依頼文30の挙動) / "soft"=不足日のみ介護参加(強ペナルティ最小化) /
+    # "hard"=相談員は介護業務に一切入らない（相談員業務のみ）。既定は off。
+
     # 調理：新人×ベテランのペア成立回数の目標値（依頼文28・ソフト目標）
     cooking_pair_target = db.Column(db.Integer, default=0)
     # 当月に「片方=新人・もう片方=ベテラン」の調理日を何回作りたいか。
@@ -364,6 +369,7 @@ class ShiftSettings(db.Model):
             "max_day_service": self.max_day_service or 0,
             "counselor_desk_enabled": self.counselor_desk_enabled or False,
             "counselor_desk_count": self.counselor_desk_count if self.counselor_desk_count is not None else 1,
+            "counselor_care_mode": self.counselor_care_mode or "off",
             "cooking_pair_target": self.cooking_pair_target or 0,
         }
 

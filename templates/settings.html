@@ -320,6 +320,26 @@
                     相談業務に入る人数分、デイ最低人数が自動で加算されます（例: デイ4名 + 相談1名 = 5名出勤）。
                 </p>
             </div>
+
+            <!-- 相談員の介護業務参加（依頼文32・off/soft/hard） -->
+            <div class="mt-6 pt-4 border-t border-purple-200">
+                <label for="counselor_care_mode" class="block text-base font-medium text-gray-700 mb-2">
+                    相談員の介護業務への参加
+                </label>
+                {% set ccm = settings.counselor_care_mode if settings and settings.counselor_care_mode else 'off' %}
+                <select id="counselor_care_mode" name="counselor_care_mode"
+                        class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-400 focus:border-purple-400 bg-white">
+                    <option value="off"  {% if ccm == 'off'  %}selected{% endif %}>オフ（制限なし・通常の介護要員）</option>
+                    <option value="soft" {% if ccm == 'soft' %}selected{% endif %}>ソフト（不足日のみ介護に入る）</option>
+                    <option value="hard" {% if ccm == 'hard' %}selected{% endif %}>ハード（介護業務に入らない）</option>
+                </select>
+                <p class="text-gray-600 text-sm mt-1">
+                    どのモードでも相談員は毎営業日ちょうど1名（desk役）を維持します。<br>
+                    <strong>ハード</strong>＝相談員はお風呂当番・デイ・早番・訪問など介護業務に一切入りません。<br>
+                    <strong>ソフト</strong>＝原則は介護に入れず、人手が不足してどうしても埋まらない日に限り相談員が介護に入ります（最小化）。<br>
+                    <strong>オフ</strong>＝相談員も通常の介護要員として扱います（既定）。
+                </p>
+            </div>
         </div>
 
         <!-- オンコール設定 -->

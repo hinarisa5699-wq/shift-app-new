@@ -38,6 +38,21 @@ VISIT_ASSIGNMENTS = {"visit_am", "visit_pm", "day_p3_visit_pm", "visit_am_day_p4
 # 兼務パターン
 DUAL_ASSIGNMENTS = {"day_p3_visit_pm", "visit_am_day_p4"}
 
+# 相談員のデスク役（終日相談）を載せられる「終日フロア在席」パターン（依頼文32）。
+#   desk役は counselor_desk_slots=[0,1,2,3]（9-17終日）を付けるため、終日勤務の
+#   day_pattern1/2 のみを desk席とする（早番/遅番/半日デイ/訪問は desk席にしない）。
+_COUNSELOR_DESK_SEAT_PATTERNS = {"day_pattern1", "day_pattern2"}
+
+# 相談員にとっての「介護業務」枠（依頼文32）。desk席(終日相談)を除く全勤務枠。
+#   ＝デイ③④・早番・遅番・訪問兼務・単独訪問・看護短時間。お風呂当番(中/外)・
+#   食事介助は後処理 _assign_care_roles の役割で、desk相談員は元々除外される。
+#   ハード: これら＋desk席超過(2人目のday_pattern1/2)を相談員に割り当てない。
+#   ソフト: 「働く相談員のうち desk役1名を超える人数」を介護参加とみなし最小化。
+COUNSELOR_CARE_DUTY_ASSIGNMENTS = {
+    "day_pattern3", "day_pattern4", "visit_am", "visit_pm",
+    "day_p3_visit_pm", "visit_am_day_p4", "early", "late", "nurse_short",
+}
+
 # 各カテゴリに寄与するアサインメントの集合
 # ※ early(早番) は訪問営業日のAMは訪問・非営業日のAMはデイと日替わりのため、
 #   AM側(DAY_AM/VISIT_AM/PRESENT_AT_9/11)へは静的集合に含めず、_solve_care 内で日別に加算する。
@@ -1511,6 +1526,9 @@ def _solve_care_with_fallback(
     min_late_staff = settings.get("min_late_staff", 1)
     min_late_staff = 1 if min_late_staff is None else int(min_late_staff)
 
+    # 相談員の介護業務参加モード（依頼文32）: "off"/"soft"/"hard"（既定 off）
+    counselor_care_mode = settings.get("counselor_care_mode", "off") or "off"
+
     _raw_max_day = settings.get("max_day_service", 0) or 0
     if _raw_max_day > 0:
         max_day_service = _raw_max_day + _midday_buffer
@@ -1548,6 +1566,7 @@ def _solve_care_with_fallback(
         counselor_staff_ids=counselor_staff_ids,
         min_counselor_staff=min_counselor_staff,
         min_full_day_counselor=min_full_day_counselor,
+        counselor_care_mode=counselor_care_mode,
         allowed_patterns=allowed_patterns or {},
         max_day_service=max_day_service,
         oncall_forced_off=oncall_forced_off,
@@ -1580,6 +1599,7 @@ def _solve_care_with_fallback(
         counselor_staff_ids=counselor_staff_ids,
         min_counselor_staff=min_counselor_staff,
         min_full_day_counselor=min_full_day_counselor,
+        counselor_care_mode=counselor_care_mode,
         allowed_patterns=allowed_patterns or {},
         max_day_service=max_day_service,
         oncall_forced_off=oncall_forced_off,
@@ -1622,6 +1642,7 @@ def _solve_care_with_fallback(
         counselor_staff_ids=counselor_staff_ids,
         min_counselor_staff=min_counselor_staff,
         min_full_day_counselor=min_full_day_counselor,
+        counselor_care_mode=counselor_care_mode,
         allowed_patterns=allowed_patterns or {},
         max_day_service=max_day_service,
         oncall_forced_off=oncall_forced_off,
@@ -1679,6 +1700,7 @@ def _solve_care(
     counselor_staff_ids: list = None,
     min_counselor_staff: int = 0,
     min_full_day_counselor: int = 0,
+    counselor_care_mode: str = "off",
     allowed_patterns: dict = None,
     max_day_service: int = 0,
     oncall_forced_off: list = None,
@@ -2348,17 +2370,57 @@ def _solve_care(
                 model.add(counselor_full_day_count >= min_full_day_counselor)
 
     # ==================================================================
-    # 相談員「1日1人」（依頼文27→依頼文30で見直し）: ★desk役のみ1日1名に限定 ★
-    #   旧実装（依頼文27）は「相談員資格者の“勤務”を1日最大1人」に制限していたため、
-    #   相談員資格を持つスタッフ（兼デイ/入浴/訪問可）が相談員枠に固定され、
-    #   土日のデイ・お風呂当番・訪問へ回せず「配置可能人数の過少」を招いていた
-    #   （依頼文30の調査で確定。例: 土日入浴可5名中3名が相談員→勤務制限で2名扱い）。
-    #   依頼文30: 相談員“デスク役（終日相談）”は引き続き1日1名（過剰配置防止）。
-    #   これは後処理 _assign_care_roles が working_counselors から1名だけ選ぶことで
-    #   既に保証されるため、ここでの“勤務”上限ハード制約は撤廃する。
-    #   → 相談員資格者も通常のフロア/入浴/訪問スタッフとして複数勤務できる。
-    #   ※ 下限(1人確保)は従来どおりソフト＝0人の開所日は「相談員 未配置」警告のみ。
-    #   （旧コードは下記の <=1 制約。依頼文30で意図的に削除。）
+    # 相談員 desk役1名ハード ＋ 介護業務参加モード（依頼文27→30→32）
+    #   全モード共通: 各開所日に desk席(終日相談=day_pattern1/2)の相談員を
+    #     ちょうど1名確保（下限1ハード／上限1は後処理 _assign_care_roles が
+    #     working_counselors から1名選ぶことで担保）。相談員未配置を防ぐ。
+    #     ※物理的に相談員を置けない日は use_slack 時に desk_short で吸収し
+    #       infeasible にしない（解読み取り後に「相談員 未配置」警告）。
+    #   モード（counselor_care_mode・設定でソフト/ハード/オフ）:
+    #     hard: 相談員は介護業務（COUNSELOR_CARE_DUTY_ASSIGNMENTS＋desk席超過）に
+    #           入れない。＝「働く相談員は1日1名(=desk)」のハード制約。
+    #     soft: 介護業務への参加を許可しつつ「desk役1名を超える相談員の勤務」を
+    #           強ペナルティで最小化。他で埋まる枠には入れず、不足日にのみ入る。
+    #     off : 制限なし（依頼文30の挙動＝相談員も通常の介護要員）。
+    #   ※依頼文31（相談員ハード化）は本モードの hard に統合。
+    # ==================================================================
+    counselor_care_mode = (counselor_care_mode or "off").lower()
+    desk_short_penalties = []
+    counselor_soft_penalties = []
+    if counselor_staff_ids:
+        for d_idx in non_closed_days:
+            # desk席(終日相談を載せられる day_pattern1/2)に入る相談員の人数
+            desk_seat_count = sum(
+                x[s, d_idx, a]
+                for s in counselor_staff_ids
+                for a in _COUNSELOR_DESK_SEAT_PATTERNS
+                if a in CARE_WORKING_ASSIGNMENTS
+            )
+            # 下限1（desk役を必ず1名）。use_slack時のみ未達を許容（warningで表面化）。
+            if use_slack:
+                desk_short = model.new_bool_var(f"counselor_desk_short_d{d_idx}")
+                model.add(desk_seat_count + desk_short >= 1)
+                desk_short_penalties.append(desk_short)
+            else:
+                model.add(desk_seat_count >= 1)
+
+            # その日に勤務(off以外)する相談員の人数
+            working_counselors = sum(
+                x[s, d_idx, a]
+                for s in counselor_staff_ids
+                for a in CARE_WORKING_ASSIGNMENTS
+            )
+            if counselor_care_mode == "hard":
+                # ハード: 働く相談員は1名（=desk）のみ。介護業務に一切入れない。
+                model.add(working_counselors <= 1)
+            elif counselor_care_mode == "soft":
+                # ソフト: desk役1名を超える相談員の勤務（=介護参加）を最小化。
+                extra = model.new_int_var(
+                    0, len(counselor_staff_ids), f"counselor_care_extra_d{d_idx}"
+                )
+                model.add(extra >= working_counselors - 1)
+                counselor_soft_penalties.append(extra)
+            # off: 追加制約なし（依頼文30の挙動）。
 
     # ==================================================================
     # 制約: 配置ルール（PlacementRule テーブルから動的生成）
@@ -2404,6 +2466,27 @@ def _solve_care(
     bath_short_weight = (num_days + 1) * 3
     bath_short_penalty = (
         sum(bath_short_penalties) * bath_short_weight if bath_short_penalties else 0
+    )
+
+    # --- 相談員 desk役未配置ペナルティ（依頼文32・use_slack時のみ存在）---
+    #   人員不足slackと同オーダーの高重みで、desk役は可能な限り必ず確保する。
+    desk_short_weight = (num_days + 1) * len(staff_ids) + 1
+    desk_short_penalty = (
+        sum(desk_short_penalties) * desk_short_weight if desk_short_penalties else 0
+    )
+
+    # --- 相談員の介護業務参加ペナルティ（依頼文32・ソフトモードのみ）---
+    #   相談員が介護に1日入る＝総出勤日数 +headcount_weight に本ペナルティが上乗せ。
+    #   重みは「相談員でお風呂不足(bath_short)を埋めるのは依然得」になる上限ぎりぎり
+    #   ＝ bath_short_weight − headcount_weight − 1 に設定（＝最強の最小化）。
+    #   これにより、他スタッフで埋まる枠には相談員を入れず（非相談員が常に優先）、
+    #   お風呂など不足してどうしても埋まらない枠に限って相談員が入る。
+    #   人員不足slack(巨大)は常に上回るので、ハード人員の穴は相談員でも必ず埋める。
+    #   （headcount_weight=num_days+1 はこの時点で未定義のため num_days で直接表現）
+    counselor_soft_weight = max(1, bath_short_weight - (num_days + 1) - 1)
+    counselor_soft_penalty = (
+        sum(counselor_soft_penalties) * counselor_soft_weight
+        if counselor_soft_penalties else 0
     )
 
     # ==================================================================
@@ -2538,7 +2621,7 @@ def _solve_care(
         model.minimize(
             total_slack * slack_weight
             + total_working_days * headcount_weight
-            + bath_short_penalty
+            + bath_short_penalty + desk_short_penalty + counselor_soft_penalty
             + fairness_diff + total_min_pw_penalty + total_min_pw_hard_penalty
             + gender_penalty + phone_fairness + placement_penalty_total
             + day2_count
@@ -2546,7 +2629,7 @@ def _solve_care(
     else:
         model.minimize(
             total_working_days * headcount_weight
-            + bath_short_penalty
+            + bath_short_penalty + desk_short_penalty + counselor_soft_penalty
             + fairness_diff + total_min_pw_penalty + total_min_pw_hard_penalty
             + gender_penalty + phone_fairness + placement_penalty_total
             + day2_count

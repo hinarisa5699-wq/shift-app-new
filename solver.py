@@ -2346,6 +2346,30 @@ def _solve_care(
                 model.add(counselor_full_day_count >= min_full_day_counselor)
 
     # ==================================================================
+    # 制約（相談員1日1人）: 相談員は各開所日（営業日）あたり最大1人（ハード）
+    #   相談員＝資格「相談員」(qualification code "counselor"/"social_worker",
+    #   name "相談員"/"生活相談員")。その資格者の集合が counselor_staff_ids。
+    #   勤務(off以外)に入る相談員を各開所日で最大1人に制限し、2人以上の配置を禁止。
+    #   ※ 下限(1人確保)はソフト扱い。0人でも infeasible にしないため上限のみハード。
+    #     0人の開所日は解の読み取り後に「相談員 未配置」警告を出す（下記参照）。
+    #   ※ 開所日の定義は既存の non_closed_days を流用（新規定義はしない）。
+    #   ※ 相談員デスクローテーション(counselor_desk_enabled)有効時は相談員を
+    #     2名以上必要とする既存機能と矛盾するため、その時はこの上限を適用しない
+    #     （desk有効＝min_counselor_staff/min_full_day_counselor>0）。
+    #     本番はdesk無効（=0）のため通常はこの上限が有効になる。
+    # ==================================================================
+    if counselor_staff_ids and min_counselor_staff == 0 and min_full_day_counselor == 0:
+        for d_idx in non_closed_days:
+            model.add(
+                sum(
+                    x[s, d_idx, a]
+                    for s in counselor_staff_ids
+                    for a in CARE_WORKING_ASSIGNMENTS
+                )
+                <= 1
+            )
+
+    # ==================================================================
     # 制約: 配置ルール（PlacementRule テーブルから動的生成）
     # ==================================================================
     placement_soft_penalties = []
@@ -2534,6 +2558,26 @@ def _solve_care(
                             "is_phone_duty": bool(phone_eligible and (s, d_idx) in phone and solver.value(phone[s, d_idx])),
                         })
                     break
+
+    # ------------------------------------------------------------------
+    # 相談員 未配置の警告（相談員1日1人ルールの下限＝ソフト扱い）
+    #   各開所日(non_closed_days)で勤務に入る相談員が0人なら「相談員 未配置」警告。
+    #   上限1人はハード制約で別途保証済み（下限は infeasible にしないため警告のみ）。
+    #   既存の人員警告（デイ人数・入浴当番等）と同じ warnings_data 系統に追加する。
+    # ------------------------------------------------------------------
+    if counselor_staff_ids:
+        for d_idx in non_closed_days:
+            counselor_on = sum(
+                solver.value(x[s, d_idx, a])
+                for s in counselor_staff_ids
+                for a in CARE_WORKING_ASSIGNMENTS
+            )
+            if counselor_on == 0:
+                warnings_data.append({
+                    "date": all_dates[d_idx].strftime("%Y-%m-%d"),
+                    "warning_type": "counselor_unassigned",
+                    "message": "相談員 未配置: この日は相談員を配置できませんでした",
+                })
 
     # ------------------------------------------------------------------
     # 警告の生成

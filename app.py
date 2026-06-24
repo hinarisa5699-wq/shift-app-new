@@ -164,6 +164,17 @@ def _normalize_role(value: str) -> str:
     return table.get(v, table.get(v.lower(), ""))
 
 
+def _normalize_cooking_experience(value: str) -> str:
+    """調理スタッフの経験区分（依頼文28）。入力 → "new"/"veteran"/""（未設定）。"""
+    v = str(value or "").strip().lower()
+    table = {
+        "": "", "未設定": "", "none": "",
+        "new": "new", "新人": "new", "rookie": "new",
+        "veteran": "veteran", "ベテラン": "veteran", "vet": "veteran",
+    }
+    return table.get(v, table.get(str(value or "").strip(), ""))
+
+
 def _split_multi(value: str) -> list[str]:
     """; / 、/ , / ・ など複数区切りを許容して分割する。"""
     raw = str(value or "")
@@ -299,6 +310,9 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE staff ADD COLUMN car_commute BOOLEAN DEFAULT 0")
     if "parking_slot" not in columns:
         cursor.execute("ALTER TABLE staff ADD COLUMN parking_slot VARCHAR(10) NOT NULL DEFAULT ''")
+    # --- 調理スタッフの経験区分（依頼文28・新人/ベテラン）---
+    if "cooking_experience" not in columns:
+        cursor.execute("ALTER TABLE staff ADD COLUMN cooking_experience VARCHAR(10) NOT NULL DEFAULT ''")
 
     # ShiftSettings テーブル
     columns = [row[1] for row in cursor.execute("PRAGMA table_info(shift_settings)").fetchall()]
@@ -324,6 +338,9 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN counselor_desk_enabled BOOLEAN DEFAULT 0")
     if "counselor_desk_count" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN counselor_desk_count INTEGER DEFAULT 1")
+    # 調理：新人×ベテランのペア成立回数の目標値（依頼文28）
+    if "cooking_pair_target" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN cooking_pair_target INTEGER DEFAULT 0")
 
     # GeneratedShift テーブル
     columns = [row[1] for row in cursor.execute("PRAGMA table_info(generated_shift)").fetchall()]
@@ -1102,6 +1119,11 @@ def create_app():
             holiday_ng="holiday_ng" in request.form,
             car_commute="car_commute" in request.form,
             parking_slot=(request.form.get("parking_slot", "") or "").strip(),
+            # 調理スタッフのみ新人/ベテランを保持（それ以外は未設定）
+            cooking_experience=(
+                _normalize_cooking_experience(request.form.get("cooking_experience", ""))
+                if staff_group == "cooking" else ""
+            ),
         )
         db.session.add(staff)
         db.session.flush()  # IDを取得
@@ -1155,6 +1177,10 @@ def create_app():
             staff.has_phone_duty = False
             staff.can_bath_assist = False
             staff.available_time_slots = "full_day"
+            # 調理スタッフのみ新人/ベテランを保持
+            staff.cooking_experience = _normalize_cooking_experience(
+                request.form.get("cooking_experience", "")
+            )
         else:
             staff.can_visit = "can_visit" in request.form
             staff.has_phone_duty = "has_phone_duty" in request.form
@@ -1162,6 +1188,8 @@ def create_app():
             staff.available_time_slots = request.form.get(
                 "available_time_slots", staff.available_time_slots
             )
+            # 調理以外に変更された場合は経験区分をクリア
+            staff.cooking_experience = ""
 
         staff.max_consecutive_days = safe_int(
             request.form.get("max_consecutive_days"), staff.max_consecutive_days
@@ -1591,6 +1619,8 @@ def create_app():
         s.max_day_service = safe_int(request.form.get("max_day_service"), 0)
         s.counselor_desk_enabled = "counselor_desk_enabled" in request.form
         s.counselor_desk_count = safe_int(request.form.get("counselor_desk_count"), 1)
+        # 調理 新人×ベテランのペア成立回数の目標値（依頼文28・0=無効）
+        s.cooking_pair_target = max(0, safe_int(request.form.get("cooking_pair_target"), 0))
         db.session.commit()
         flash("条件設定を保存しました。", "success")
         return redirect(url_for("settings"))
@@ -2001,6 +2031,7 @@ def create_app():
                 "workable_dates": workable_dates_map.get(s.id, []),
                 "work_start_time": getattr(s, "work_start_time", "") or "",
                 "work_end_time": getattr(s, "work_end_time", "") or "",
+                "cooking_experience": getattr(s, "cooking_experience", "") or "",
             }
             if s.staff_group == "cooking":
                 cook_dicts.append(d)
@@ -2038,6 +2069,7 @@ def create_app():
             "placement_rules": placement_rules_data,
             "cooking_combo_rules": cooking_combo_data,
             "cooking_types": cooking_types_data,
+            "cooking_pair_target": getattr(settings_obj, 'cooking_pair_target', 0) or 0,
         }
 
         # --- オンコール（電話当番）を生成前に確定 ---

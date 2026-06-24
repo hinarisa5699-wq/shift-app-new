@@ -85,6 +85,21 @@
             <p class="text-gray-500 text-sm mt-1">「調理」を選ぶと調理スタッフ扱いになり、訪問・電話当番・入浴介助・時間帯の項目は非表示になります。</p>
         </div>
 
+        <!-- 調理スタッフの経験区分（依頼文28・新人/ベテラン）。調理選択時のみ表示 -->
+        <div id="cooking-experience-section" class="mb-6">
+            <label for="cooking_experience" class="block text-lg font-semibold text-gray-700 mb-2">
+                経験区分（新人 / ベテラン）
+            </label>
+            {% set current_exp = staff.cooking_experience if staff and staff.cooking_experience else '' %}
+            <select id="cooking_experience" name="cooking_experience"
+                    class="w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-orange-500 transition-colors bg-white">
+                <option value="" {% if current_exp == '' %}selected{% endif %}>未設定</option>
+                <option value="new" {% if current_exp == 'new' %}selected{% endif %}>新人</option>
+                <option value="veteran" {% if current_exp == 'veteran' %}selected{% endif %}>ベテラン</option>
+            </select>
+            <p class="text-gray-500 text-sm mt-1">調理スタッフのみ有効。「新人×ベテランのペア成立回数」の目標（設定画面）に使われます。</p>
+        </div>
+
         <div id="care-only-fields">
             <!-- 兼務可否 -->
             <div class="mb-6">
@@ -459,6 +474,9 @@ function toggleCareFields() {
     if (cookPatterns) cookPatterns.style.display = isCooking ? 'block' : 'none';
     // 看護9:30-13:30 は区分=看護師のときのみ表示
     if (nursePatterns) nursePatterns.style.display = (isNurse && !isCooking) ? 'block' : 'none';
+    // 経験区分（新人/ベテラン）は調理スタッフのときのみ表示（依頼文28）
+    const cookExp = document.getElementById('cooking-experience-section');
+    if (cookExp) cookExp.style.display = isCooking ? 'block' : 'none';
 }
 // Run on page load
 document.addEventListener('DOMContentLoaded', function() {

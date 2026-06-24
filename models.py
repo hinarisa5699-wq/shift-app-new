@@ -64,6 +64,11 @@ class Staff(db.Model):
     parking_slot = db.Column(db.String(10), default="", nullable=False)
     # 固定枠番号（例 "4"/"7"/"8"）。空欄ならローテーション扱い。
 
+    # --- 調理スタッフの経験区分（依頼文28・新人/ベテラン）---
+    cooking_experience = db.Column(db.String(10), default="", nullable=False)
+    # "" = 未設定, "new" = 新人, "veteran" = ベテラン
+    # 調理スタッフのみ意味を持つ。新人×ベテランのペア成立回数（ソフト目標）に使用。
+
     # リレーション
     day_off_requests = db.relationship(
         "DayOffRequest", backref="staff", lazy=True, cascade="all, delete-orphan"
@@ -110,6 +115,7 @@ class Staff(db.Model):
             "work_end_time": self.work_end_time or "",
             "car_commute": self.car_commute or False,
             "parking_slot": self.parking_slot or "",
+            "cooking_experience": self.cooking_experience or "",
         }
 
 
@@ -330,6 +336,11 @@ class ShiftSettings(db.Model):
     counselor_desk_enabled = db.Column(db.Boolean, default=False)
     counselor_desk_count = db.Column(db.Integer, default=1)  # 同時事務人数
 
+    # 調理：新人×ベテランのペア成立回数の目標値（依頼文28・ソフト目標）
+    cooking_pair_target = db.Column(db.Integer, default=0)
+    # 当月に「片方=新人・もう片方=ベテラン」の調理日を何回作りたいか。
+    # 0 = 無効（ペア目標を課さない）。期間ではなく回数で指定する。
+
     def to_dict(self):
         """辞書形式に変換"""
         return {
@@ -353,6 +364,7 @@ class ShiftSettings(db.Model):
             "max_day_service": self.max_day_service or 0,
             "counselor_desk_enabled": self.counselor_desk_enabled or False,
             "counselor_desk_count": self.counselor_desk_count if self.counselor_desk_count is not None else 1,
+            "cooking_pair_target": self.cooking_pair_target or 0,
         }
 
 

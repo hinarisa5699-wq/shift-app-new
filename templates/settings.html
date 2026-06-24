@@ -271,6 +271,25 @@
             </div>
         </div>
 
+        <!-- 調理 新人×ベテランのペア成立回数（依頼文28・当月の目標） -->
+        <div class="mb-8 p-6 bg-amber-50 rounded-lg border border-amber-200">
+            <label for="cooking_pair_target" class="block text-lg font-semibold text-gray-800 mb-2">
+                調理 新人×ベテランのペア成立回数（当月の目標）
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                当月のうち、片方が「新人」・もう片方が「ベテラン」となる調理日を何回作りたいかを設定します
+                （期間ではなく回数で指定）。生成は<strong>ソフト目標</strong>で行い、達成できなくても生成は止まりません。
+                <strong>0</strong> にするとこの目標は課しません。職員ごとの新人/ベテランは各スタッフの編集画面で設定します。
+            </p>
+            <div class="flex items-center gap-2">
+                <input type="number" id="cooking_pair_target" name="cooking_pair_target"
+                       min="0" max="31"
+                       value="{{ settings.cooking_pair_target if settings and settings.cooking_pair_target is not none else 0 }}"
+                       class="w-24 px-4 py-3 text-xl font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                <span class="text-lg text-gray-600">回</span>
+            </div>
+        </div>
+
         <!-- 相談員事務ローテーション設定 -->
         <div class="mb-8 p-6 bg-purple-50 rounded-lg border border-purple-200">
             <h3 class="text-lg font-semibold text-gray-800 mb-4">相談員ローテーション</h3>

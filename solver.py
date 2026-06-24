@@ -2849,12 +2849,16 @@ def _solve_cooking_with_fallback(
             "workable_dates": set(s.get("workable_dates") or []),
             "work_start_time": s.get("work_start_time", ""),
             "work_end_time": s.get("work_end_time", ""),
+            # 経験区分（依頼文28・新人/ベテラン）。"new"/"veteran"/""
+            "experience": s.get("cooking_experience", "") or "",
         }
 
     staff_ids = list(staff_by_id.keys())
     closed_days_set = set(settings.get("closed_days", [5, 6]))
     cooking_combo_rules = settings.get("cooking_combo_rules", [])
     cooking_types = settings.get("cooking_types", [])  # 調理シフト種類マスタ
+    # 新人×ベテランのペア成立回数の目標値（依頼文28・0=無効）
+    pair_target = int(settings.get("cooking_pair_target", 0) or 0)
 
     # 設定値から時間帯別最低人数を動的に構築
     # intervals: [6-8), [8-12), [13-19)
@@ -2870,6 +2874,7 @@ def _solve_cooking_with_fallback(
         cooking_types=cooking_types,
         use_slack=False,
         locked_assignments=locked_assignments or {},
+        pair_target=pair_target,
     )
     if shifts_data is not None:
         return shifts_data, warnings_data
@@ -2883,6 +2888,7 @@ def _solve_cooking_with_fallback(
         cooking_types=cooking_types,
         use_slack=True,
         locked_assignments=locked_assignments or {},
+        pair_target=pair_target,
     )
     if shifts_data is not None:
         return shifts_data, warnings_data
@@ -2911,6 +2917,7 @@ def _solve_cooking(
     cooking_types: list = None,
     use_slack: bool = False,
     locked_assignments: dict = None,
+    pair_target: int = 0,
 ):
     """
     調理職員の CP-SAT モデルを構築し解を求める。
@@ -2918,6 +2925,10 @@ def _solve_cooking(
     locked_assignments: {staff_id: {date_iso: assignment_code}} or None（依頼文28）
         固定職員。指定日のアサインメントにピン留めし、それ以外は cook_off に固定する。
         人数制約には固定分を算入し、個人制約（連勤等）の対象外とする。
+
+    pair_target: 新人×ベテランのペア成立回数の目標値（依頼文28・0=無効）。
+        「片方=新人・もう片方=ベテランが同日に勤務」を1回成立とみなし、当月の
+        成立日数が目標に近づくようソフト目標を課す（未達でも infeasible にしない）。
     """
     if cooking_combo_rules is None:
         cooking_combo_rules = []
@@ -3199,6 +3210,37 @@ def _solve_cooking(
                 model.add(coverage_count >= cook_min_staff[iv])
 
     # ==================================================================
+    # ソフト目標: 新人×ベテランのペア成立回数（依頼文28）
+    #   各営業日について「新人>=1名 かつ ベテラン>=1名 勤務」をペア成立
+    #   (pair_day[d]=1) とみなす。当月の成立日数が pair_target に近づくよう、
+    #   不足分(pair_deficit)を目的関数で最小化する（ソフト・未達でも止めない）。
+    #   target<=0、または新人/ベテランのどちらかが居ない場合は目標を課さない。
+    # ==================================================================
+    new_ids = [s for s in staff_ids if staff_by_id[s].get("experience") == "new"]
+    vet_ids = [s for s in staff_ids if staff_by_id[s].get("experience") == "veteran"]
+    pair_target = max(0, int(pair_target or 0))
+    pair_active = pair_target > 0 and bool(new_ids) and bool(vet_ids)
+    pair_deficit = None
+    if pair_active:
+        pair_day_vars = []
+        for d_idx in range(num_days):
+            if d_idx in closed_day_indices:
+                continue
+            new_work = sum(x[s, d_idx, a] for s in new_ids for a in cook_working)
+            vet_work = sum(x[s, d_idx, a] for s in vet_ids for a in cook_working)
+            pd = model.new_bool_var(f"cook_pair_day_d{d_idx}")
+            # pd=1 を選べるのは「新人>=1 かつ ベテラン>=1」が成立する日のみ。
+            model.add(new_work >= 1).only_enforce_if(pd)
+            model.add(vet_work >= 1).only_enforce_if(pd)
+            pair_day_vars.append(pd)
+        if pair_day_vars:
+            total_pairs = model.new_int_var(0, len(pair_day_vars), "cook_total_pairs")
+            model.add(total_pairs == sum(pair_day_vars))
+            pair_deficit = model.new_int_var(0, pair_target, "cook_pair_deficit")
+            # deficit >= target - 成立数 → 最小化で deficit = max(0, target-成立数)
+            model.add(pair_deficit >= pair_target - total_pairs)
+
+    # ==================================================================
     # 目的関数
     # ==================================================================
 
@@ -3233,11 +3275,14 @@ def _solve_cooking(
         cook_pw_penalty = sum(cook_min_pw_penalties) * (num_days + 1) * 10 if cook_min_pw_penalties else 0
         # 未配置(none)は最優先で避ける（4通りを組める日は必ず組む）
         none_penalty = sum(none_by_day.values()) * (num_days + 1) * 50 if none_by_day else 0
-        model.minimize(total_slack * penalty_weight + fairness_diff + cook_pw_penalty + none_penalty)
+        # 新人×ベテランのペア不足（依頼文28・ソフト目標）
+        pair_penalty = pair_deficit * (num_days + 1) if pair_deficit is not None else 0
+        model.minimize(total_slack * penalty_weight + fairness_diff + cook_pw_penalty + none_penalty + pair_penalty)
     else:
         cook_pw_penalty = sum(cook_min_pw_penalties) * (num_days + 1) * 10 if cook_min_pw_penalties else 0
         none_penalty = sum(none_by_day.values()) * (num_days + 1) * 50 if none_by_day else 0
-        model.minimize(fairness_diff + cook_pw_penalty + none_penalty)
+        pair_penalty = pair_deficit * (num_days + 1) if pair_deficit is not None else 0
+        model.minimize(fairness_diff + cook_pw_penalty + none_penalty + pair_penalty)
 
     # ==================================================================
     # ソルバー実行
@@ -3294,6 +3339,34 @@ def _solve_cooking(
                 "date": dt.strftime("%Y-%m-%d"),
                 "warning_type": "cook_combo_unassigned",
                 "message": "調理スタッフが足りず4通りの組み合わせを組めないため、この日の調理は未配置です。",
+            })
+
+    # ------------------------------------------------------------------
+    # 新人×ベテランのペア成立回数（依頼文28）の実績集計と未達警告
+    #   実際の解から「新人>=1名 かつ ベテラン>=1名 勤務」の日数を数える。
+    #   目標(pair_target>0)に届かなければ未達警告を当月先頭日に1件出す。
+    #   ※新人/ベテランのどちらかが居ない場合は achieved=0 となり未達警告となる。
+    # ------------------------------------------------------------------
+    if pair_target > 0:
+        achieved_pairs = 0
+        for d_idx in range(num_days):
+            if d_idx in closed_day_indices:
+                continue
+            has_new = any(
+                solver.value(x[s, d_idx, a]) == 1
+                for s in new_ids for a in cook_working
+            )
+            has_vet = any(
+                solver.value(x[s, d_idx, a]) == 1
+                for s in vet_ids for a in cook_working
+            )
+            if has_new and has_vet:
+                achieved_pairs += 1
+        if achieved_pairs < pair_target:
+            warnings_data.append({
+                "date": all_dates[0].strftime("%Y-%m-%d"),
+                "warning_type": "cook_pair_shortfall",
+                "message": f"新人×ベテランのペア {achieved_pairs}/{pair_target}回（未達）",
             })
 
     return shifts_data, warnings_data

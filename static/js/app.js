@@ -213,6 +213,11 @@ function generateShift() {
             // 「Unexpected token '<'」ではなく分かりやすいメッセージにする。
             const ct = response.headers.get('content-type') || '';
             if (!ct.includes('application/json')) {
+                // 依頼文34: 400/403はCSRFトークン期限切れ等（時間超過ではない）。
+                // 実態に合うメッセージを出し、リロードを促す。
+                if (response.status === 400 || response.status === 403) {
+                    throw new Error(`セキュリティトークンの有効期限が切れた可能性があります（${response.status}）。ページを再読み込み（リロード）してから、もう一度生成してください。`);
+                }
                 throw new Error(`サーバーエラー（${response.status}）が発生しました。生成に時間がかかり過ぎた可能性があります。少し待ってから再度お試しください。`);
             }
             if (!response.ok) {

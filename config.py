@@ -65,7 +65,41 @@ def resolve_database_path(base_dir: Optional[Union[str, os.PathLike]] = None) ->
     return str(preferred_path)
 
 
+def resolve_secret_key(base_dir: Optional[Union[str, os.PathLike]] = None) -> str:
+    """セッション/CSRF署名鍵を安定させる（依頼文34）。
+
+    旧実装は env 未設定だと secrets.token_hex() で毎回ランダム生成していたため、
+    複数ワーカー間・再起動/再デプロイ・Render無料枠のスリープ復帰のたびに鍵が変わり、
+    既に発行済みのCSRFトークンが『has expired / does not match』となって
+    POST /api/generate が 400 を返していた。
+    env SECRET_KEY を最優先し、無ければ DB と同じ永続ディレクトリの
+    .flask_secret_key に保存・再利用して鍵を一定に保つ。
+    """
+    env_key = os.environ.get("SECRET_KEY")
+    if env_key:
+        return env_key
+    try:
+        db_path = Path(resolve_database_path(base_dir))
+        key_file = db_path.parent / ".flask_secret_key"
+        if key_file.exists():
+            existing = key_file.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        new_key = secrets.token_hex(32)
+        if _ensure_writable_dir(key_file.parent):
+            key_file.write_text(new_key, encoding="utf-8")
+        return new_key
+    except OSError:
+        # 書き込み不可でもクラッシュさせない（少なくとも起動はする）
+        return secrets.token_hex(32)
+
+
 class Config:
-    SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+    SECRET_KEY = resolve_secret_key()
     SQLALCHEMY_DATABASE_URI = f"sqlite:///{resolve_database_path()}"
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    # CSRFトークンの有効期限を無効化（依頼文34）。
+    # 既定1時間だと「画面を開いて1時間以上後に生成」すると token has expired で
+    # 400 になる。トークンはセッション(SECRET_KEY署名)に紐づくため、期限を
+    # 無効化しても CSRF 保護自体は維持される。
+    WTF_CSRF_TIME_LIMIT = None

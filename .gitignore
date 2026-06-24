@@ -20,6 +20,9 @@ shift.db
 # Testing
 .pytest_cache/
 
+# Secret key (依頼文34: 永続化したセッション/CSRF署名鍵。絶対にコミットしない)
+.flask_secret_key
+
 # Deployment (不要になった設定)
 Procfile
 render.yaml

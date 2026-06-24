@@ -36,7 +36,7 @@ from flask import (
     session,
 )
 
-from flask_wtf.csrf import CSRFProtect
+from flask_wtf.csrf import CSRFProtect, CSRFError
 from werkzeug.security import generate_password_hash, check_password_hash
 
 import jpholiday
@@ -999,6 +999,19 @@ def create_app():
         if request.path.startswith("/api/"):
             return jsonify({"error": "サーバー内部エラーが発生しました"}), 500
         return render_template("base.html", error_title="エラーが発生しました", error_message="申し訳ございません。しばらく待ってから再度お試しください。問題が続く場合は開発者にご連絡ください。"), 500
+
+    @app.errorhandler(CSRFError)
+    def handle_csrf_error(e):
+        # 依頼文34: CSRFトークンが期限切れ/不一致のとき。
+        # 旧来は HTML(400 "The CSRF token has expired." 等118B) が返り、
+        # クライアントが「生成に時間がかかり過ぎた」と誤表示していた。
+        # API には実態に合うJSONを返し、画面遷移は再読み込みを促す。
+        msg = ("セキュリティトークンの有効期限が切れたか不正です。"
+               "ページを再読み込み（リロード）してから、もう一度お試しください。")
+        if request.path.startswith("/api/"):
+            return jsonify({"error": msg, "csrf_error": True}), 400
+        flash(msg, "error")
+        return redirect(request.referrer or url_for("index"))
 
     # -----------------------------------------------------------------
     # ページルート

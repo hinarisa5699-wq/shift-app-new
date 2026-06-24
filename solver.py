@@ -1461,6 +1461,7 @@ def _solve_care_with_fallback(
             "workable_dates": set(s.get("workable_dates") or []),
             "work_start_time": s.get("work_start_time", ""),
             "work_end_time": s.get("work_end_time", ""),
+            "can_bath_assist": s.get("can_bath_assist", False),
         }
 
     staff_ids = list(staff_by_id.keys())
@@ -2001,14 +2002,15 @@ def _solve_care(
                         for d_idx in range(num_days):
                             model.add(x[s, d_idx, a] == 0)
 
-                # --- 兼務(派生)パターン: 派生元のデイが不許可なら派生も禁止 ---
-                #   day_p3_visit_pm ← デイ③(day_pattern3) + PM訪問
-                #   visit_am_day_p4 ← AM訪問 + デイ④(day_pattern4)
-                for dual, base in (("day_p3_visit_pm", "day_pattern3"),
-                                   ("visit_am_day_p4", "day_pattern4")):
-                    if dual in CARE_WORKING_ASSIGNMENTS and base not in allowed:
-                        for d_idx in range(num_days):
-                            model.add(x[s, d_idx, dual] == 0)
+                # --- 兼務(派生)パターン: 訪問兼務はデイ許可で塞がない（依頼文29/30）---
+                #   day_p3_visit_pm（AMデイ③+PM訪問）/ visit_am_day_p4（AM訪問+PMデイ④）は
+                #   「訪問」を担う唯一の合法形（純粋訪問は別途全日禁止）。
+                #   旧実装は派生元デイ③/④が許可集合に無いと兼務も一律禁止していたため、
+                #   訪問可スタッフを「デイ①等のみ許可」に設定すると訪問が完全に塞がれ、
+                #   訪問午前/午後が恒常的に不足していた（(B)・失敗テストが捕捉）。
+                #   訪問の可否は can_visit と訪問営業日制約で既に管理されるため、
+                #   ここではデイ許可制限を兼務(訪問)へ波及させない（兼務は常に許可寄り）。
+                #   ※ allowed に訪問コードが明示されている場合のみ下のブロックで範囲制限。
 
                 # --- 単独訪問(visit_am/visit_pm) ---
                 # UIの許可パターンには訪問の項目が無いため、ここで一律に閉じると
@@ -2346,28 +2348,17 @@ def _solve_care(
                 model.add(counselor_full_day_count >= min_full_day_counselor)
 
     # ==================================================================
-    # 制約（相談員1日1人）: 相談員は各開所日（営業日）あたり最大1人（ハード）
-    #   相談員＝資格「相談員」(qualification code "counselor"/"social_worker",
-    #   name "相談員"/"生活相談員")。その資格者の集合が counselor_staff_ids。
-    #   勤務(off以外)に入る相談員を各開所日で最大1人に制限し、2人以上の配置を禁止。
-    #   ※ 下限(1人確保)はソフト扱い。0人でも infeasible にしないため上限のみハード。
-    #     0人の開所日は解の読み取り後に「相談員 未配置」警告を出す（下記参照）。
-    #   ※ 開所日の定義は既存の non_closed_days を流用（新規定義はしない）。
-    #   ※ 相談員デスクローテーション(counselor_desk_enabled)有効時は相談員を
-    #     2名以上必要とする既存機能と矛盾するため、その時はこの上限を適用しない
-    #     （desk有効＝min_counselor_staff/min_full_day_counselor>0）。
-    #     本番はdesk無効（=0）のため通常はこの上限が有効になる。
-    # ==================================================================
-    if counselor_staff_ids and min_counselor_staff == 0 and min_full_day_counselor == 0:
-        for d_idx in non_closed_days:
-            model.add(
-                sum(
-                    x[s, d_idx, a]
-                    for s in counselor_staff_ids
-                    for a in CARE_WORKING_ASSIGNMENTS
-                )
-                <= 1
-            )
+    # 相談員「1日1人」（依頼文27→依頼文30で見直し）: ★desk役のみ1日1名に限定 ★
+    #   旧実装（依頼文27）は「相談員資格者の“勤務”を1日最大1人」に制限していたため、
+    #   相談員資格を持つスタッフ（兼デイ/入浴/訪問可）が相談員枠に固定され、
+    #   土日のデイ・お風呂当番・訪問へ回せず「配置可能人数の過少」を招いていた
+    #   （依頼文30の調査で確定。例: 土日入浴可5名中3名が相談員→勤務制限で2名扱い）。
+    #   依頼文30: 相談員“デスク役（終日相談）”は引き続き1日1名（過剰配置防止）。
+    #   これは後処理 _assign_care_roles が working_counselors から1名だけ選ぶことで
+    #   既に保証されるため、ここでの“勤務”上限ハード制約は撤廃する。
+    #   → 相談員資格者も通常のフロア/入浴/訪問スタッフとして複数勤務できる。
+    #   ※ 下限(1人確保)は従来どおりソフト＝0人の開所日は「相談員 未配置」警告のみ。
+    #   （旧コードは下記の <=1 制約。依頼文30で意図的に削除。）
 
     # ==================================================================
     # 制約: 配置ルール（PlacementRule テーブルから動的生成）
@@ -2378,6 +2369,41 @@ def _solve_care(
         model, x, staff_ids, staff_by_id, placement_rules,
         non_closed_days, all_dates, closed_day_indices,
         use_slack, placement_soft_penalties, placement_soft_trackers,
+    )
+
+    # ==================================================================
+    # ソフト目標: お風呂当番の「配置可能人数」を確保（依頼文30）
+    #   ソルバーは総出勤日数を最小化するため、放置すると最低人数しか配置せず、
+    #   出勤可能な入浴介助可スタッフ（特に土日）が休みに回り、お風呂当番の
+    #   「配置可能2名（必要3）」のような過少を招いていた（依頼文30で確定）。
+    #   各開所日で「中2外1=3名」を組めるだけの入浴可フロア職員の出勤を促す。
+    #   供給 = 入浴介助可かつ看護/リハ以外がフロア(_BATH_FLOOR_PATTERNS)に入る人数。
+    #   目標 = 3 + 1（desk相談員に1名取られても3名残る予備）。
+    #   重みは総出勤日数最小化(headcount_weight=num_days+1)を上回り、人員不足slackは
+    #   下回る並びにする（不足解消を優先しつつ、ハード人員確保を侵さない）。
+    #   ソフト＝出勤可能人員が物理的に足りない日は未達のまま（infeasibleにしない）。
+    # ==================================================================
+    bath_eligible_ids = [
+        s for s in staff_ids
+        if staff_by_id[s].get("can_bath_assist") and s not in nurse_ids
+    ]
+    bath_floor_codes = [
+        a for a in ("day_pattern1", "day_pattern2", "early", "late")
+        if a in CARE_WORKING_ASSIGNMENTS
+    ]
+    bath_target = _BATH_MID_COUNT + _BATH_OUT_COUNT + 1
+    bath_short_penalties = []
+    if bath_eligible_ids and bath_floor_codes:
+        for d_idx in non_closed_days:
+            supply = sum(
+                x[s, d_idx, a] for s in bath_eligible_ids for a in bath_floor_codes
+            )
+            short = model.new_int_var(0, bath_target, f"bath_short_d{d_idx}")
+            model.add(short >= bath_target - supply)
+            bath_short_penalties.append(short)
+    bath_short_weight = (num_days + 1) * 3
+    bath_short_penalty = (
+        sum(bath_short_penalties) * bath_short_weight if bath_short_penalties else 0
     )
 
     # ==================================================================
@@ -2512,6 +2538,7 @@ def _solve_care(
         model.minimize(
             total_slack * slack_weight
             + total_working_days * headcount_weight
+            + bath_short_penalty
             + fairness_diff + total_min_pw_penalty + total_min_pw_hard_penalty
             + gender_penalty + phone_fairness + placement_penalty_total
             + day2_count
@@ -2519,6 +2546,7 @@ def _solve_care(
     else:
         model.minimize(
             total_working_days * headcount_weight
+            + bath_short_penalty
             + fairness_diff + total_min_pw_penalty + total_min_pw_hard_penalty
             + gender_penalty + phone_fairness + placement_penalty_total
             + day2_count

@@ -529,7 +529,11 @@ def test_allowed_day_patterns_do_not_block_visit_assignments():
         staff_ids,
         staff_by_id,
         off_request_set=set(),
-        min_day_service=1,
+        # min_day_service=0: 本テストの主旨は「デイ限定の許可パターンが訪問兼務を
+        # 塞がないこと」の検証。min_day_service>=1 にすると 13:00 在席要件
+        # (min_staff_at_13=min_day_service) 等が 2名構成では満たせず、許可パターンと
+        # 無関係に infeasible になり主旨を覆い隠すため 0 とする（依頼文30で是正）。
+        min_day_service=0,
         min_visit_am=0,
         min_visit_pm=1,
         min_dual=0,

@@ -69,6 +69,11 @@ class Staff(db.Model):
     # "" = 未設定, "new" = 新人, "veteran" = ベテラン
     # 調理スタッフのみ意味を持つ。新人×ベテランのペア成立回数（ソフト目標）に使用。
 
+    # --- 初出勤日（依頼文36・任意）---
+    first_work_date = db.Column(db.Date, nullable=True)
+    # 調理「新人」の教育期間（初出勤から連続3出勤日はベテラン同伴）の起点。
+    # 未設定(None)の場合は生成対象月で最初に出勤する日を起点とみなす。
+
     # リレーション
     day_off_requests = db.relationship(
         "DayOffRequest", backref="staff", lazy=True, cascade="all, delete-orphan"
@@ -116,6 +121,7 @@ class Staff(db.Model):
             "car_commute": self.car_commute or False,
             "parking_slot": self.parking_slot or "",
             "cooking_experience": self.cooking_experience or "",
+            "first_work_date": self.first_work_date.isoformat() if self.first_work_date else None,
         }
 
 

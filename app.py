@@ -175,6 +175,17 @@ def _normalize_cooking_experience(value: str) -> str:
     return table.get(v, table.get(str(value or "").strip(), ""))
 
 
+def _parse_first_work_date(value: str):
+    """初出勤日（依頼文36）の入力 "YYYY-MM-DD" → date。空欄/不正は None。"""
+    s = str(value or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
 def _split_multi(value: str) -> list[str]:
     """; / 、/ , / ・ など複数区切りを許容して分割する。"""
     raw = str(value or "")
@@ -313,6 +324,9 @@ def _run_migrations(app):
     # --- 調理スタッフの経験区分（依頼文28・新人/ベテラン）---
     if "cooking_experience" not in columns:
         cursor.execute("ALTER TABLE staff ADD COLUMN cooking_experience VARCHAR(10) NOT NULL DEFAULT ''")
+    # --- 初出勤日（依頼文36・任意・NULL許容）---
+    if "first_work_date" not in columns:
+        cursor.execute("ALTER TABLE staff ADD COLUMN first_work_date DATE")
 
     # ShiftSettings テーブル
     columns = [row[1] for row in cursor.execute("PRAGMA table_info(shift_settings)").fetchall()]
@@ -1138,6 +1152,11 @@ def create_app():
                 _normalize_cooking_experience(request.form.get("cooking_experience", ""))
                 if staff_group == "cooking" else ""
             ),
+            # 初出勤日（依頼文36・調理スタッフのみ入力欄あり）
+            first_work_date=(
+                _parse_first_work_date(request.form.get("first_work_date", ""))
+                if staff_group == "cooking" else None
+            ),
         )
         db.session.add(staff)
         db.session.flush()  # IDを取得
@@ -1195,6 +1214,10 @@ def create_app():
             staff.cooking_experience = _normalize_cooking_experience(
                 request.form.get("cooking_experience", "")
             )
+            # 初出勤日（依頼文36）
+            staff.first_work_date = _parse_first_work_date(
+                request.form.get("first_work_date", "")
+            )
         else:
             staff.can_visit = "can_visit" in request.form
             staff.has_phone_duty = "has_phone_duty" in request.form
@@ -1202,8 +1225,9 @@ def create_app():
             staff.available_time_slots = request.form.get(
                 "available_time_slots", staff.available_time_slots
             )
-            # 調理以外に変更された場合は経験区分をクリア
+            # 調理以外に変更された場合は経験区分・初出勤日をクリア
             staff.cooking_experience = ""
+            staff.first_work_date = None
 
         staff.max_consecutive_days = safe_int(
             request.form.get("max_consecutive_days"), staff.max_consecutive_days
@@ -2048,6 +2072,10 @@ def create_app():
                 "work_start_time": getattr(s, "work_start_time", "") or "",
                 "work_end_time": getattr(s, "work_end_time", "") or "",
                 "cooking_experience": getattr(s, "cooking_experience", "") or "",
+                "first_work_date": (
+                    s.first_work_date.isoformat()
+                    if getattr(s, "first_work_date", None) else None
+                ),
             }
             if s.staff_group == "cooking":
                 cook_dicts.append(d)

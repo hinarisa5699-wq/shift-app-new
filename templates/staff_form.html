@@ -98,6 +98,18 @@
                 <option value="veteran" {% if current_exp == 'veteran' %}selected{% endif %}>ベテラン</option>
             </select>
             <p class="text-gray-500 text-sm mt-1">調理スタッフのみ有効。「新人×ベテランのペア成立回数」の目標（設定画面）に使われます。</p>
+
+            <!-- 初出勤日（依頼文36・新人オンボーディングの起点） -->
+            <div class="mt-4">
+                <label for="first_work_date" class="block text-lg font-semibold text-gray-700 mb-2">
+                    初出勤日（任意）
+                </label>
+                {% set current_fwd = staff.first_work_date.isoformat() if staff and staff.first_work_date else '' %}
+                <input type="date" id="first_work_date" name="first_work_date"
+                       value="{{ current_fwd }}"
+                       class="w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-orange-500 transition-colors bg-white">
+                <p class="text-gray-500 text-sm mt-1">調理「新人」の教育期間（初出勤から連続3出勤日はベテラン同伴）の起点。未設定なら生成対象月で最初に出勤する日を起点とします。</p>
+            </div>
         </div>
 
         <div id="care-only-fields">

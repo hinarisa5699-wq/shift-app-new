@@ -332,9 +332,8 @@ class ShiftSettings(db.Model):
         db.String(10), default="hard"
     )  # "hard" / "soft" / "off"
 
-    # ③ 相談員事務ローテーション
-    counselor_desk_enabled = db.Column(db.Boolean, default=False)
-    counselor_desk_count = db.Column(db.Integer, default=1)  # 同時事務人数
+    # 依頼文35: 相談員ローテーション(counselor_desk_enabled / counselor_desk_count)は
+    #   機能ごと削除。相談員の制御は counselor_care_mode（依頼文32）に一本化。
 
     # 相談員の介護業務参加モード（依頼文32）: "off"/"soft"/"hard"
     counselor_care_mode = db.Column(db.String(10), default="off", nullable=False)
@@ -367,8 +366,6 @@ class ShiftSettings(db.Model):
             "min_staff_at_15": self.min_staff_at_15 if self.min_staff_at_15 is not None else 4,
             "male_am_constraint_mode": self.male_am_constraint_mode or "hard",
             "max_day_service": self.max_day_service or 0,
-            "counselor_desk_enabled": self.counselor_desk_enabled or False,
-            "counselor_desk_count": self.counselor_desk_count if self.counselor_desk_count is not None else 1,
             "counselor_care_mode": self.counselor_care_mode or "off",
             "cooking_pair_target": self.cooking_pair_target or 0,
         }

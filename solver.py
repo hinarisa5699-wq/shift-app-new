@@ -557,7 +557,6 @@ _STAGGER_PATTERNS = {"day_pattern1", "day_pattern2"}
 
 # 利用可能な休憩スロット（開始時刻）
 # 各スロット60分間隔で重複なし。7スロットで最大7名を個別に分散。
-# 相談員ローテーション(常時1名)と合わせても同時に2名までしか現場を離れない。
 _BREAK_SLOTS = ["10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"]
 
 # パターン別の許可スロット（退勤時刻を超える休憩を防止）
@@ -930,9 +929,8 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shif
 
 
 # ===========================================================================
-# ③ 相談員2時間ローテーション（後処理）※旧ルール・現在は未使用（テスト互換のため残置）
+# 後処理: 現場在籍人数チェック用の時刻定義
 # ===========================================================================
-COUNSELOR_DESK_SLOTS = ["9:00-11:00", "11:00-13:00", "13:00-15:00", "15:00-17:00"]
 _ONSITE_CHECK_POINTS = [
     ("9:00", 540),
     ("9:30", 570),
@@ -950,235 +948,6 @@ _ONSITE_CHECK_POINTS = [
     ("15:30", 930),
     ("16:00", 960),
 ]
-
-# 各シフトパターンがカバーする事務スロットインデックス
-_SLOT_COVERAGE = {
-    "day_pattern1":    [0, 1, 2, 3],  # 8:30-17:30 → 全スロット可
-    "day_pattern2":    [0, 1, 2],      # 9:00-16:00 → 15-17は16時退勤のため不可
-    "day_pattern3":    [0, 1],         # 8:30-12:30 → 午前のみ
-    "day_pattern4":    [2, 3],         # 13:30-17:30 → 午後のみ
-    "day_p3_visit_pm": [0],            # ③→訪問: 施設8:30-12:30 → 9-11のみ
-    "visit_am_day_p4": [3],            # 訪問→④: 施設13:30-17:30 → 15-17のみ
-}
-
-
-def _assign_counselor_rotation(shifts_data, care_staff, settings, all_dates):
-    """相談員の2時間事務ローテーションを割り当てる。
-    Returns: (shifts_data, warnings)
-    """
-    counselor_warnings = []
-    placement_rules = settings.get("placement_rules", [])
-
-    # 相談員の資格IDを特定
-    counselor_qual_ids = _get_counselor_qualification_ids(placement_rules)
-
-    if not counselor_qual_ids:
-        return shifts_data, []
-
-    # 相談員資格を持つ職員IDセット
-    counselor_staff_ids = set()
-    for s in care_staff:
-        if set(s.get("qualification_ids", [])) & counselor_qual_ids:
-            counselor_staff_ids.add(s["id"])
-
-    if not counselor_staff_ids:
-        return shifts_data, []
-
-    # 日付別に出勤中の相談員をマップ
-    date_staff_assignment = {}  # {date_str: {staff_id: assignment}}
-    for item in shifts_data:
-        d_str = item["date"]
-        if d_str not in date_staff_assignment:
-            date_staff_assignment[d_str] = {}
-        date_staff_assignment[d_str][item["staff_id"]] = item["assignment"]
-
-    date_staff_break = {}
-    for item in shifts_data:
-        bs = item.get("break_start")
-        if not bs:
-            continue
-        d_str = item["date"]
-        if d_str not in date_staff_break:
-            date_staff_break[d_str] = {}
-        date_staff_break[d_str][item["staff_id"]] = bs
-
-    # 月間の事務回数カウンタ（公平性用）
-    desk_count = {sid: 0 for sid in counselor_staff_ids}
-
-    daily_target = len(COUNSELOR_DESK_SLOTS)
-    slot_use_count = {i: 0 for i in range(len(COUNSELOR_DESK_SLOTS))}
-
-    for dt in all_dates:
-        d_str = dt.strftime("%Y-%m-%d")
-        day_assignments = date_staff_assignment.get(d_str, {})
-
-        # その日出勤中の相談員を抽出
-        working_counselors = []
-        for sid in counselor_staff_ids:
-            asgn = day_assignments.get(sid)
-            if asgn and asgn != "off" and asgn in _SLOT_COVERAGE:
-                working_counselors.append((sid, asgn))
-
-        if not working_counselors:
-            continue
-
-        # --- 2段階で全4スロットを埋める ---
-        slot_assignments = {}  # {staff_id: [slot_idx, ...]}
-        used_slots = set()
-
-        # 各相談員の担当可能スロットを事前計算（休憩と重ならないもの）
-        counselor_possible = {}  # {sid: [slot_idx, ...]}
-        for sid, asgn in working_counselors:
-            break_start = date_staff_break.get(d_str, {}).get(sid, "")
-            possible = [
-                idx for idx in _SLOT_COVERAGE.get(asgn, [])
-                if not _break_overlaps_slot(break_start, idx)
-            ]
-            if possible:
-                counselor_possible[sid] = possible
-
-        if not counselor_possible:
-            continue
-
-        # Phase 1: 各相談員に1スロットずつ分散割当（公平性）
-        assigned_phase1 = set()
-        for _ in range(min(daily_target, len(counselor_possible))):
-            candidates = []
-            for sid, possible in counselor_possible.items():
-                if sid in assigned_phase1:
-                    continue
-                available = [s for s in possible if s not in used_slots]
-                if not available:
-                    continue
-                candidates.append((sid, available))
-
-            if not candidates:
-                break
-
-            candidates.sort(key=lambda c: (len(c[1]), desk_count.get(c[0], 0), c[0]))
-            chosen_sid, avail_slots = candidates[0]
-            chosen_slot = min(avail_slots, key=lambda s: (slot_use_count.get(s, 0), s))
-
-            slot_assignments.setdefault(chosen_sid, []).append(chosen_slot)
-            assigned_phase1.add(chosen_sid)
-            used_slots.add(chosen_slot)
-            desk_count[chosen_sid] = desk_count.get(chosen_sid, 0) + 1
-            slot_use_count[chosen_slot] = slot_use_count.get(chosen_slot, 0) + 1
-
-        # Phase 2: 未割当スロットを既存の相談員に追加割当
-        remaining_slots = [i for i in range(daily_target) if i not in used_slots]
-        for slot_idx in remaining_slots:
-            candidates = []
-            for sid, possible in counselor_possible.items():
-                if slot_idx not in possible:
-                    continue
-                # 既に持っているスロットとの連続を避ける（可能な限り）
-                already = slot_assignments.get(sid, [])
-                is_adjacent = any(abs(slot_idx - a) == 1 for a in already)
-                candidates.append((sid, is_adjacent, len(already), desk_count.get(sid, 0)))
-
-            if not candidates:
-                continue
-
-            # 連続でない人 → 担当数が少ない人 → 月間回数が少ない人
-            candidates.sort(key=lambda c: (c[1], c[2], c[3], c[0]))
-            chosen_sid = candidates[0][0]
-
-            slot_assignments.setdefault(chosen_sid, []).append(slot_idx)
-            used_slots.add(slot_idx)
-            desk_count[chosen_sid] = desk_count.get(chosen_sid, 0) + 1
-            slot_use_count[slot_idx] = slot_use_count.get(slot_idx, 0) + 1
-
-        # Phase 3: まだ未割当スロットがあれば、相談員の休憩を非相談員とスワップして埋める
-        still_remaining = [i for i in range(daily_target) if i not in used_slots]
-        if still_remaining:
-            # この日の全スタッフの break_start を取得
-            day_breaks = date_staff_break.get(d_str, {})
-            counselor_sids_today = {sid for sid, _ in working_counselors}
-            # 非相談員のスタッフ(同日出勤中、ずらし対象パターン)を取得
-            non_counselor_breaks = {}
-            for item in shifts_data:
-                if item["date"] == d_str and item["staff_id"] not in counselor_sids_today:
-                    asgn = item.get("assignment", "")
-                    if asgn in _STAGGER_PATTERNS and item.get("break_start"):
-                        non_counselor_breaks[item["staff_id"]] = {
-                            "break_start": item["break_start"],
-                            "assignment": asgn,
-                        }
-
-            for slot_idx in list(still_remaining):
-                # このスロットを取れる休憩時間を探す
-                good_breaks = []
-                for b in _BREAK_SLOTS:
-                    if not _break_overlaps_slot(b, slot_idx):
-                        good_breaks.append(b)
-
-                swapped = False
-                for sid in counselor_sids_today:
-                    if swapped:
-                        break
-                    c_break = day_breaks.get(sid, "")
-                    if not c_break or not _break_overlaps_slot(c_break, slot_idx):
-                        continue  # この相談員の休憩はスロットと被っていない（別の理由で割当不可）
-                    # この相談員の休憩をスワップすればスロット取れる
-                    for nc_sid, nc_info in non_counselor_breaks.items():
-                        nc_break = nc_info["break_start"]
-                        nc_assignment = nc_info["assignment"]
-                        allowed_for_non_counselor = _ALLOWED_BREAK_SLOTS.get(nc_assignment, _BREAK_SLOTS)
-                        if (
-                            nc_break in good_breaks
-                            and c_break != nc_break
-                            and c_break in allowed_for_non_counselor
-                        ):
-                            # 既存の割当スロットが新しい休憩と衝突しないか確認
-                            existing = slot_assignments.get(sid, [])
-                            if any(_break_overlaps_slot(nc_break, es) for es in existing):
-                                continue
-                            # スワップ: 相談員に good_break, 非相談員に相談員の元の休憩
-                            # shifts_data 内の break_start を更新
-                            for item in shifts_data:
-                                if item["date"] == d_str:
-                                    if item["staff_id"] == sid:
-                                        item["break_start"] = nc_break
-                                    elif item["staff_id"] == nc_sid:
-                                        item["break_start"] = c_break
-                            # マップも更新
-                            day_breaks[sid] = nc_break
-                            day_breaks[nc_sid] = c_break
-                            non_counselor_breaks[nc_sid]["break_start"] = c_break
-                            # counselor_possible を再計算
-                            asgn_for_sid = day_assignments.get(sid, "")
-                            counselor_possible[sid] = [
-                                idx for idx in _SLOT_COVERAGE.get(asgn_for_sid, [])
-                                if not _break_overlaps_slot(nc_break, idx)
-                            ]
-                            # スロット割当
-                            if slot_idx in counselor_possible.get(sid, []):
-                                slot_assignments.setdefault(sid, []).append(slot_idx)
-                                used_slots.add(slot_idx)
-                                desk_count[sid] = desk_count.get(sid, 0) + 1
-                                slot_use_count[slot_idx] = slot_use_count.get(slot_idx, 0) + 1
-                                swapped = True
-                            break
-
-        # 未充足スロットの警告を生成
-        unfilled = [i for i in range(daily_target) if i not in used_slots]
-        if unfilled:
-            unfilled_names = [COUNSELOR_DESK_SLOTS[i] for i in unfilled]
-            counselor_warnings.append({
-                "date": d_str,
-                "warning_type": "counselor_slot_unfilled",
-                "message": f"相談スロット未充足: {', '.join(unfilled_names)}"
-                           f"（出勤相談員{len(working_counselors)}名）",
-            })
-
-        # shifts_data の対応エントリに counselor_desk_slots を付与
-        if slot_assignments:
-            for item in shifts_data:
-                if item["date"] == d_str and item["staff_id"] in slot_assignments:
-                    item["counselor_desk_slots"] = slot_assignments[item["staff_id"]]
-
-    return shifts_data, counselor_warnings
 
 
 # ===========================================================================
@@ -1485,7 +1254,6 @@ def _solve_care_with_fallback(
     _base_min_day = settings.get("min_day_service", 4)
     min_visit_am = settings.get("min_visit_am", 1)
     min_visit_pm = settings.get("min_visit_pm", 1)
-    min_dual = settings.get("min_dual_assignment", 2)
     closed_days_set = set(settings.get("closed_days", [5, 6]))
     visit_operating_days = settings.get("visit_operating_days", [0, 1, 3, 4])
     am_preferred_gender = settings.get("am_preferred_gender", "")
@@ -1496,25 +1264,18 @@ def _solve_care_with_fallback(
     male_am_constraint_mode = settings.get("male_am_constraint_mode", "hard")
     placement_rules = settings.get("placement_rules", [])
 
-    # 休憩・相談で現場を離れる人数分のバッファを追加
-    # 要件: 「休憩中・相談中はカウントしない」(3/5クライアント指摘)
-    # ケア職の休憩は同時間帯最大1名、相談員ローテは同時間帯最大1名。
-    counselor_desk_enabled = settings.get("counselor_desk_enabled", False)
+    # 休憩で現場を離れる人数分のバッファを追加
+    # 要件: 「休憩中はカウントしない」(3/5クライアント指摘)
+    # ケア職の休憩は同時間帯最大1名。
     _break_buffer = 1
-    _counselor_buffer = 1 if counselor_desk_enabled else 0
-    _midday_buffer = _break_buffer + _counselor_buffer
+    _midday_buffer = _break_buffer
     counselor_qual_ids = _get_counselor_qualification_ids(placement_rules)
     counselor_staff_ids = [
         sid for sid in staff_ids
         if counselor_qual_ids.intersection(set(staff_by_id[sid].get("qualification_ids", [])))
     ] if counselor_qual_ids else []
-    min_counselor_staff = 2 if counselor_desk_enabled and counselor_staff_ids else 0
-    # 昼帯(11-15時)の4スロットを安定して埋めるには、
-    # 端パターンだけでなくフルタイム相談員が最低2名必要になる日がある。
-    min_full_day_counselor = 2 if counselor_desk_enabled and counselor_staff_ids else 0
 
     min_day_service = _base_min_day + _midday_buffer
-    min_staff_at_9 = min_staff_at_9 + _counselor_buffer
     min_staff_at_11 = _base_min_day + _midday_buffer
     min_staff_at_13 = _base_min_day + _midday_buffer
     min_staff_at_15 = min_staff_at_15 + _midday_buffer
@@ -1553,7 +1314,7 @@ def _solve_care_with_fallback(
     shifts_data, warnings_data = _solve_care(
         year, month, all_dates, staff_ids, staff_by_id,
         off_request_set, min_day_service, min_visit_am, min_visit_pm,
-        min_dual, closed_days_set, visit_operating_days,
+        closed_days_set, visit_operating_days,
         am_preferred_gender=am_preferred_gender,
         phone_duty_enabled=phone_duty_enabled,
         phone_duty_max_consecutive=phone_duty_max_consecutive,
@@ -1564,8 +1325,6 @@ def _solve_care_with_fallback(
         male_am_constraint_mode=male_am_constraint_mode,
         placement_rules=placement_rules,
         counselor_staff_ids=counselor_staff_ids,
-        min_counselor_staff=min_counselor_staff,
-        min_full_day_counselor=min_full_day_counselor,
         counselor_care_mode=counselor_care_mode,
         allowed_patterns=allowed_patterns or {},
         max_day_service=max_day_service,
@@ -1586,7 +1345,7 @@ def _solve_care_with_fallback(
     shifts_data, warnings_data = _solve_care(
         year, month, all_dates, staff_ids, staff_by_id,
         off_request_set, min_day_service, min_visit_am, min_visit_pm,
-        min_dual, closed_days_set, visit_operating_days,
+        closed_days_set, visit_operating_days,
         am_preferred_gender=am_preferred_gender,
         phone_duty_enabled=phone_duty_enabled,
         phone_duty_max_consecutive=phone_duty_max_consecutive,
@@ -1597,8 +1356,6 @@ def _solve_care_with_fallback(
         male_am_constraint_mode=male_am_constraint_mode,
         placement_rules=placement_rules,
         counselor_staff_ids=counselor_staff_ids,
-        min_counselor_staff=min_counselor_staff,
-        min_full_day_counselor=min_full_day_counselor,
         counselor_care_mode=counselor_care_mode,
         allowed_patterns=allowed_patterns or {},
         max_day_service=max_day_service,
@@ -1629,7 +1386,7 @@ def _solve_care_with_fallback(
     shifts_data, warnings_data = _solve_care(
         year, month, all_dates, staff_ids, staff_by_id,
         off_request_set, min_day_service, min_visit_am, min_visit_pm,
-        min_dual, closed_days_set, visit_operating_days,
+        closed_days_set, visit_operating_days,
         am_preferred_gender=am_preferred_gender,
         phone_duty_enabled=phone_duty_enabled,
         phone_duty_max_consecutive=phone_duty_max_consecutive,
@@ -1640,8 +1397,6 @@ def _solve_care_with_fallback(
         male_am_constraint_mode=male_am_constraint_mode,
         placement_rules=relaxed_rules,
         counselor_staff_ids=counselor_staff_ids,
-        min_counselor_staff=min_counselor_staff,
-        min_full_day_counselor=min_full_day_counselor,
         counselor_care_mode=counselor_care_mode,
         allowed_patterns=allowed_patterns or {},
         max_day_service=max_day_service,
@@ -1686,7 +1441,7 @@ def _solve_care_with_fallback(
 # ===========================================================================
 def _solve_care(
     year, month, all_dates, staff_ids, staff_by_id, off_request_set,
-    min_day_service, min_visit_am, min_visit_pm, min_dual,
+    min_day_service, min_visit_am, min_visit_pm,
     closed_days_set, visit_operating_days,
     am_preferred_gender: str = "",
     phone_duty_enabled: bool = False,
@@ -1698,8 +1453,6 @@ def _solve_care(
     male_am_constraint_mode: str = "hard",
     placement_rules: list = None,
     counselor_staff_ids: list = None,
-    min_counselor_staff: int = 0,
-    min_full_day_counselor: int = 0,
     counselor_care_mode: str = "off",
     allowed_patterns: dict = None,
     max_day_service: int = 0,
@@ -2126,13 +1879,10 @@ def _solve_care(
     slack_day_pm = {}
     slack_visit_am = {}
     slack_visit_pm = {}
-    slack_dual = {}
     slack_staff_9 = {}
     slack_staff_11 = {}
     slack_staff_13 = {}
     slack_staff_15 = {}
-    slack_counselor_staff = {}
-    slack_counselor_full_day = {}
     slack_early = {}
     slack_late = {}
     slack_nurse = {}   # 看護師0名（配置不能）の日を許容するスラック
@@ -2168,18 +1918,6 @@ def _solve_care(
             slack_staff_15[d_idx] = model.new_int_var(
                 0, len(staff_ids), f"slack_staff_15_{d_idx}"
             )
-            if min_counselor_staff > 0 and counselor_staff_ids:
-                slack_counselor_staff[d_idx] = model.new_int_var(
-                    0, len(counselor_staff_ids), f"slack_counselor_staff_{d_idx}"
-                )
-            if min_full_day_counselor > 0 and counselor_staff_ids:
-                slack_counselor_full_day[d_idx] = model.new_int_var(
-                    0, len(counselor_staff_ids), f"slack_counselor_full_day_{d_idx}"
-                )
-            if min_dual > 0:
-                slack_dual[d_idx] = model.new_int_var(
-                    0, len(staff_ids), f"slack_dual_{d_idx}"
-                )
 
     # ==================================================================
     # 制約: デイサービス午前・午後の最低/最大人数（休業日はスキップ）
@@ -2245,22 +1983,9 @@ def _solve_care(
         # 上限も設定: ちょうど指定人数
         model.add(visit_pm_count <= min_visit_pm)
 
-    # ==================================================================
-    # 制約: 兼務者の最低人数（休業日・訪問非営業日はスキップ）
-    # ==================================================================
-    if min_dual > 0:
-        for d_idx, dt in enumerate(all_dates):
-            if d_idx in closed_day_indices:
-                continue
-            if not _is_visit_day(d_idx):
-                continue
-            dual_count = sum(
-                x[s, d_idx, a] for s in staff_ids for a in DUAL_ASSIGNMENTS
-            )
-            if use_slack:
-                model.add(dual_count + slack_dual[d_idx] >= min_dual)
-            else:
-                model.add(dual_count >= min_dual)
+    # 依頼文35: 「兼務者の最低人数（min_dual_assignment）」制約は削除。
+    #   兼務（day_p3_visit_pm / visit_am_day_p4）はルール上可能なまま残すが、
+    #   1日あたり最低N人という下限の縛りは課さない。
 
     # ==================================================================
     # 制約: 9時30分・11時・13時・14時で最低人数必須
@@ -2336,38 +2061,8 @@ def _solve_care(
             else:
                 model.add(nurse_minutes >= 120)
 
-    # ==================================================================
-    # 制約: 相談員ローテON時は、原則として相談員を最低2名出勤させる
-    # 1名だけでは4スロットを休憩非重複で埋め切れないため。
-    # ==================================================================
-    if min_counselor_staff > 0 and counselor_staff_ids:
-        for d_idx in non_closed_days:
-            counselor_working_count = sum(
-                x[s, d_idx, a] for s in counselor_staff_ids for a in CARE_WORKING_ASSIGNMENTS
-            )
-            if use_slack:
-                model.add(
-                    counselor_working_count + slack_counselor_staff[d_idx] >= min_counselor_staff
-                )
-            else:
-                model.add(counselor_working_count >= min_counselor_staff)
-
-    # ==================================================================
-    # 制約: 相談員ローテON時は、原則として相談員を最低2名はフルタイムで出勤させる
-    # 端パターン2名だけだと 11-15 時帯の相談員枠が埋まらない日が出るため。
-    # ==================================================================
-    if min_full_day_counselor > 0 and counselor_staff_ids:
-        for d_idx in non_closed_days:
-            counselor_full_day_count = sum(
-                x[s, d_idx, a] for s in counselor_staff_ids for a in PRESENT_FULL_DAY
-            )
-            if use_slack:
-                model.add(
-                    counselor_full_day_count + slack_counselor_full_day[d_idx]
-                    >= min_full_day_counselor
-                )
-            else:
-                model.add(counselor_full_day_count >= min_full_day_counselor)
+    # 依頼文35: 「相談員ローテーション（最低2名出勤・最低2名フルタイム）」の制約は削除。
+    #   相談員の制御は下記 desk役1名ハード＋介護業務参加モード（依頼文32）に一本化。
 
     # ==================================================================
     # 相談員 desk役1名ハード ＋ 介護業務参加モード（依頼文27→30→32）
@@ -2597,19 +2292,10 @@ def _solve_care(
                 all_slack_terms.extend([slack_early[d], slack_late[d]])
             if nurse_ids:
                 all_slack_terms.append(slack_nurse[d])
-            if min_counselor_staff > 0 and counselor_staff_ids:
-                all_slack_terms.append(slack_counselor_staff[d])
-            if min_full_day_counselor > 0 and counselor_staff_ids:
-                all_slack_terms.append(slack_counselor_full_day[d])
-            if min_dual > 0:
-                all_slack_terms.append(slack_dual[d])
         max_slack_terms_per_day = (
             8
             + (2 if require_early_late else 0)
             + (1 if nurse_ids else 0)
-            + (1 if min_counselor_staff > 0 and counselor_staff_ids else 0)
-            + (1 if min_full_day_counselor > 0 and counselor_staff_ids else 0)
-            + (1 if min_dual > 0 else 0)
         )
         total_slack = model.new_int_var(
             0,
@@ -2755,15 +2441,6 @@ def _solve_care(
                     "message": f"訪問介護午後: {val}名不足",
                 })
 
-            if min_dual > 0:
-                val = solver.value(slack_dual[d_idx])
-                if val > 0:
-                    warnings_data.append({
-                        "date": date_str,
-                        "warning_type": "dual_shortage",
-                        "message": f"兼務者: {val}名不足",
-                    })
-
             val = solver.value(slack_staff_9[d_idx])
             if val > 0:
                 warnings_data.append({
@@ -2795,24 +2472,6 @@ def _solve_care(
                     "warning_type": "understaffed_at_15",
                     "message": f"14時在籍人数: {val}名不足",
                 })
-
-            if min_counselor_staff > 0 and counselor_staff_ids:
-                val = solver.value(slack_counselor_staff[d_idx])
-                if val > 0:
-                    warnings_data.append({
-                        "date": date_str,
-                        "warning_type": "understaffed_counselor_staff",
-                        "message": f"相談員出勤人数: {val}名不足",
-                    })
-
-            if min_full_day_counselor > 0 and counselor_staff_ids:
-                val = solver.value(slack_counselor_full_day[d_idx])
-                if val > 0:
-                    warnings_data.append({
-                        "date": date_str,
-                        "warning_type": "understaffed_counselor_full_day",
-                        "message": f"相談員フルタイム人数: {val}名不足",
-                    })
 
     # ------------------------------------------------------------------
     # ソフト配置ルール違反の警告
@@ -3339,10 +2998,20 @@ def _solve_cooking(
                 continue
             new_work = sum(x[s, d_idx, a] for s in new_ids for a in cook_working)
             vet_work = sum(x[s, d_idx, a] for s in vet_ids for a in cook_working)
+            # 依頼文35: pair_day を完全に reify（双方向）する。
+            #   旧実装は片方向（pd=1 → 新人>=1 かつ ベテラン>=1）のみで、
+            #   「新人>=1 かつ ベテラン>=1 が成立しても pd=0 のまま」を許したため、
+            #   目的関数が数える total_pairs が実際の成立日数と一致せず、ペア成立を
+            #   増やす圧力が弱かった。pd ⇔ (新人>=1 ∧ ベテラン>=1) に厳密化する。
+            has_new = model.new_bool_var(f"cook_has_new_d{d_idx}")
+            has_vet = model.new_bool_var(f"cook_has_vet_d{d_idx}")
+            model.add(new_work >= 1).only_enforce_if(has_new)
+            model.add(new_work == 0).only_enforce_if(has_new.Not())
+            model.add(vet_work >= 1).only_enforce_if(has_vet)
+            model.add(vet_work == 0).only_enforce_if(has_vet.Not())
             pd = model.new_bool_var(f"cook_pair_day_d{d_idx}")
-            # pd=1 を選べるのは「新人>=1 かつ ベテラン>=1」が成立する日のみ。
-            model.add(new_work >= 1).only_enforce_if(pd)
-            model.add(vet_work >= 1).only_enforce_if(pd)
+            model.add_bool_and([has_new, has_vet]).only_enforce_if(pd)
+            model.add_bool_or([has_new.Not(), has_vet.Not()]).only_enforce_if(pd.Not())
             pair_day_vars.append(pd)
         if pair_day_vars:
             total_pairs = model.new_int_var(0, len(pair_day_vars), "cook_total_pairs")

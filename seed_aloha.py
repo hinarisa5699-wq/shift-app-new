@@ -350,11 +350,10 @@ def seed():
         settings.min_staff_at_9 = 4        # 9時最低4名
         settings.min_staff_at_15 = 4       # 15時最低4名
         settings.male_am_constraint_mode = "hard"
-        settings.counselor_desk_enabled = True   # ③ 相談員事務ローテ有効
-        settings.counselor_desk_count = 1        # 同時事務1名
+        # 依頼文35: 相談員ローテーションは削除。相談員は counselor_care_mode（既定off）で制御。
 
         db.session.commit()
-        print(f"  min_day=4, min_9=4, min_15=4, closed=なし, visit=月火木金, 事務ローテ=ON(1名)")
+        print(f"  min_day=4, min_9=4, min_15=4, closed=なし, visit=月火木金")
 
         # --------------------------------------------------
         # 7. 調理組み合わせルール修正

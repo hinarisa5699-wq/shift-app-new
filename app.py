@@ -334,10 +334,8 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN phone_duty_max_consecutive INTEGER DEFAULT 1")
     if "male_am_constraint_mode" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN male_am_constraint_mode VARCHAR(10) DEFAULT 'hard'")
-    if "counselor_desk_enabled" not in columns:
-        cursor.execute("ALTER TABLE shift_settings ADD COLUMN counselor_desk_enabled BOOLEAN DEFAULT 0")
-    if "counselor_desk_count" not in columns:
-        cursor.execute("ALTER TABLE shift_settings ADD COLUMN counselor_desk_count INTEGER DEFAULT 1")
+    # 依頼文35: 相談員ローテーション（counselor_desk_enabled / counselor_desk_count）は
+    #   機能ごと削除。既存DBの当該カラムは未使用のまま残置（SQLiteのDROP COLUMN回避）。
     # 調理：新人×ベテランのペア成立回数の目標値（依頼文28）
     if "cooking_pair_target" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN cooking_pair_target INTEGER DEFAULT 0")
@@ -1619,7 +1617,7 @@ def create_app():
         s.min_day_service = safe_int(request.form.get("min_day_service"), 4)
         s.min_visit_am = safe_int(request.form.get("min_visit_am"), 1)
         s.min_visit_pm = safe_int(request.form.get("min_visit_pm"), 1)
-        s.min_dual_assignment = safe_int(request.form.get("min_dual_assignment"), 2)
+        # 依頼文35: 兼務者最低人数(min_dual_assignment)は削除（フォーム保存しない）。
         s.min_early_staff = safe_int(request.form.get("min_early_staff"), 1)
         s.min_late_staff = safe_int(request.form.get("min_late_staff"), 1)
         s.closed_days = ",".join(request.form.getlist("closed_days"))
@@ -1633,8 +1631,7 @@ def create_app():
         s.min_staff_at_15 = safe_int(request.form.get("min_staff_at_15"), 4)
         s.male_am_constraint_mode = request.form.get("male_am_constraint_mode", "hard")
         s.max_day_service = safe_int(request.form.get("max_day_service"), 0)
-        s.counselor_desk_enabled = "counselor_desk_enabled" in request.form
-        s.counselor_desk_count = safe_int(request.form.get("counselor_desk_count"), 1)
+        # 依頼文35: 相談員ローテーション(counselor_desk_enabled / counselor_desk_count)は削除。
         # 調理 新人×ベテランのペア成立回数の目標値（依頼文28・0=無効）
         s.cooking_pair_target = max(0, safe_int(request.form.get("cooking_pair_target"), 0))
         # 相談員の介護業務参加モード（依頼文32・off/soft/hard、既定off）
@@ -2069,7 +2066,6 @@ def create_app():
             "min_day_service": settings_obj.min_day_service,
             "min_visit_am": settings_obj.min_visit_am,
             "min_visit_pm": settings_obj.min_visit_pm,
-            "min_dual_assignment": settings_obj.min_dual_assignment,
             "min_early_staff": getattr(settings_obj, 'min_early_staff', 1) if getattr(settings_obj, 'min_early_staff', 1) is not None else 1,
             "min_late_staff": getattr(settings_obj, 'min_late_staff', 1) if getattr(settings_obj, 'min_late_staff', 1) is not None else 1,
             "closed_days": closed_days,
@@ -2083,8 +2079,6 @@ def create_app():
             "min_staff_at_15": getattr(settings_obj, 'min_staff_at_15', 4) or 4,
             "male_am_constraint_mode": getattr(settings_obj, 'male_am_constraint_mode', 'hard') or 'hard',
             "max_day_service": getattr(settings_obj, 'max_day_service', 0) or 0,
-            "counselor_desk_enabled": getattr(settings_obj, 'counselor_desk_enabled', False) or False,
-            "counselor_desk_count": getattr(settings_obj, 'counselor_desk_count', 1) or 1,
             "counselor_care_mode": getattr(settings_obj, 'counselor_care_mode', 'off') or 'off',
             "placement_rules": placement_rules_data,
             "cooking_combo_rules": cooking_combo_data,

@@ -2946,7 +2946,11 @@ def _solve_cooking(
     # ==================================================================
     # 制約: 調理の1日の編成は「4通りのいずれかに完全一致」または「全未配置」
     #   各営業日について、4パターン or none をちょうど1つ選択。
-    #   - パターン選択時: 含むアサインメントは各1名(==1)、含まない物は0(==0) → 完全一致
+    #   - パターン選択時: 含むアサインメントは各1〜2名(>=1,<=2)、含まない物は0(==0)
+    #     ＝編成する記号の集合はパターン通り（カバー構造は維持）。
+    #     依頼文38: 新人オンボーディングの「同一シフト記号でのベテラン同伴」を
+    #     可能にするため、1記号に最大2名（新人＋ベテラン）まで許可する。通常は
+    #     extra ペナルティ（下記）で1名に保たれ、同伴が必要な日のみ2名化する。
     #   - none 選択時: その日の調理は全員 off（部分編成を一切作らない）
     #   どの4通りも組めない日は none になり、警告を出す（無言で③だけ等にしない）。
     # ==================================================================
@@ -2963,7 +2967,8 @@ def _solve_cooking(
                 for a in cook_working:
                     cnt = sum(x[s, d_idx, a] for s in staff_ids)
                     if a in pset:
-                        model.add(cnt == 1).only_enforce_if(pv)
+                        model.add(cnt >= 1).only_enforce_if(pv)
+                        model.add(cnt <= 2).only_enforce_if(pv)
                     else:
                         model.add(cnt == 0).only_enforce_if(pv)
             # none: 全調理アサインメントを0に
@@ -2976,13 +2981,21 @@ def _solve_cooking(
             model.add_exactly_one(sel_vars)
 
     # ==================================================================
-    # 制約: 各アサインメント（①②③④）は1日1名まで
+    # 制約: 各アサインメント（①②③④⑤）は1日2名まで（依頼文38で1→2に緩和）
+    #   2名目は「同一シフト記号でのベテラン同伴」用。不要な2名化は extra_penalties
+    #   （目的関数）で抑制し、通常日は実質1名に保つ。
     # ==================================================================
+    extra_penalties = []  # 1記号に2人目が入った分のペナルティ（依頼文38）
     for d_idx in range(num_days):
         if d_idx in closed_day_indices:
             continue
         for a in cook_working:
-            model.add(sum(x[s, d_idx, a] for s in staff_ids) <= 1)
+            cnt = sum(x[s, d_idx, a] for s in staff_ids)
+            model.add(cnt <= 2)
+            extra = model.new_bool_var(f"cook_sym_extra_d{d_idx}_{a}")
+            # cnt<=2 のもとで extra >= cnt-1 → 最小化で extra = (cnt==2 ? 1 : 0)
+            model.add(extra >= cnt - 1)
+            extra_penalties.append(extra)
 
     # ==================================================================
     # 制約: 時間帯カバレッジ（休業日はスキップ）
@@ -3045,13 +3058,16 @@ def _solve_cooking(
             model.add(pair_deficit >= pair_target - total_pairs)
 
     # ==================================================================
-    # ソフト目標: 調理「新人」オンボーディング（依頼文36）
+    # ソフト目標: 調理「新人」オンボーディング（依頼文36→38）
     #   経験区分=新人 の調理スタッフの「初出勤から連続3出勤日（=出勤3回ぶん。
     #   間に休みがあってもよい）」を教育期間とみなし、その各出勤日に経験区分=
-    #   ベテランの調理スタッフが同じ日に1人以上出勤するようにする（ソフト）。
+    #   ベテランの調理スタッフが【新人と同一のシフト記号（同一時間帯）】で
+    #   勤務するようにする（ソフト・依頼文38で「同一日在籍」から厳格化）。
     #   起点: first_work_date があればその日。無ければ生成対象月で最初に出勤
     #   する日（=候補日の中で最初に勤務する日）を起点とする（内生的に決まる）。
-    #   「一緒」は同一日の在籍で判定（時間帯の重なりは問わない＝pairと同じ流儀）。
+    #   同伴成立 = その日に新人が入っている記号に、ベテランの誰かも入っている。
+    #     （1記号最大2名の緩和＝新人＋ベテランの2名。コンボ制約参照）
+    #   同記号化でカバーが不足する日が出ても既存のカバー判定・警告に委ねる。
     #   達成不能でも infeasible にしない。ペア成立回数（依頼文28/35）とは別系統。
     #   ※単月生成のため、first_work_date が生成対象月より前の場合の「前月までに
     #     消化した出勤回数」は追跡できない。fwd が当月最終日より後なら対象外。
@@ -3060,16 +3076,18 @@ def _solve_cooking(
     month_last = all_dates[-1] if all_dates else None
     onboarding_penalties = []
     onboarding_targets = []  # [(staff_id, [candidate_day_idx...])] 後処理の警告用
-    _vet_present_cache = {}
+    _vet_sym_cache = {}
 
-    def _vet_present_var(d_idx):
-        if d_idx not in _vet_present_cache:
-            vp = model.new_bool_var(f"cook_vet_present_d{d_idx}")
-            vw = sum(x[s, d_idx, a] for s in vet_ids for a in cook_working)
-            model.add(vw >= 1).only_enforce_if(vp)
-            model.add(vw == 0).only_enforce_if(vp.Not())
-            _vet_present_cache[d_idx] = vp
-        return _vet_present_cache[d_idx]
+    def _vet_sym_var(d_idx, a):
+        """その日 d に記号 a でベテランが1人以上勤務しているか（依頼文38）。"""
+        key = (d_idx, a)
+        if key not in _vet_sym_cache:
+            vs = model.new_bool_var(f"cook_vet_sym_d{d_idx}_{a}")
+            vw = sum(x[v, d_idx, a] for v in vet_ids)
+            model.add(vw >= 1).only_enforce_if(vs)
+            model.add(vw == 0).only_enforce_if(vs.Not())
+            _vet_sym_cache[key] = vs
+        return _vet_sym_cache[key]
 
     for n in new_ids:
         raw_fwd = staff_by_id[n].get("first_work_date")
@@ -3109,11 +3127,22 @@ def _solve_cooking(
             is_edu = model.new_bool_var(f"onb_edu_s{n}_d{d}")
             model.add_bool_and([wd_bool, first3]).only_enforce_if(is_edu)
             model.add_bool_or([wd_bool.Not(), first3.Not()]).only_enforce_if(is_edu.Not())
-            vp = _vet_present_var(d)
-            # 同伴ミス = 教育出勤日 かつ ベテラン不在
+            # 依頼文38: 同一シフト記号でのベテラン同伴。
+            #   comp_a = 「新人 n が記号 a に入り、かつ同じ記号 a にベテランも入る」
+            #   新人は1日に最大1記号しか勤務しないため sum(comp_a) は 0/1。
+            comp_terms = []
+            for a in cook_working:
+                ca = model.new_bool_var(f"onb_comp_s{n}_d{d}_{a}")
+                vs = _vet_sym_var(d, a)
+                model.add_bool_and([x[n, d, a], vs]).only_enforce_if(ca)
+                model.add_bool_or([x[n, d, a].Not(), vs.Not()]).only_enforce_if(ca.Not())
+                comp_terms.append(ca)
+            same_sym = model.new_bool_var(f"onb_samesym_s{n}_d{d}")
+            model.add(same_sym == sum(comp_terms))  # 同記号ベテラン同伴の成否(0/1)
+            # 同伴ミス = 教育出勤日 かつ 同記号ベテランなし
             miss = model.new_bool_var(f"onb_miss_s{n}_d{d}")
-            model.add_bool_and([is_edu, vp.Not()]).only_enforce_if(miss)
-            model.add_bool_or([is_edu.Not(), vp]).only_enforce_if(miss.Not())
+            model.add_bool_and([is_edu, same_sym.Not()]).only_enforce_if(miss)
+            model.add_bool_or([is_edu.Not(), same_sym]).only_enforce_if(miss.Not())
             onboarding_penalties.append(miss)
 
     # ==================================================================
@@ -3153,15 +3182,19 @@ def _solve_cooking(
         none_penalty = sum(none_by_day.values()) * (num_days + 1) * 50 if none_by_day else 0
         # 新人×ベテランのペア不足（依頼文28・ソフト目標）
         pair_penalty = pair_deficit * (num_days + 1) if pair_deficit is not None else 0
-        # 新人オンボーディング 同伴ミス（依頼文36・ソフト目標）。ペアより少し強め。
-        onboarding_penalty = sum(onboarding_penalties) * (num_days + 1) * 3 if onboarding_penalties else 0
-        model.minimize(total_slack * penalty_weight + fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + onboarding_penalty)
+        # 1記号2名化(依頼文38)の抑制ペナルティ。通常日を実質1名に保つ。
+        extra_penalty = sum(extra_penalties) * (num_days + 1) * 2 if extra_penalties else 0
+        # 新人オンボーディング 同伴ミス（依頼文36→38・同一記号）。extra より強くして
+        # 「同記号同伴のための2名化」が割に合うようにする（onboarding 5w > extra 2w）。
+        onboarding_penalty = sum(onboarding_penalties) * (num_days + 1) * 5 if onboarding_penalties else 0
+        model.minimize(total_slack * penalty_weight + fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty)
     else:
         cook_pw_penalty = sum(cook_min_pw_penalties) * (num_days + 1) * 10 if cook_min_pw_penalties else 0
         none_penalty = sum(none_by_day.values()) * (num_days + 1) * 50 if none_by_day else 0
         pair_penalty = pair_deficit * (num_days + 1) if pair_deficit is not None else 0
-        onboarding_penalty = sum(onboarding_penalties) * (num_days + 1) * 3 if onboarding_penalties else 0
-        model.minimize(fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + onboarding_penalty)
+        extra_penalty = sum(extra_penalties) * (num_days + 1) * 2 if extra_penalties else 0
+        onboarding_penalty = sum(onboarding_penalties) * (num_days + 1) * 5 if onboarding_penalties else 0
+        model.minimize(fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty)
 
     # ==================================================================
     # ソルバー実行
@@ -3249,11 +3282,10 @@ def _solve_cooking(
             })
 
     # ------------------------------------------------------------------
-    # 新人オンボーディング（依頼文36）の同伴実績と未達警告
-    #   解から新人 n の「教育出勤日（候補日のうち先頭3出勤日）」を特定し、
-    #   各日にベテランが同日勤務していたかを数える。同伴できなかった出勤日が
-    #   1日でもあれば「新人◯◯：教育期間ベテラン同伴 ◯/3日（未達）」を出す。
-    #   ※「一緒＝同一日在籍」で判定（時間帯の重なりは考慮しない）。
+    # 新人オンボーディング（依頼文36→38）の同伴実績と未達警告
+    #   解から新人 n の「教育出勤日（候補日のうち先頭3出勤日）」を特定し、各日に
+    #   【新人と同一のシフト記号】でベテランが勤務していたかを数える（依頼文38）。
+    #   同一記号で同伴できなかった出勤日が1日でもあれば未達警告を出す。
     # ------------------------------------------------------------------
     for n, cand in onboarding_targets:
         name = staff_by_id[n].get("name", f"staff{n}")
@@ -3262,21 +3294,23 @@ def _solve_cooking(
         for d in cand:
             if edu_worked >= ONBOARD_DAYS:
                 break
-            worked = any(solver.value(x[n, d, a]) == 1 for a in cook_working)
-            if not worked:
+            # 新人 n がその日に入っている記号
+            new_syms = [a for a in cook_working if solver.value(x[n, d, a]) == 1]
+            if not new_syms:
                 continue
             edu_worked += 1
-            vet_here = any(
-                solver.value(x[s, d, a]) == 1
-                for s in vet_ids for a in cook_working
+            # 同一記号にベテランがいるか
+            same_sym_vet = any(
+                solver.value(x[v, d, a]) == 1
+                for a in new_syms for v in vet_ids
             )
-            if vet_here:
+            if same_sym_vet:
                 accompanied += 1
         if edu_worked - accompanied > 0:
             warnings_data.append({
                 "date": all_dates[0].strftime("%Y-%m-%d"),
                 "warning_type": "cook_onboarding_shortfall",
-                "message": f"新人{name}：教育期間ベテラン同伴 {accompanied}/{ONBOARD_DAYS}日（未達）",
+                "message": f"新人{name}：教育期間ベテラン同伴（同一時間帯） {accompanied}/{ONBOARD_DAYS}日（未達）",
             })
 
     return shifts_data, warnings_data

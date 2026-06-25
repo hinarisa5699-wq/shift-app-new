@@ -860,6 +860,28 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shif
         need_out = max(_BATH_OUT_COUNT - locked_out, 0)
         n_bath = need_mid + need_out
 
+        # --- 依頼文37: お風呂当番が不足する日のみ、デスク役の相談員も配置可能者に含める ---
+        # 通常はデスク相談員を bath_pool から除外（上の sid != selected_counselor）。
+        # ただし、その日にプールから埋められる人数が必要数に満たない“不足日”に限り、
+        # その日のデスク相談員（入浴介助可）を追加候補に含める。割り当てられた場合は
+        # デスク役（相談・終日）とお風呂当番の兼務扱い（デスク役1名は維持＝2名化しない）。
+        # 足りている日は従来どおり追加しない（挙動を変えない）。
+        pool_needed = (
+            (max(need_mid - 1, 0) + need_out)
+            if (forced_mid is not None and need_mid > 0)
+            else n_bath
+        )
+        if (
+            selected_counselor is not None
+            and selected_counselor != forced_mid
+            and selected_counselor not in bath_pool
+            and selected_counselor in bath_floor_ids
+            and len(bath_pool) < pool_needed
+            and (not bath_filter_active or selected_counselor in bath_capable_ids)
+        ):
+            bath_pool.append(selected_counselor)
+            bath_pool.sort(key=lambda sid: (bath_count.get(sid, 0), sid))
+
         if forced_mid is not None and need_mid > 0:
             # 遅番の人を中介助の1枠に固定し、残りの中・外をプールから補充する。
             remaining_mid = max(need_mid - 1, 0)

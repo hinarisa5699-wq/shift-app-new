@@ -107,6 +107,46 @@
         </div>
         <p class="text-gray-400 text-xs mt-2">アプリのExcel出力形式（手直し済みでOK）をアップロードすると、その内容でPDFを作成します。保存データは変更しません。</p>
     </div>
+
+    <!-- 依頼文41: 手修正Excel → アプリのシフトデータに反映 -->
+    <div id="shift-reflect-box" class="hidden mt-3 bg-white rounded-xl shadow-md p-4 border border-amber-200">
+        <div class="flex flex-wrap items-center gap-3">
+            <span class="text-base font-semibold text-amber-700">Excelをアプリに反映:</span>
+            <input type="file" id="shift-reflect-file" accept=".xlsx"
+                   class="text-sm border border-gray-300 rounded-lg px-2 py-2">
+            <select id="shift-reflect-group" class="text-sm border border-gray-300 rounded-lg px-2 py-2 bg-white">
+                <option value="care">介護看護</option>
+                <option value="cooking">調理</option>
+            </select>
+            <select id="shift-reflect-half" class="text-sm border border-gray-300 rounded-lg px-2 py-2 bg-white">
+                <option value="first">前半（1〜15日）</option>
+                <option value="second">後半（16日〜月末）</option>
+            </select>
+            <button onclick="shiftReflectPreview()"
+                    class="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-4 rounded-lg shadow transition-colors text-sm">差分を確認</button>
+        </div>
+        <p class="text-gray-400 text-xs mt-2">手修正したExcelをアップロードし、差分を確認のうえ「反映する」を押すと、その範囲（区分×前半/後半）だけ保存シフトを上書きします。反映直前に自動バックアップを取得します。</p>
+    </div>
+</div>
+
+<!-- 依頼文41: 反映 確認モーダル -->
+<div id="shift-reflect-modal" class="hidden fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[85vh] flex flex-col">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h3 class="text-lg font-bold text-gray-800">反映内容の確認</h3>
+            <p id="shift-reflect-summary" class="text-sm text-gray-600 mt-1"></p>
+        </div>
+        <div class="px-6 py-4 overflow-y-auto flex-1">
+            <div id="shift-reflect-unparseable" class="hidden mb-3 p-3 rounded-lg bg-red-50 border border-red-300 text-red-800 text-sm"></div>
+            <div id="shift-reflect-diffs"></div>
+        </div>
+        <div class="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
+            <button onclick="shiftReflectCancel()"
+                    class="bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 px-5 rounded-lg text-sm">キャンセル</button>
+            <button id="shift-reflect-apply-btn" onclick="shiftReflectApply()"
+                    class="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-5 rounded-lg text-sm">反映する</button>
+        </div>
+    </div>
 </div>
 
 <!-- 確定ステータス表示 -->

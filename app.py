@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import threading
 import uuid
 import sqlite3
@@ -55,6 +56,8 @@ from solver import (
 from export import (
     export_excel, export_csv, export_pdf,
     export_excel_group_half, export_pdf_from_excel,
+    parse_uploaded_shift_excel, parse_shift_cell, state_to_cell_text,
+    recompute_warnings_from_shifts, ASSIGNMENT_LABELS,
 )
 
 
@@ -2717,6 +2720,293 @@ def create_app():
             as_attachment=True,
             download_name=filename,
         )
+
+    # -----------------------------------------------------------------
+    # 依頼文41: 手修正Excel → 保存シフトへの反映（確認→範囲限定上書き・バックアップ）
+    #   依頼文23（アップロード→PDF・データ不変）は別ルートで温存。こちらは「反映する」専用。
+    # -----------------------------------------------------------------
+    def _db_file_path():
+        return app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", "")
+
+    def _upload_tmp_dir():
+        d = os.path.join(os.path.dirname(_db_file_path()), "shift_upload_tmp")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _group_staff_rows(group):
+        staffs = Staff.query.order_by(Staff.id).all()
+        if group == "cooking":
+            return [s for s in staffs if s.staff_group == "cooking"]
+        return [s for s in staffs if s.staff_group != "cooking"]
+
+    def _validate_upload_structure(parsed, group):
+        """ファイルの職員行が DB の当該グループ職員と一致するか検査（構造崩れ＝反映拒否）。"""
+        db_staff = _group_staff_rows(group)
+        db_names = [s.name for s in db_staff]
+        file_names = parsed["staff_names"]
+        seen = {}
+        for n in file_names:
+            seen[n] = seen.get(n, 0) + 1
+        errors = []
+        dups = sorted([n for n, c in seen.items() if c > 1])
+        unknown = [n for n in file_names if n not in set(db_names)]
+        missing = [n for n in db_names if n not in set(file_names)]
+        if dups:
+            errors.append("職員名の重複: " + "、".join(dups))
+        if unknown:
+            errors.append("アプリに存在しない職員名（氏名改変の可能性）: " + "、".join(unknown))
+        if missing:
+            errors.append("ファイルに不足している職員（行削除の可能性）: " + "、".join(missing))
+        return errors, {s.name: s.id for s in db_staff}
+
+    def _norm_slots(value):
+        if not value:
+            return None
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (ValueError, TypeError):
+                return None
+        if not value:
+            return None
+        return sorted(set(int(x) for x in value))
+
+    def _norm_state(st):
+        return (
+            (st.get("assignment") or "off"),
+            (st.get("bath_role") or None),
+            tuple(_norm_slots(st.get("desk_slots")) or ()),
+        )
+
+    def _derive_break(stt):
+        """役割から休憩開始を再導出（依頼文41・変更セルのみ。非表示項目）。"""
+        if stt.get("bath_role") == "中":
+            return "11:30"
+        if stt.get("assignment") == "nurse_short":
+            return "13:00"
+        if stt.get("assignment") in ("visit_am", "visit_pm"):
+            return None
+        if stt.get("assignment", "").startswith("cooking_"):
+            return None
+        return "12:30"
+
+    def _derive_meal(stt):
+        if stt.get("bath_role") == "中":
+            return "12:30-13:00"
+        return None
+
+    def _backup_db_file(year, month):
+        src = _db_file_path()
+        bdir = os.path.join(os.path.dirname(src), "shift_backups")
+        os.makedirs(bdir, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dst = os.path.join(bdir, f"shift_backup_{year}{month:02d}_{ts}.db")
+        shutil.copy2(src, dst)
+        return dst
+
+    def _settings_for_validation():
+        so = ShiftSettings.query.first()
+        closed = [int(x) for x in (so.closed_days or "").split(",") if x.strip()] if so and so.closed_days else []
+        vdays = [int(x) for x in (so.visit_operating_days or "").split(",") if x.strip()] if so and so.visit_operating_days else []
+        placement = [r.to_dict() for r in PlacementRule.query.filter_by(is_active=True).all()]
+        return {
+            "closed_days": closed, "visit_operating_days": vdays,
+            "min_day_service": getattr(so, "min_day_service", 0) or 0,
+            "min_visit_am": getattr(so, "min_visit_am", 0) or 0,
+            "min_visit_pm": getattr(so, "min_visit_pm", 0) or 0,
+            "min_bath_mid": getattr(so, "min_bath_mid", 0) or 0,
+            "min_bath_out": getattr(so, "min_bath_out", 0) or 0,
+            "min_early_staff": getattr(so, "min_early_staff", 1) or 0,
+            "min_late_staff": getattr(so, "min_late_staff", 1) or 0,
+            "placement_rules": placement,
+        }
+
+    def _staff_list_for_validation():
+        qm, qn, qc = _build_staff_qualification_maps()
+        return [
+            {"id": s.id, "name": s.name,
+             "qualification_codes": qc.get(s.id, []),
+             "qualifications": qn.get(s.id, [])}
+            for s in Staff.query.all()
+        ]
+
+    @app.route("/api/shift/upload-preview", methods=["POST"])
+    def api_shift_upload_preview():
+        """依頼文41-A: 手修正Excelを読み、現在の保存シフトとの差分・解釈不能セルを返す（DB不変）。"""
+        f = request.files.get("file")
+        if not f or not f.filename:
+            return jsonify({"error": "Excelファイルを選択してください"}), 400
+        group = request.form.get("group", "care")
+        if group not in ("care", "cooking"):
+            group = "care"
+        half = request.form.get("half", "first")
+        if half not in ("first", "second"):
+            half = "first"
+        file_bytes = f.read()
+        try:
+            parsed = parse_uploaded_shift_excel(file_bytes, group=group, half=half)
+        except Exception as e:
+            return jsonify({"error": f"Excelの読み取りに失敗しました: {e}"}), 400
+        year, month = parsed["year"], parsed["month"]
+        first = date(year, month, 1)
+        last = date(year, month, calendar.monthrange(year, month)[1])
+        if not GeneratedShift.query.filter(GeneratedShift.date >= first, GeneratedShift.date <= last).first():
+            return jsonify({"error": f"{year}年{month}月の保存シフトがありません。先に生成してください。"}), 400
+        errors, name_to_id = _validate_upload_structure(parsed, group)
+        if errors:
+            return jsonify({"error": "ファイル構造が一致しないため反映できません。", "errors": errors}), 400
+
+        staff_ids = list(name_to_id.values())
+        rows = GeneratedShift.query.filter(
+            GeneratedShift.date >= first, GeneratedShift.date <= last,
+            GeneratedShift.staff_id.in_(staff_ids),
+        ).all()
+        cur = {}
+        for r in rows:
+            cur[(r.staff_id, r.date.isoformat())] = {
+                "assignment": r.assignment, "bath_role": r.bath_role,
+                "desk_slots": _norm_slots(r.counselor_desk_slots),
+            }
+        iso_set = set(parsed["date_isos"])
+        diffs = []
+        for name, row_states in parsed["cells"].items():
+            sid = name_to_id[name]
+            for iso, st in row_states.items():
+                if iso not in iso_set or st is None:
+                    continue
+                cur_state = cur.get((sid, iso), {"assignment": "off", "bath_role": None, "desk_slots": None})
+                if _norm_state(cur_state) != _norm_state(st):
+                    diffs.append({
+                        "name": name, "date": iso,
+                        "from": state_to_cell_text(cur_state["assignment"], cur_state["bath_role"], cur_state["desk_slots"]),
+                        "to": state_to_cell_text(st["assignment"], st["bath_role"], st["desk_slots"]),
+                    })
+        token = str(uuid.uuid4())
+        tmp = _upload_tmp_dir()
+        with open(os.path.join(tmp, token + ".xlsx"), "wb") as fp:
+            fp.write(file_bytes)
+        with open(os.path.join(tmp, token + ".json"), "w", encoding="utf-8") as fp:
+            json.dump({"group": group, "half": half, "year": year, "month": month}, fp)
+        diffs.sort(key=lambda d: (d["date"], d["name"]))
+        return jsonify({
+            "token": token, "year": year, "month": month,
+            "group_label": ("調理" if group == "cooking" else "介護看護"),
+            "range_label": ("前半(1〜15日)" if half != "second" else "後半(16日〜月末)"),
+            "diffs": diffs, "diff_count": len(diffs),
+            "unparseable": parsed["unparseable"],
+        })
+
+    @app.route("/api/shift/upload-apply", methods=["POST"])
+    def api_shift_upload_apply():
+        """依頼文41-B/C/D: バックアップ→範囲限定で上書き→警告再計算。手修正優先（違反でも反映）。"""
+        data = request.get_json(silent=True) or {}
+        token = data.get("token") or request.form.get("token", "")
+        if not re.match(r"^[0-9a-fA-F-]{36}$", str(token)):
+            return jsonify({"error": "不正なトークンです。もう一度アップロードしてください。"}), 400
+        tmp = _upload_tmp_dir()
+        xlsx_path = os.path.join(tmp, token + ".xlsx")
+        meta_path = os.path.join(tmp, token + ".json")
+        if not (os.path.exists(xlsx_path) and os.path.exists(meta_path)):
+            return jsonify({"error": "プレビュー情報が見つかりません。もう一度アップロードしてください。"}), 400
+        with open(meta_path, encoding="utf-8") as fp:
+            meta = json.load(fp)
+        group, half = meta["group"], meta["half"]
+        with open(xlsx_path, "rb") as fp:
+            file_bytes = fp.read()
+        try:
+            parsed = parse_uploaded_shift_excel(file_bytes, group=group, half=half)
+        except Exception as e:
+            return jsonify({"error": f"Excelの読み取りに失敗しました: {e}"}), 400
+        year, month = parsed["year"], parsed["month"]
+        errors, name_to_id = _validate_upload_structure(parsed, group)
+        if errors:
+            return jsonify({"error": "ファイル構造が一致しないため反映できません。", "errors": errors}), 400
+        first = date(year, month, 1)
+        last = date(year, month, calendar.monthrange(year, month)[1])
+        any_row = GeneratedShift.query.filter(GeneratedShift.date >= first, GeneratedShift.date <= last).first()
+        if not any_row:
+            return jsonify({"error": f"{year}年{month}月の保存シフトがありません。"}), 400
+        gen_id = any_row.generation_id
+
+        # --- C: 反映直前にDBファイルをバックアップ ---
+        backup_path = _backup_db_file(year, month)
+
+        # --- B: 範囲限定の書き戻し（当該グループ職員 × 当該半期の日付のみ）---
+        staff_ids = list(name_to_id.values())
+        rows = GeneratedShift.query.filter(
+            GeneratedShift.date >= first, GeneratedShift.date <= last,
+            GeneratedShift.staff_id.in_(staff_ids),
+        ).all()
+        row_map = {(r.staff_id, r.date.isoformat()): r for r in rows}
+        iso_set = set(parsed["date_isos"])
+        applied = 0
+        skipped = 0
+        for name, row_states in parsed["cells"].items():
+            sid = name_to_id[name]
+            for iso, stt in row_states.items():
+                if iso not in iso_set:
+                    continue
+                if stt is None:
+                    skipped += 1
+                    continue  # 解釈不能セルは上書きしない（原値保持）
+                d = date.fromisoformat(iso)
+                existing = row_map.get((sid, iso))
+                if stt["assignment"] == "off":
+                    if existing is not None:
+                        db.session.delete(existing)
+                        applied += 1
+                    continue
+                desk_json = json.dumps(stt["desk_slots"]) if stt["desk_slots"] else None
+                if existing is None:
+                    db.session.add(GeneratedShift(
+                        generation_id=gen_id, date=d, staff_id=sid,
+                        assignment=stt["assignment"], shift_pattern_code=None,
+                        is_phone_duty=False, break_start=_derive_break(stt),
+                        counselor_desk_slots=desk_json, bath_role=stt["bath_role"],
+                        meal_assist=_derive_meal(stt),
+                    ))
+                    applied += 1
+                else:
+                    changed = (
+                        existing.assignment != stt["assignment"]
+                        or (existing.bath_role or None) != (stt["bath_role"] or None)
+                        or _norm_slots(existing.counselor_desk_slots) != (stt["desk_slots"] or None)
+                    )
+                    if changed:
+                        existing.assignment = stt["assignment"]
+                        existing.bath_role = stt["bath_role"]
+                        existing.counselor_desk_slots = desk_json
+                        existing.break_start = _derive_break(stt)
+                        existing.meal_assist = _derive_meal(stt)
+                        applied += 1
+
+        db.session.flush()
+        # --- D: 手修正後の全データで警告を再計算（違反でも拒否しない）---
+        all_rows = GeneratedShift.query.filter(
+            GeneratedShift.date >= first, GeneratedShift.date <= last
+        ).all()
+        shifts_data = [r.to_dict() for r in all_rows]
+        new_warnings = recompute_warnings_from_shifts(
+            shifts_data, _staff_list_for_validation(), _settings_for_validation(), year, month
+        )
+        ShiftWarning.query.filter_by(generation_id=gen_id).delete()
+        for w in new_warnings:
+            db.session.add(ShiftWarning(
+                generation_id=gen_id, date=date.fromisoformat(w["date"]),
+                warning_type=w["warning_type"], message=w["message"],
+            ))
+        db.session.commit()
+        try:
+            os.remove(xlsx_path)
+            os.remove(meta_path)
+        except OSError:
+            pass
+        return jsonify({
+            "applied": applied, "skipped_unparseable": skipped,
+            "backup": backup_path, "warning_count": len(new_warnings),
+            "warnings": new_warnings,
+            "message": f"{applied}件のセルを反映しました。バックアップ: {backup_path}",
+        })
 
     return app
 

@@ -10,6 +10,10 @@ build/
 # Database (クライアント固有データ)
 shift.db
 
+# 依頼文41: 反映の自動バックアップ・アップロード一時ファイル（DBと同じディレクトリに生成）
+shift_backups/
+shift_upload_tmp/
+
 # IDE / OS
 .vscode/
 .idea/

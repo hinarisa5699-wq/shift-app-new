@@ -144,6 +144,7 @@ function loadShifts(year, month) {
                 showElement('calendar-container');
                 showElement('export-buttons');
                 showElement('excel-to-pdf-box');
+                showElement('shift-reflect-box');
                 hideElement('no-data-message');
             } else if (hasWarnings) {
                 // W-13: シフト0件でも警告があれば表示
@@ -660,6 +661,128 @@ function excelToPdf() {
         .catch((error) => {
             console.error('Error creating PDF from Excel:', error);
             alert(error.message || 'PDFの作成に失敗しました。');
+        });
+}
+
+/* ============================================
+   依頼文41: 手修正Excel → アプリに反映（確認→範囲限定上書き）
+   ============================================ */
+let _shiftReflectToken = null;
+
+function shiftReflectPreview() {
+    const fileInput = document.getElementById('shift-reflect-file');
+    const group = document.getElementById('shift-reflect-group').value;
+    const half = document.getElementById('shift-reflect-half').value;
+    if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+        alert('Excelファイルを選択してください。');
+        return;
+    }
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    formData.append('group', group);
+    formData.append('half', half);
+    fetch('/api/shift/upload-preview', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': getCsrfToken() },
+        body: formData,
+    })
+        .then(async (response) => {
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                let msg = data.error || '読み取りに失敗しました。';
+                if (data.errors && data.errors.length) msg += '\n\n' + data.errors.join('\n');
+                throw new Error(msg);
+            }
+            _shiftReflectToken = data.token;
+            renderShiftReflectModal(data);
+        })
+        .catch((error) => {
+            console.error('upload-preview error:', error);
+            alert(error.message || '読み取りに失敗しました。');
+        });
+}
+
+function renderShiftReflectModal(data) {
+    const summary = document.getElementById('shift-reflect-summary');
+    summary.textContent = `${data.year}年${data.month}月 ${data.group_label} ${data.range_label}：`
+        + `変更されるセル ${data.diff_count}件` + (data.unparseable.length ? `／解釈できないセル ${data.unparseable.length}件` : '');
+
+    const unp = document.getElementById('shift-reflect-unparseable');
+    if (data.unparseable && data.unparseable.length) {
+        let h = '<div class="font-bold mb-1">⚠ 解釈できないセル（反映時はこのセルだけ上書きせず元のまま保持します）:</div><ul class="list-disc ml-5">';
+        data.unparseable.forEach(u => {
+            h += `<li>${escapeHtml(u.name)} ${escapeHtml(u.date)}: 「${escapeHtml(u.text)}」</li>`;
+        });
+        h += '</ul>';
+        unp.innerHTML = h;
+        showElement('shift-reflect-unparseable');
+    } else {
+        hideElement('shift-reflect-unparseable');
+    }
+
+    const box = document.getElementById('shift-reflect-diffs');
+    if (!data.diffs || data.diffs.length === 0) {
+        box.innerHTML = '<p class="text-gray-500">変更されるセルはありません（現在の保存内容と同じです）。</p>';
+    } else {
+        let h = '<table class="w-full text-sm border-collapse"><thead><tr class="bg-gray-100">'
+            + '<th class="border border-gray-300 px-2 py-1 text-left">職員</th>'
+            + '<th class="border border-gray-300 px-2 py-1 text-left">日付</th>'
+            + '<th class="border border-gray-300 px-2 py-1 text-left">現在</th>'
+            + '<th class="border border-gray-300 px-2 py-1 text-left">変更後</th></tr></thead><tbody>';
+        data.diffs.forEach(d => {
+            h += '<tr>'
+                + `<td class="border border-gray-300 px-2 py-1">${escapeHtml(d.name)}</td>`
+                + `<td class="border border-gray-300 px-2 py-1">${escapeHtml(d.date)}</td>`
+                + `<td class="border border-gray-300 px-2 py-1 text-gray-500">${escapeHtml(d.from)}</td>`
+                + `<td class="border border-gray-300 px-2 py-1 font-semibold text-amber-700">${escapeHtml(d.to)}</td>`
+                + '</tr>';
+        });
+        h += '</tbody></table>';
+        box.innerHTML = h;
+    }
+    const applyBtn = document.getElementById('shift-reflect-apply-btn');
+    applyBtn.disabled = (data.diff_count === 0);
+    applyBtn.classList.toggle('opacity-50', data.diff_count === 0);
+    showElement('shift-reflect-modal');
+    document.getElementById('shift-reflect-modal').classList.add('flex');
+}
+
+function shiftReflectCancel() {
+    _shiftReflectToken = null;
+    hideElement('shift-reflect-modal');
+}
+
+function shiftReflectApply() {
+    if (!_shiftReflectToken) { shiftReflectCancel(); return; }
+    const btn = document.getElementById('shift-reflect-apply-btn');
+    btn.disabled = true; btn.textContent = '反映中...';
+    fetch('/api/shift/upload-apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
+        body: JSON.stringify({ token: _shiftReflectToken }),
+    })
+        .then(async (response) => {
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                let msg = data.error || '反映に失敗しました。';
+                if (data.errors && data.errors.length) msg += '\n\n' + data.errors.join('\n');
+                throw new Error(msg);
+            }
+            shiftReflectCancel();
+            alert(`${data.message}\n\n条件未達の警告: ${data.warning_count}件`);
+            // カレンダーを再読込して反映内容・再計算警告を表示
+            if (typeof loadShifts === 'function') {
+                loadShifts();
+            } else {
+                window.location.reload();
+            }
+        })
+        .catch((error) => {
+            console.error('upload-apply error:', error);
+            alert(error.message || '反映に失敗しました。');
+        })
+        .finally(() => {
+            btn.disabled = false; btn.textContent = '反映する';
         });
 }
 

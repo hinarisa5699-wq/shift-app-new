@@ -1113,6 +1113,234 @@ def export_pdf_from_excel(file_bytes, group: str = "care", half: str = "first") 
     return buf, year, month
 
 
+# ===========================================================================
+# 依頼文41: 手修正Excel → 保存シフトデータへの書き戻し（取り込み）
+# ===========================================================================
+# セル表示文字 → assignment コード 逆引き（現行コードを優先。旧名 day_am 等は出力しない）
+_LABEL_TO_ASSIGNMENT = {
+    "デイ8:30-17:30": "day_pattern1",
+    "デイ9:00-16:00": "day_pattern2",
+    "デイ午前のみ": "day_pattern3",
+    "デイ午後のみ": "day_pattern4",
+    "早番7:30-16:30": "early",
+    "遅番9:30-18:30": "late",
+    "看護9:30-13:30": "nurse_short",
+    "訪問午前のみ": "visit_am",
+    "訪問午後のみ": "visit_pm",
+    "兼務(デイ→訪問)": "day_p3_visit_pm",
+    "兼務(訪問→デイ)": "visit_am_day_p4",
+    "調理①6-8": "cooking_1",
+    "調理②8-13": "cooking_2",
+    "調理③12-19": "cooking_3",
+    "調理④6-13": "cooking_4",
+    "調理⑤9-15": "cooking_5",
+}
+
+
+def parse_shift_cell(text):
+    """セル表示文字 → {"assignment","bath_role","desk_slots"}。
+    空セル＝{"assignment":"off",...}。解釈できないセルは None を返す（依頼文41・書き戻し不可）。
+    """
+    raw = (text or "").replace("\r", "").strip()
+    if raw == "":
+        return {"assignment": "off", "bath_role": None, "desk_slots": None}
+    lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
+    bath_role = None
+    desk_slots = None
+    base_lines = []
+    for ln in lines:
+        if ln in ("中介助", "外介助"):
+            bath_role = ln[0]  # "中" / "外"
+        elif ln in ("相談（終日）", "相談(終日)"):
+            desk_slots = [0, 1, 2, 3]
+        elif ln.startswith("相談:") or ln.startswith("相談："):
+            body = ln.split(":", 1)[-1] if ":" in ln else ln.split("：", 1)[-1]
+            labels = [x.strip() for x in body.replace("、", ",").split(",") if x.strip()]
+            idx = []
+            for lab in labels:
+                if lab in DESK_SLOT_LABELS:
+                    idx.append(DESK_SLOT_LABELS.index(lab))
+                else:
+                    return None  # 未知の相談スロット表記＝解釈不能
+            if not idx:
+                return None
+            desk_slots = sorted(set(idx))
+        else:
+            base_lines.append(ln)
+    if len(base_lines) != 1:
+        return None  # 基本ラベルが一意に取れない＝解釈不能
+    assignment = _LABEL_TO_ASSIGNMENT.get(base_lines[0])
+    if assignment is None:
+        return None
+    return {"assignment": assignment, "bath_role": bath_role, "desk_slots": desk_slots}
+
+
+def state_to_cell_text(assignment, bath_role, desk_slots):
+    """保存状態 → 表示文字（差分プレビュー用。export の _care_cell_text と同じ流儀）。"""
+    if not assignment or assignment == "off":
+        return "（休み）"
+    text = ASSIGNMENT_LABELS.get(assignment, assignment)
+    if bath_role:
+        text += f" {bath_role}介助"
+    if desk_slots:
+        if set(desk_slots) >= {0, 1, 2, 3}:
+            text += " 相談（終日）"
+        else:
+            labs = [DESK_SLOT_LABELS[i] for i in desk_slots if i < len(DESK_SLOT_LABELS)]
+            if labs:
+                text += " 相談:" + ",".join(labs)
+    return text
+
+
+def parse_uploaded_shift_excel(file_bytes, group="care", half="first"):
+    """依頼文41: 手修正Excelを読み、職員名×日付の保存状態(逆引き)を返す。
+
+    Returns dict:
+      year, month, group, half, is_cook,
+      date_isos: [iso...]（対象範囲の日付）,
+      staff_names: [name...]（行順・資格表記は除いた氏名）,
+      cells: {name: {iso: state_or_None}}（None=解釈不能セル）,
+      unparseable: [{"name","date","text"}...],
+    raise ValueError 形式不一致。
+    """
+    is_cook = (group == "cooking")
+    sheet_name = "調理スタッフ" if is_cook else "介護スタッフ"
+    wb = load_workbook(BytesIO(file_bytes), data_only=True)
+    ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb[wb.sheetnames[0]]
+
+    header_row = name_col = None
+    for r in range(1, min(ws.max_row, 8) + 1):
+        for c in range(1, min(ws.max_column, 6) + 1):
+            if str(ws.cell(row=r, column=c).value or "").strip() == "職員名":
+                header_row, name_col = r, c
+                break
+        if header_row:
+            break
+    if header_row is None:
+        raise ValueError("Excelの形式を認識できません（『職員名』ヘッダが見つかりません）。")
+
+    date_cols = []
+    for c in range(name_col + 1, ws.max_column + 1):
+        v = str(ws.cell(row=header_row, column=c).value or "").strip()
+        mm = re.match(r"^(\d{1,2})/(\d{1,2})$", v)
+        if mm:
+            date_cols.append((c, int(mm.group(1)), int(mm.group(2))))
+    if not date_cols:
+        raise ValueError("日付列(M/D)が見つかりません。アプリのExcel出力形式か確認してください。")
+
+    title_text = str(ws.cell(row=1, column=1).value or "")
+    ym = re.search(r"(\d{4})\s*年", title_text)
+    year = int(ym.group(1)) if ym else date.today().year
+    month = date_cols[0][1]
+
+    def in_half(day):
+        return (day <= 15) if half != "second" else (day >= 16)
+    sel_cols = [t for t in date_cols if in_half(t[2])] or date_cols
+    date_isos = [date(year, m, d).isoformat() for (_c, m, d) in sel_cols]
+
+    cells = {}
+    staff_names = []
+    unparseable = []
+    for r in range(header_row + 2, ws.max_row + 1):
+        label = str(ws.cell(row=r, column=name_col).value or "").strip()
+        if not label:
+            continue
+        name = label.split("\n")[0].strip()
+        if label in _PDF_SUMMARY_LABELS or name in _PDF_SUMMARY_LABELS:
+            continue  # サマリー行はスキップ
+        row_states = {}
+        for (c, _m, _d), iso in zip(sel_cols, date_isos):
+            raw = str(ws.cell(row=r, column=c).value or "").strip()
+            st = parse_shift_cell(raw)
+            row_states[iso] = st
+            if st is None:
+                unparseable.append({"name": name, "date": iso, "text": raw})
+        cells[name] = row_states
+        staff_names.append(name)
+
+    return {
+        "year": year, "month": month, "group": group, "half": half, "is_cook": is_cook,
+        "date_isos": date_isos, "staff_names": staff_names,
+        "cells": cells, "unparseable": unparseable,
+    }
+
+
+def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, month):
+    """依頼文41-D: 保存シフト(手修正後)に対し、主要な条件未達を再計算して警告を返す。
+    ソルバーは使わず、最低人数系の代表的な制約のみを後処理で検査する（手修正優先＝拒否しない）。
+    検査対象: デイ午前/午後 最低・訪問午前/午後 最低・中介助/外介助 最低・早番/遅番 各1名・相談員desk 1名。
+    """
+    warnings = []
+    num_days = calendar.monthrange(year, month)[1]
+    closed = set(settings.get("closed_days", []) or [])
+    visit_days = set(settings.get("visit_operating_days", []) or [])
+    min_day = int(settings.get("min_day_service", 0) or 0)
+    min_vam = int(settings.get("min_visit_am", 0) or 0)
+    min_vpm = int(settings.get("min_visit_pm", 0) or 0)
+    min_mid = int(settings.get("min_bath_mid", 0) or 0)
+    min_out = int(settings.get("min_bath_out", 0) or 0)
+    min_early = int(settings.get("min_early_staff", 1) or 0)
+    min_late = int(settings.get("min_late_staff", 1) or 0)
+
+    nurse_pt_ids = {st["id"] for st in staff_list if _is_nurse_or_pt_staff(st)}
+    counselor_qual_ids = _get_counselor_qual_ids_for_validation(settings)
+
+    by_date = {}
+    for it in shifts_data:
+        by_date.setdefault(it["date"], []).append(it)
+
+    for d in range(1, num_days + 1):
+        dt = date(year, month, d)
+        if dt.weekday() in closed:
+            continue
+        iso = dt.isoformat()
+        items = by_date.get(iso, [])
+        day_am = sum(1 for it in items if it["assignment"] in _DAY_AM_SET and it["staff_id"] not in nurse_pt_ids)
+        day_pm = sum(1 for it in items if it["assignment"] in _DAY_PM_SET and it["staff_id"] not in nurse_pt_ids)
+        v_am = sum(1 for it in items if it["assignment"] in _VISIT_AM_SET)
+        v_pm = sum(1 for it in items if it["assignment"] in _VISIT_PM_SET)
+        n_mid = sum(1 for it in items if it.get("bath_role") == "中")
+        n_out = sum(1 for it in items if it.get("bath_role") == "外")
+        n_early = sum(1 for it in items if it["assignment"] == "early")
+        n_late = sum(1 for it in items if it["assignment"] == "late")
+        n_desk = sum(1 for it in items if it.get("counselor_desk_slots"))
+
+        def warn(wt, msg):
+            warnings.append({"date": iso, "warning_type": wt, "message": msg})
+
+        if min_day > 0 and day_am < min_day:
+            warn("understaffed_day_am", f"デイサービス午前: {min_day - day_am}名不足")
+        if min_day > 0 and day_pm < min_day:
+            warn("understaffed_day_pm", f"デイサービス午後: {min_day - day_pm}名不足")
+        if dt.weekday() in visit_days:
+            if min_vam > 0 and v_am < min_vam:
+                warn("understaffed_visit_am", f"訪問介護午前: {min_vam - v_am}名不足")
+            if min_vpm > 0 and v_pm < min_vpm:
+                warn("understaffed_visit_pm", f"訪問介護午後: {min_vpm - v_pm}名不足")
+        if min_mid > 0 and n_mid < min_mid:
+            warn("bath_mid_short", f"中介助 {min_mid - n_mid}名不足（必要{min_mid}名・配置{n_mid}名）")
+        if min_out > 0 and n_out < min_out:
+            warn("bath_out_short", f"外介助 {min_out - n_out}名不足（必要{min_out}名・配置{n_out}名）")
+        if min_early > 0 and n_early < min_early:
+            warn("early_unassigned", f"早番(7:30-16:30): {min_early - n_early}名不足（早番未配置）")
+        if min_late > 0 and n_late < min_late:
+            warn("late_unassigned", f"遅番(9:30-18:30): {min_late - n_late}名不足（遅番未配置）")
+        if counselor_qual_ids and n_desk == 0:
+            warn("counselor_unassigned", "相談員 未配置")
+
+    return warnings
+
+
+def _get_counselor_qual_ids_for_validation(settings):
+    """配置ルールから相談員資格IDを拾う（warning再計算用・無ければ空集合）。"""
+    ids = set()
+    for pr in settings.get("placement_rules", []) or []:
+        nm = pr.get("name", "")
+        if "相談" in nm or pr.get("rule_type") == "qualification_min" and "相談" in nm:
+            ids.update(pr.get("target_qualification_ids", []) or [])
+    return ids
+
+
 def export_excel_group_half(
     shifts_data: list,
     warnings_data: list,

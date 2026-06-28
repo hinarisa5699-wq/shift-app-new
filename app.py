@@ -356,6 +356,15 @@ def _run_migrations(app):
     # 相談員の介護業務参加モード（依頼文32・既定 off）
     if "counselor_care_mode" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN counselor_care_mode VARCHAR(10) NOT NULL DEFAULT 'off'")
+    # 依頼文40: 中介助/外介助の最低人数・連日回避モード・早遅連日回避モード
+    if "min_bath_mid" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN min_bath_mid INTEGER DEFAULT 0")
+    if "min_bath_out" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN min_bath_out INTEGER DEFAULT 0")
+    if "bath_role_alt_mode" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN bath_role_alt_mode VARCHAR(10) NOT NULL DEFAULT 'off'")
+    if "early_late_alt_mode" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN early_late_alt_mode VARCHAR(10) NOT NULL DEFAULT 'off'")
 
     # GeneratedShift テーブル
     columns = [row[1] for row in cursor.execute("PRAGMA table_info(generated_shift)").fetchall()]
@@ -1661,6 +1670,13 @@ def create_app():
         # 相談員の介護業務参加モード（依頼文32・off/soft/hard、既定off）
         _ccm = (request.form.get("counselor_care_mode", "off") or "off").strip().lower()
         s.counselor_care_mode = _ccm if _ccm in ("off", "soft", "hard") else "off"
+        # 依頼文40: 中介助/外介助の最低人数・連日回避モード・早遅連日回避モード
+        s.min_bath_mid = max(0, safe_int(request.form.get("min_bath_mid"), 0))
+        s.min_bath_out = max(0, safe_int(request.form.get("min_bath_out"), 0))
+        _bram = (request.form.get("bath_role_alt_mode", "off") or "off").strip().lower()
+        s.bath_role_alt_mode = _bram if _bram in ("off", "soft", "hard") else "off"
+        _elam = (request.form.get("early_late_alt_mode", "off") or "off").strip().lower()
+        s.early_late_alt_mode = _elam if _elam in ("off", "soft", "hard") else "off"
         db.session.commit()
         flash("条件設定を保存しました。", "success")
         return redirect(url_for("settings"))
@@ -2108,6 +2124,10 @@ def create_app():
             "male_am_constraint_mode": getattr(settings_obj, 'male_am_constraint_mode', 'hard') or 'hard',
             "max_day_service": getattr(settings_obj, 'max_day_service', 0) or 0,
             "counselor_care_mode": getattr(settings_obj, 'counselor_care_mode', 'off') or 'off',
+            "min_bath_mid": getattr(settings_obj, 'min_bath_mid', 0) or 0,
+            "min_bath_out": getattr(settings_obj, 'min_bath_out', 0) or 0,
+            "bath_role_alt_mode": getattr(settings_obj, 'bath_role_alt_mode', 'off') or 'off',
+            "early_late_alt_mode": getattr(settings_obj, 'early_late_alt_mode', 'off') or 'off',
             "placement_rules": placement_rules_data,
             "cooking_combo_rules": cooking_combo_data,
             "cooking_types": cooking_types_data,

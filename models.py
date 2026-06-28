@@ -351,6 +351,14 @@ class ShiftSettings(db.Model):
     # 当月に「片方=新人・もう片方=ベテラン」の調理日を何回作りたいか。
     # 0 = 無効（ペア目標を課さない）。期間ではなく回数で指定する。
 
+    # 依頼文40: お風呂当番 中介助/外介助の最低人数（0=制約なし＝その役割を割り当てない）
+    min_bath_mid = db.Column(db.Integer, default=0)   # 中介助 最低人数/日
+    min_bath_out = db.Column(db.Integer, default=0)   # 外介助 最低人数/日
+    # 依頼文40: 中介助/外介助 連日回避（交互）モード "off"/"soft"/"hard"（既定 off）
+    bath_role_alt_mode = db.Column(db.String(10), default="off", nullable=False)
+    # 依頼文40: 早番/遅番 連日回避モード "off"/"soft"/"hard"（既定 off）
+    early_late_alt_mode = db.Column(db.String(10), default="off", nullable=False)
+
     def to_dict(self):
         """辞書形式に変換"""
         return {
@@ -374,6 +382,10 @@ class ShiftSettings(db.Model):
             "max_day_service": self.max_day_service or 0,
             "counselor_care_mode": self.counselor_care_mode or "off",
             "cooking_pair_target": self.cooking_pair_target or 0,
+            "min_bath_mid": self.min_bath_mid if self.min_bath_mid is not None else 0,
+            "min_bath_out": self.min_bath_out if self.min_bath_out is not None else 0,
+            "bath_role_alt_mode": self.bath_role_alt_mode or "off",
+            "early_late_alt_mode": self.early_late_alt_mode or "off",
         }
 
 

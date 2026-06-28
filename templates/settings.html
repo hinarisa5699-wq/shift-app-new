@@ -196,6 +196,69 @@
                     <span class="text-lg text-gray-600">名</span>
                 </div>
             </div>
+
+            <!-- 早番/遅番 連日回避（依頼文40） -->
+            <div class="mt-6 pt-4 border-t border-blue-200">
+                <label for="early_late_alt_mode" class="block text-base font-medium text-gray-700 mb-2">
+                    早番/遅番 連日回避
+                </label>
+                {% set elam = settings.early_late_alt_mode if settings and settings.early_late_alt_mode else 'off' %}
+                <select id="early_late_alt_mode" name="early_late_alt_mode"
+                        class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
+                    <option value="off"  {% if elam == 'off'  %}selected{% endif %}>オフ（制約なし）</option>
+                    <option value="soft" {% if elam == 'soft' %}selected{% endif %}>ソフト（できるだけ連日を避ける）</option>
+                    <option value="hard" {% if elam == 'hard' %}selected{% endif %}>ハード（できる限り必ず非連日）</option>
+                </select>
+                <p class="text-gray-600 text-sm mt-1">
+                    同じ人が連続する出勤日（翌暦日）に早番を続けない・遅番を続けないようにします。早番/遅番が毎日各1名ちょうどの制約は維持します。達成できない場合も生成は止めず警告を出します。
+                </p>
+            </div>
+        </div>
+
+        <!-- お風呂当番（中介助/外介助）の設定（依頼文40） -->
+        <div class="mb-8 p-6 bg-cyan-50 rounded-lg border border-cyan-200">
+            <label class="block text-lg font-semibold text-gray-800 mb-2">
+                お風呂当番（中介助/外介助）
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                各営業日に割り当てる中介助・外介助の最低人数です。<strong>0=制約なし（その役割を割り当てません）</strong>。
+                満たせない日は警告を出して生成は継続します。
+            </p>
+            <div class="flex items-center gap-6">
+                <div class="flex items-center gap-2">
+                    <span class="text-base text-gray-700">中介助 最低人数</span>
+                    <input type="number" id="min_bath_mid" name="min_bath_mid"
+                           min="0" max="10"
+                           value="{{ settings.min_bath_mid if settings and settings.min_bath_mid is not none else 0 }}"
+                           class="w-24 px-4 py-3 text-xl font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                    <span class="text-lg text-gray-600">名</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="text-base text-gray-700">外介助 最低人数</span>
+                    <input type="number" id="min_bath_out" name="min_bath_out"
+                           min="0" max="10"
+                           value="{{ settings.min_bath_out if settings and settings.min_bath_out is not none else 0 }}"
+                           class="w-24 px-4 py-3 text-xl font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                    <span class="text-lg text-gray-600">名</span>
+                </div>
+            </div>
+
+            <!-- 中介助/外介助 連日回避（依頼文40） -->
+            <div class="mt-6 pt-4 border-t border-cyan-200">
+                <label for="bath_role_alt_mode" class="block text-base font-medium text-gray-700 mb-2">
+                    中介助/外介助 連日回避（交互）
+                </label>
+                {% set bram = settings.bath_role_alt_mode if settings and settings.bath_role_alt_mode else 'off' %}
+                <select id="bath_role_alt_mode" name="bath_role_alt_mode"
+                        class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
+                    <option value="off"  {% if bram == 'off'  %}selected{% endif %}>オフ（制約なし）</option>
+                    <option value="soft" {% if bram == 'soft' %}selected{% endif %}>ソフト（できるだけ交互）</option>
+                    <option value="hard" {% if bram == 'hard' %}selected{% endif %}>ハード（できる限り必ず交互）</option>
+                </select>
+                <p class="text-gray-600 text-sm mt-1">
+                    同じ人が連続する出勤日（翌暦日。間に休みがあればリセット）で同じ役割（中→中、外→外）が続かないよう交互にします。達成できない場合も生成は止めず警告を出します。
+                </p>
+            </div>
         </div>
 
         <!-- 休業曜日 -->

@@ -110,10 +110,12 @@ def test_counselor_rotates_across_days():
 
 
 def test_short_team_warns_bath():
-    """お風呂当番3名に満たない日は警告を出す（落ちない）。"""
+    """お風呂当番(中介助/外介助)に満たない日は警告を出す（落ちない）。依頼文40で役割別に分割。"""
     care = [_care(1, ["care_worker"]), _care(2, ["care_worker"])]
     res, warns = _run(care, {1: "day_pattern1", 2: "day_pattern1"})
-    assert any(w["warning_type"] == "bath_duty_short" for w in warns), warns
+    assert any(
+        w["warning_type"] in ("bath_mid_short", "bath_out_short") for w in warns
+    ), warns
     # それでも休憩は割り当たる
     assert res[1]["break_start"] in ("11:30", "12:30")
     print("OK test_short_team_warns_bath")

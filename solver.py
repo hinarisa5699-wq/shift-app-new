@@ -711,6 +711,10 @@ _FLOOR_PATTERNS = {"day_pattern1", "day_pattern2", "late"}
 # 早番(7:30-16:30)・遅番(9:30-18:30)も含める（早番は非訪問日は終日デイ、訪問日も午後はデイ）。
 _BATH_FLOOR_PATTERNS = {"day_pattern1", "day_pattern2", "early", "late"}
 
+# 依頼文40-D: 看護師(入浴介助可)もお風呂当番候補に含める際の在席パターン。
+#   看護師短時間 nurse_short(9:30-13:30) は入浴時間帯(11:30-13:00)に在席するため追加。
+_BATH_INCL_NURSE_PATTERNS = _BATH_FLOOR_PATTERNS | {"nurse_short"}
+
 # 配置人数
 _BATH_MID_COUNT = 2    # 中介助（「中」表示）
 _BATH_OUT_COUNT = 1    # 外介助（「外」表示）
@@ -728,6 +732,60 @@ _MEAL_MID = "12:30-13:00"          # 中介助（休憩明けに後半をカバ�
 
 # 相談員の終日相談を表すデスクスロット（[0,1,2,3]=9-17全帯）
 _COUNSELOR_FULL_DAY_SLOTS = [0, 1, 2, 3]
+
+
+def _select_bath_roles(pool, need_mid, need_out, forced_mid, prev_role, mode):
+    """お風呂当番の中介助/外介助を選出（依頼文40-B: 連日回避モード考慮）。
+
+    pool: その日の候補（公平性順にソート済み・forced_mid は含まない想定）。
+    prev_role: {staff_id: 前暦日の bath_role("中"/"外")}（出勤無し/役割無しは未登録＝None）。
+    mode: "off"=従来どおり順番に / "soft"=前日同役割を後回し / "hard"=前日同役割を除外
+          （除外すると埋まらない場合のみ戻して違反計上）。
+    Returns: (mid_ids, out_ids, violations)
+        violations = 連続出勤日（前暦日）で同じ役割が続いた件数。
+    """
+    mid, out = [], []
+    used = set()
+    violations = 0
+
+    # 遅番(forced_mid)は中介助の1枠に固定（need_mid>0のときのみ）
+    if forced_mid is not None and need_mid > 0:
+        mid.append(forced_mid)
+        used.add(forced_mid)
+        if prev_role.get(forced_mid) == "中":
+            violations += 1  # 遅番固定で交互にできない＝違反計上
+
+    def pick(role, count, candidates):
+        nonlocal violations
+        if count <= 0:
+            return []
+        if mode == "hard":
+            ok = [s for s in candidates if prev_role.get(s) != role]
+            bad = [s for s in candidates if prev_role.get(s) == role]
+            chosen = ok[:count]
+            if len(chosen) < count:
+                extra = bad[: count - len(chosen)]
+                violations += len(extra)
+                chosen += extra
+            return chosen
+        if mode == "soft":
+            ordered = sorted(candidates, key=lambda s: 1 if prev_role.get(s) == role else 0)
+            chosen = ordered[:count]
+            violations += sum(1 for s in chosen if prev_role.get(s) == role)
+            return chosen
+        # off: 公平性順そのまま（従来動作）
+        return candidates[:count]
+
+    rem_mid = need_mid - len(mid)
+    cands = [s for s in pool if s not in used]
+    mid_extra = pick("中", rem_mid, cands)
+    used.update(mid_extra)
+    mid += mid_extra
+
+    cands2 = [s for s in pool if s not in used]
+    out_extra = pick("外", need_out, cands2)
+    out += out_extra
+    return mid, out, violations
 
 
 def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shifts=None):
@@ -780,10 +838,19 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shif
     bath_capable_ids = {s["id"] for s in care_staff if s.get("can_bath_assist")}
     bath_filter_active = bool(bath_capable_ids)
 
+    # 依頼文40-A: 中介助/外介助の最低人数（キー無し＝旧既定 中2外1。設定経由は 0=制約なし）。
+    min_bath_mid = max(0, int(settings.get("min_bath_mid", _BATH_MID_COUNT) or 0))
+    min_bath_out = max(0, int(settings.get("min_bath_out", _BATH_OUT_COUNT) or 0))
+    # 依頼文40-B: 中介助/外介助 連日回避モード（off/soft/hard）。
+    bath_alt_mode = (settings.get("bath_role_alt_mode", "off") or "off").lower()
+
     # 月内均等用カウンタ（少ない人を優先選出）
     counselor_count = {}
     bath_count = {}
     meal_count = {}
+    # 依頼文40-B: 前暦日の中/外役割（連日回避の判定用）と違反件数
+    prev_bath_role = {}
+    bath_alt_violations = 0
 
     # 日付別グルーピング
     date_items = {}
@@ -841,13 +908,15 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shif
             counselor_count[selected_counselor] = counselor_count.get(selected_counselor, 0) + 1
             item_by_sid[selected_counselor]["counselor_desk_slots"] = list(_COUNSELOR_FULL_DAY_SLOTS)
 
-        # --- 変更2: お風呂当番 中2・外1（均等ローテ） ---
-        # 候補=昼帯フロア在席(早番/遅番含む・看護/リハ除く)・相談員除く・入浴介助可。
-        # 遅番の人(forced_mid)は中介助として必ず確保し、残り中1・外1を他職員から選ぶ。
-        # 遅番の人は外介助には割り当てない。
+        # --- 変更2 / 依頼文40: お風呂当番 中介助/外介助（最低人数=設定・連日回避・看護師候補） ---
+        # 候補=昼帯フロア在席(早番/遅番含む)・相談員除く・入浴介助可。
+        # 依頼文40-D: 看護師(入浴介助可)も nurse_short 等で在席なら候補に含める。
+        # 遅番の人(forced_mid)は中介助の1枠に固定し、残りを連日回避モードで選ぶ。
         bath_floor_ids = [
             it["staff_id"] for it in day_items
-            if it["assignment"] in _BATH_FLOOR_PATTERNS and it["staff_id"] not in nurse_pt_ids
+            if (it["assignment"] in _BATH_FLOOR_PATTERNS and it["staff_id"] not in nurse_pt_ids)
+            or (it["staff_id"] in nurse_pt_ids and it["staff_id"] in bath_capable_ids
+                and it["assignment"] in _BATH_INCL_NURSE_PATTERNS)
         ]
         bath_pool = [
             sid for sid in bath_floor_ids
@@ -855,16 +924,12 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shif
             and (not bath_filter_active or sid in bath_capable_ids)
         ]
         bath_pool.sort(key=lambda sid: (bath_count.get(sid, 0), sid))
-        # 固定職員が既に占有している中/外の分だけ必要数を減らす（依頼文28）
-        need_mid = max(_BATH_MID_COUNT - locked_mid, 0)
-        need_out = max(_BATH_OUT_COUNT - locked_out, 0)
+        # 依頼文40-A: 中/外の最低人数は設定値。固定職員が占有済みの分だけ減らす（依頼文28）。
+        need_mid = max(min_bath_mid - locked_mid, 0)
+        need_out = max(min_bath_out - locked_out, 0)
         n_bath = need_mid + need_out
 
         # --- 依頼文37: お風呂当番が不足する日のみ、デスク役の相談員も配置可能者に含める ---
-        # 通常はデスク相談員を bath_pool から除外（上の sid != selected_counselor）。
-        # ただし、その日にプールから埋められる人数が必要数に満たない“不足日”に限り、
-        # その日のデスク相談員（入浴介助可）を追加候補に含める。割り当てられた場合は
-        # デスク役（相談・終日）とお風呂当番の兼務扱い（デスク役1名は維持＝2名化しない）。
         # 足りている日は従来どおり追加しない（挙動を変えない）。
         pool_needed = (
             (max(need_mid - 1, 0) + need_out)
@@ -882,16 +947,12 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shif
             bath_pool.append(selected_counselor)
             bath_pool.sort(key=lambda sid: (bath_count.get(sid, 0), sid))
 
-        if forced_mid is not None and need_mid > 0:
-            # 遅番の人を中介助の1枠に固定し、残りの中・外をプールから補充する。
-            remaining_mid = max(need_mid - 1, 0)
-            mid_ids = [forced_mid] + bath_pool[:remaining_mid]
-            out_ids = bath_pool[remaining_mid:remaining_mid + need_out]
-            bath_selected = mid_ids + out_ids
-        else:
-            bath_selected = bath_pool[:n_bath]
-            mid_ids = bath_selected[:need_mid]
-            out_ids = bath_selected[need_mid:n_bath]
+        # 依頼文40-B: 連日回避モードを考慮して中/外を選出（off時は従来動作）。
+        mid_ids, out_ids, _vio = _select_bath_roles(
+            bath_pool, need_mid, need_out, forced_mid, prev_bath_role, bath_alt_mode
+        )
+        bath_alt_violations += _vio
+        bath_selected = mid_ids + out_ids
 
         # 公平性カウンタ更新（遅番固定分は均等ローテに含めない）
         for sid in bath_selected:
@@ -902,11 +963,29 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shif
             item_by_sid[sid]["bath_role"] = "中"
         for sid in out_ids:
             item_by_sid[sid]["bath_role"] = "外"
-        if len(bath_selected) < n_bath:
+
+        # 翌暦日の連日回避判定用に当日の役割を記録（固定職員の役割も反映）。
+        today_bath_role = {sid: "中" for sid in mid_ids}
+        today_bath_role.update({sid: "外" for sid in out_ids})
+        for it in locked_items_today:
+            if it.get("bath_role"):
+                today_bath_role[it["staff_id"]] = it["bath_role"]
+        prev_bath_role = today_bath_role
+
+        # 依頼文40-A: 中介助/外介助の不足を個別に警告
+        mid_short = need_mid - len(mid_ids)
+        out_short = need_out - len(out_ids)
+        if mid_short > 0:
             warnings.append({
                 "date": d_str,
-                "warning_type": "bath_duty_short",
-                "message": f"お風呂当番が不足（必要{n_bath}名・配置可能{len(bath_selected)}名）",
+                "warning_type": "bath_mid_short",
+                "message": f"中介助 {mid_short}名不足（必要{need_mid}名・配置{len(mid_ids)}名）",
+            })
+        if out_short > 0:
+            warnings.append({
+                "date": d_str,
+                "warning_type": "bath_out_short",
+                "message": f"外介助 {out_short}名不足（必要{need_out}名・配置{len(out_ids)}名）",
             })
 
         # --- 変更4: 食事介助 ---
@@ -946,6 +1025,14 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shif
         for it in day_items:
             if it["assignment"] in _FIXED_BREAK and not it.get("break_start"):
                 it["break_start"] = _FIXED_BREAK[it["assignment"]]
+
+    # 依頼文40-B: 中介助/外介助 連日回避の違反（連続出勤日で同じ役割）を警告
+    if bath_alt_mode in ("soft", "hard") and bath_alt_violations > 0 and all_dates:
+        warnings.append({
+            "date": all_dates[0].strftime("%Y-%m-%d"),
+            "warning_type": "bath_role_alt_violation",
+            "message": f"中介助/外介助 連日回避（{bath_alt_mode}）: 連続出勤日で同じ役割が {bath_alt_violations}回",
+        })
 
     return shifts_data, warnings
 
@@ -1309,6 +1396,14 @@ def _solve_care_with_fallback(
     min_late_staff = settings.get("min_late_staff", 1)
     min_late_staff = 1 if min_late_staff is None else int(min_late_staff)
 
+    # 依頼文40-A: お風呂当番の供給確保目標（中介助+外介助の最低人数+1バッファ）。
+    #   キー無し＝旧既定 中2外1。設定経由は 0=制約なし（その場合は供給目標を課さない）。
+    _mbm = int(settings.get("min_bath_mid", _BATH_MID_COUNT) or 0)
+    _mbo = int(settings.get("min_bath_out", _BATH_OUT_COUNT) or 0)
+    bath_supply_target = (_mbm + _mbo + 1) if (_mbm + _mbo) > 0 else 0
+    # 依頼文40-C: 早番/遅番 連日回避モード（off/soft/hard）。
+    early_late_alt_mode = (settings.get("early_late_alt_mode", "off") or "off").lower()
+
     # 相談員の介護業務参加モード（依頼文32）: "off"/"soft"/"hard"（既定 off）
     counselor_care_mode = settings.get("counselor_care_mode", "off") or "off"
 
@@ -1355,6 +1450,8 @@ def _solve_care_with_fallback(
         require_early_late=True,
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
+        bath_supply_target=bath_supply_target,
+        early_late_alt_mode=early_late_alt_mode,
         use_slack=False,
         locked_assignments=locked_assignments or {},
     )
@@ -1386,6 +1483,8 @@ def _solve_care_with_fallback(
         require_early_late=True,
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
+        bath_supply_target=bath_supply_target,
+        early_late_alt_mode=early_late_alt_mode,
         use_slack=True,
         locked_assignments=locked_assignments or {},
     )
@@ -1427,6 +1526,8 @@ def _solve_care_with_fallback(
         require_early_late=True,
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
+        bath_supply_target=bath_supply_target,
+        early_late_alt_mode=early_late_alt_mode,
         use_slack=True,
         locked_assignments=locked_assignments or {},
     )
@@ -1483,6 +1584,8 @@ def _solve_care(
     require_early_late: bool = False,
     min_early_staff: int = 1,
     min_late_staff: int = 1,
+    bath_supply_target: int = _BATH_MID_COUNT + _BATH_OUT_COUNT + 1,
+    early_late_alt_mode: str = "off",
     use_slack: bool = False,
     locked_assignments: dict = None,
 ):
@@ -2064,6 +2167,36 @@ def _solve_care(
                 model.add(late_count >= min_late_staff)
 
     # ==================================================================
+    # 依頼文40-C: 早番/遅番 連日回避（同じ人が連続する暦日で早番続き・遅番続きを避ける）
+    #   ソフト/ハードとも違反ペナルティで表現（hard=高重み＝事実上必須・ただし
+    #   infeasible にはせず構造的に不可能なら違反を残して警告）。各1名ちょうどの
+    #   制約（上の early_count/late_count == min）は維持する＝担当者の選び方に上乗せ。
+    # ==================================================================
+    early_late_alt_penalties = []
+    early_late_alt_trackers = []  # (staff_id, d_idx, role, viol_var)
+    if require_early_late and early_late_alt_mode in ("soft", "hard"):
+        for s in staff_ids:
+            for d_idx in range(num_days - 1):
+                for role in ("early", "late"):
+                    v = model.new_bool_var(f"el_alt_{role}_s{s}_d{d_idx}")
+                    # v = (s が d と d+1 の両方でその役割) ＝ 連続出勤日で同役割の違反
+                    model.add(v >= x[s, d_idx, role] + x[s, d_idx + 1, role] - 1)
+                    model.add(v <= x[s, d_idx, role])
+                    model.add(v <= x[s, d_idx + 1, role])
+                    early_late_alt_penalties.append(v)
+                    early_late_alt_trackers.append((s, d_idx, role, v))
+    if early_late_alt_mode == "hard":
+        early_late_alt_weight = (num_days + 1) * len(staff_ids)
+    elif early_late_alt_mode == "soft":
+        early_late_alt_weight = (num_days + 1) * 2
+    else:
+        early_late_alt_weight = 0
+    early_late_alt_penalty = (
+        sum(early_late_alt_penalties) * early_late_alt_weight
+        if early_late_alt_penalties else 0
+    )
+
+    # ==================================================================
     # 制約: その日の看護師の勤務時間が合計2時間(120分)以上なら看護師配置OK。
     #   依頼文18-A: 旧「9-16時に看護師/PT 1名以上」ルールを廃止し、より緩い
     #   「合計2時間以上」条件に統一。1名でも複数でも合計120分以上ならOK。
@@ -2170,9 +2303,10 @@ def _solve_care(
         a for a in ("day_pattern1", "day_pattern2", "early", "late")
         if a in CARE_WORKING_ASSIGNMENTS
     ]
-    bath_target = _BATH_MID_COUNT + _BATH_OUT_COUNT + 1
+    # 依頼文40-A: 供給目標は設定の中介助/外介助最低人数から算出（0=供給目標なし）。
+    bath_target = bath_supply_target
     bath_short_penalties = []
-    if bath_eligible_ids and bath_floor_codes:
+    if bath_target > 0 and bath_eligible_ids and bath_floor_codes:
         for d_idx in non_closed_days:
             supply = sum(
                 x[s, d_idx, a] for s in bath_eligible_ids for a in bath_floor_codes
@@ -2332,7 +2466,7 @@ def _solve_care(
             + bath_short_penalty + desk_short_penalty + counselor_soft_penalty
             + fairness_diff + total_min_pw_penalty + total_min_pw_hard_penalty
             + gender_penalty + phone_fairness + placement_penalty_total
-            + day2_count
+            + day2_count + early_late_alt_penalty
         )
     else:
         model.minimize(
@@ -2340,7 +2474,7 @@ def _solve_care(
             + bath_short_penalty + desk_short_penalty + counselor_soft_penalty
             + fairness_diff + total_min_pw_penalty + total_min_pw_hard_penalty
             + gender_penalty + phone_fairness + placement_penalty_total
-            + day2_count
+            + day2_count + early_late_alt_penalty
         )
 
     # ==================================================================
@@ -2505,6 +2639,26 @@ def _solve_care(
                 "date": date_str,
                 "warning_type": "placement_rule_unmet",
                 "message": f"配置ルール未達: {rule_name}",
+            })
+
+    # ------------------------------------------------------------------
+    # 依頼文40-C: 早番/遅番 連日回避の違反件数を集計して警告
+    # ------------------------------------------------------------------
+    if early_late_alt_trackers:
+        early_viol = sum(
+            1 for (_s, _d, role, v) in early_late_alt_trackers
+            if role == "early" and solver.value(v)
+        )
+        late_viol = sum(
+            1 for (_s, _d, role, v) in early_late_alt_trackers
+            if role == "late" and solver.value(v)
+        )
+        if early_viol or late_viol:
+            warnings_data.append({
+                "date": all_dates[0].strftime("%Y-%m-%d"),
+                "warning_type": "early_late_alt_violation",
+                "message": f"早番/遅番 連日回避（{early_late_alt_mode}）: "
+                           f"早番連続 {early_viol}回・遅番連続 {late_viol}回",
             })
 
     return shifts_data, warnings_data

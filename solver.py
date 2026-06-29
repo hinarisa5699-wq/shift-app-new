@@ -2736,14 +2736,17 @@ def _solve_care(
     # ------------------------------------------------------------------
     # 依頼文41-(2): 訪問回数の平等化（最大−最小の差を報告）
     # ------------------------------------------------------------------
+    #   差が0＝完全に均等化できた（達成成功）ので警告は出さない。
+    #   差が残った（>0）ときだけ、残差を情報として表示する。
     if visit_fairness_mode in ("soft", "hard") and not isinstance(visit_fair_diff, int):
         vdiff = solver.value(visit_fair_diff)
-        warnings_data.append({
-            "date": all_dates[0].strftime("%Y-%m-%d"),
-            "warning_type": "visit_fairness_info",
-            "message": f"訪問回数の平等化（{visit_fairness_mode}）: "
-                       f"訪問可職員間の訪問日数の差（最大−最小）={vdiff}日",
-        })
+        if vdiff > 0:
+            warnings_data.append({
+                "date": all_dates[0].strftime("%Y-%m-%d"),
+                "warning_type": "visit_fairness_info",
+                "message": f"訪問回数の平等化（{visit_fairness_mode}）: "
+                           f"訪問可職員間の訪問日数の差（最大−最小）={vdiff}日",
+            })
 
     return shifts_data, warnings_data
 

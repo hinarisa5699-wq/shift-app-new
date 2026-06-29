@@ -2517,17 +2517,19 @@ def _solve_care(
     headcount_weight = num_days + 1
 
     if use_slack:
+        # 早番/遅番の未配置スラックは別枠（other_slack には含めない）。
+        #   依頼: 「早番・遅番の配置は絶対」。他のどの不足よりも優先して必ず埋める。
         all_slack_terms = []
+        el_slack_terms = []
         for d in range(num_days):
             all_slack_terms.extend([slack_day_am[d], slack_day_pm[d], slack_visit_am[d], slack_visit_pm[d]])
             all_slack_terms.extend([slack_staff_9[d], slack_staff_11[d], slack_staff_13[d], slack_staff_15[d]])
             if require_early_late:
-                all_slack_terms.extend([slack_early[d], slack_late[d]])
+                el_slack_terms.extend([slack_early[d], slack_late[d]])
             if nurse_ids:
                 all_slack_terms.append(slack_nurse[d])
         max_slack_terms_per_day = (
             8
-            + (2 if require_early_late else 0)
             + (1 if nurse_ids else 0)
         )
         total_slack = model.new_int_var(
@@ -2537,8 +2539,19 @@ def _solve_care(
         )
         model.add(total_slack == sum(all_slack_terms))
         slack_weight = (num_days + 1) * len(staff_ids) + 1
+        # 早番/遅番スラックの重み: 他の不足スラックの最大合計を厳密に上回るよう設定し、
+        #   「1枠でも早番/遅番が埋まらないこと」が他のあらゆる不足より高コストになるようにする
+        #   （＝物理的に可能な限り必ず配置。どうしても不可能な日のみ未配置を許容＝無解化は防ぐ）。
+        max_other_slack = len(staff_ids) * num_days * max_slack_terms_per_day
+        # 他不足スラックの最大合計(=slack_weight*max_other_slack)を確実に上回る重み。
+        # headcount等の小さな項の余地も飲み込めるよう2倍マージンを取る。
+        el_slack_weight = 2 * slack_weight * (max_other_slack + 1)
+        early_late_slack_penalty = (
+            sum(el_slack_terms) * el_slack_weight if el_slack_terms else 0
+        )
         model.minimize(
-            total_slack * slack_weight
+            early_late_slack_penalty
+            + total_slack * slack_weight
             + total_working_days * headcount_weight
             + bath_short_penalty + desk_short_penalty + counselor_soft_penalty
             + fairness_diff + total_min_pw_penalty + total_min_pw_hard_penalty

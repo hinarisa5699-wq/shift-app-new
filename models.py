@@ -370,6 +370,10 @@ class ShiftSettings(db.Model):
     late_oncall_mode = db.Column(db.String(10), default="off", nullable=False)
     # 依頼文41-(2): 訪問回数の平等化モード "off"/"soft"/"hard"（既定 soft）
     visit_fairness_mode = db.Column(db.String(10), default="soft", nullable=False)
+    # 公休日数をカレンダー(その月の土日祝)から自動算出するか（既定 off）。
+    #   ON時: 正社員=土日祝の日数 / 週4(max_days_per_week=4)=土日祝+4 を生成時に自動反映
+    #   （職員フォームの手入力公休日数より優先）。
+    auto_public_holidays = db.Column(db.Boolean, default=False, nullable=False)
 
     def to_dict(self):
         """辞書形式に変換"""
@@ -400,6 +404,7 @@ class ShiftSettings(db.Model):
             "late_as_mid_mode": self.late_as_mid_mode or "hard",
             "late_oncall_mode": self.late_oncall_mode or "off",
             "visit_fairness_mode": self.visit_fairness_mode or "soft",
+            "auto_public_holidays": self.auto_public_holidays or False,
         }
 
 

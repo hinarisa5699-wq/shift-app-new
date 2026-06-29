@@ -375,6 +375,9 @@ def _run_migrations(app):
     # 遅番を中介助とするモード（off/soft/hard・既定hard）
     if "late_as_mid_mode" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN late_as_mid_mode VARCHAR(10) NOT NULL DEFAULT 'hard'")
+    # 公休日数の自動算出（カレンダーの土日祝から）
+    if "auto_public_holidays" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN auto_public_holidays BOOLEAN NOT NULL DEFAULT 0")
     # 依頼文41: 遅番×オンコール禁止モード・訪問回数の平等化モード
     if "late_oncall_mode" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN late_oncall_mode VARCHAR(10) NOT NULL DEFAULT 'off'")
@@ -1704,6 +1707,8 @@ def create_app():
         # 依頼文41-(2): 訪問回数の平等化モード（off/soft/hard、既定soft）
         _vfm = (request.form.get("visit_fairness_mode", "soft") or "soft").strip().lower()
         s.visit_fairness_mode = _vfm if _vfm in ("off", "soft", "hard") else "soft"
+        # 公休日数の自動算出（カレンダーの土日祝から）
+        s.auto_public_holidays = "auto_public_holidays" in request.form
         db.session.commit()
         flash("条件設定を保存しました。", "success")
         return redirect(url_for("settings"))
@@ -2086,6 +2091,29 @@ def create_app():
         for w in StaffWorkableDate.query.all():
             workable_dates_map.setdefault(w.staff_id, []).append(w.date.isoformat())
 
+        # 公休日数の自動算出（カレンダーの土日祝から）。
+        #   ON時: 正社員=その月の土日祝の日数 / 週4(max_days_per_week==4)=土日祝+4。
+        #   それ以外の雇用形態は手入力の公休日数をそのまま使う。手入力より優先。
+        auto_ph_enabled = bool(getattr(settings_obj, "auto_public_holidays", False))
+        weekend_holiday_count = 0
+        if auto_ph_enabled:
+            _ndays = calendar.monthrange(year, month)[1]
+            for _d in range(1, _ndays + 1):
+                _dt = date(year, month, _d)
+                # 土(5)・日(6) または 祝日 を公休として1日カウント（祝日が土日でも二重計上しない）
+                if _dt.weekday() >= 5 or jpholiday.is_holiday(_dt):
+                    weekend_holiday_count += 1
+
+        def _effective_public_holidays(s):
+            """auto_ph_enabled時の有効公休日数を返す（手入力より優先）。"""
+            if not auto_ph_enabled:
+                return getattr(s, "public_holiday_count", 0) or 0
+            if (s.employment_type or "") == "正社員":
+                return weekend_holiday_count
+            if (s.max_days_per_week or 0) == 4:
+                return weekend_holiday_count + 4
+            return getattr(s, "public_holiday_count", 0) or 0
+
         # ORM → dict 変換（部門別に分割）
         care_dicts = []
         cook_dicts = []
@@ -2120,7 +2148,7 @@ def create_app():
                     s.first_work_date.isoformat()
                     if getattr(s, "first_work_date", None) else None
                 ),
-                "public_holiday_count": getattr(s, "public_holiday_count", 0) or 0,
+                "public_holiday_count": _effective_public_holidays(s),
             }
             if s.staff_group == "cooking":
                 cook_dicts.append(d)

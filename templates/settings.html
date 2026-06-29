@@ -295,6 +295,24 @@
             </div>
         </div>
 
+        <!-- 公休日数の自動算出 -->
+        <div class="mb-8 p-6 bg-amber-50 rounded-lg border border-amber-200">
+            <label class="flex items-center cursor-pointer">
+                <input type="checkbox" id="auto_public_holidays" name="auto_public_holidays" value="1"
+                       {% if settings and settings.auto_public_holidays %}checked{% endif %}
+                       class="w-5 h-5 text-amber-600 border-gray-300 rounded focus:ring-amber-500">
+                <span class="ml-3 text-lg font-semibold text-gray-800">公休日数をカレンダーから自動算出する</span>
+            </label>
+            <p class="text-gray-600 text-sm mt-2 ml-8">
+                ONにすると、生成する月のカレンダー（土日＋祝日の日数）から各職員の公休日数を自動で決めます（職員フォームの手入力の公休日数より優先）。
+            </p>
+            <ul class="text-gray-600 text-sm mt-1 ml-8 list-disc list-inside">
+                <li><strong>正社員</strong>：その月の土日祝の日数</li>
+                <li><strong>週4勤務（週の勤務日数の上限が4の職員）</strong>：土日祝の日数 ＋ 4日</li>
+                <li>上記以外の雇用形態：職員フォームの手入力の公休日数を使用</li>
+            </ul>
+        </div>
+
         <!-- 休業曜日 -->
         <div class="mb-8 p-6 bg-gray-50 rounded-lg border border-gray-200">
             <label class="block text-lg font-semibold text-gray-800 mb-2">

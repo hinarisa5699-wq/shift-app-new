@@ -843,6 +843,11 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shif
     min_bath_out = max(0, int(settings.get("min_bath_out", _BATH_OUT_COUNT) or 0))
     # 依頼文40-B: 中介助/外介助 連日回避モード（off/soft/hard）。
     bath_alt_mode = (settings.get("bath_role_alt_mode", "off") or "off").lower()
+    # 遅番を中介助とするモード（off/soft/hard・既定 hard＝従来動作）。
+    #   hard: その日の遅番者を必ず中介助1枠に固定（中介/外介の交互と衝突しても固定）。
+    #   soft: なるべく中介にするが、前暦日も中介だった場合は固定を見送り交互を優先。
+    #   off : 遅番者を中介に固定しない（通常のフロア要員として扱う）。
+    late_as_mid_mode = (settings.get("late_as_mid_mode", "hard") or "hard").lower()
 
     # 月内均等用カウンタ（少ない人を優先選出）
     counselor_count = {}
@@ -884,14 +889,21 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shif
             if it["assignment"] in _FLOOR_PATTERNS and it["staff_id"] in nurse_pt_ids
         ]
 
-        # --- 追加ルール: 遅番(9:30-18:30)の人は中介助として扱う ---
-        # 毎日ちょうど1名の遅番職員を、その日の中介助1名分として固定で割り当てる。
+        # --- 追加ルール: 遅番(9:30-18:30)の人は中介助として扱う（off/soft/hard） ---
+        # 毎日ちょうど1名の遅番職員を、その日の中介助1名分に割り当てる。
         # （看護師・リハが遅番の場合は食事介助スキームと衝突するため対象外＝従来動作）
+        #   hard: 必ず固定（従来）／soft: 前暦日も中介なら見送り（交互優先）／off: 固定しない。
         late_ids = [
             it["staff_id"] for it in day_items
             if it["assignment"] == "late" and it["staff_id"] not in nurse_pt_ids
         ]
-        forced_mid = late_ids[0] if late_ids else None
+        late_person = late_ids[0] if late_ids else None
+        if late_person is None or late_as_mid_mode == "off":
+            forced_mid = None
+        elif late_as_mid_mode == "soft":
+            forced_mid = late_person if prev_bath_role.get(late_person) != "中" else None
+        else:  # hard（既定）
+            forced_mid = late_person
 
         # --- 変更1: 相談員 1日1名（終日相談）。遅番(中介助確保)は相談員にしない ---
         # 固定職員が既に相談員枠を占有している日は、新たに相談員を立てない。
@@ -1401,8 +1413,6 @@ def _solve_care_with_fallback(
     _mbm = int(settings.get("min_bath_mid", _BATH_MID_COUNT) or 0)
     _mbo = int(settings.get("min_bath_out", _BATH_OUT_COUNT) or 0)
     bath_supply_target = (_mbm + _mbo + 1) if (_mbm + _mbo) > 0 else 0
-    # 依頼文40-C: 早番/遅番 連日回避モード（off/soft/hard）。
-    early_late_alt_mode = (settings.get("early_late_alt_mode", "off") or "off").lower()
     # 依頼文41-(1): 遅番×オンコール禁止モード（off/soft/hard、既定 off）。
     late_oncall_mode = (settings.get("late_oncall_mode", "off") or "off").lower()
     # 依頼文41-(2): 訪問回数の平等化モード（off/soft/hard、既定 soft）。
@@ -1455,7 +1465,6 @@ def _solve_care_with_fallback(
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
         bath_supply_target=bath_supply_target,
-        early_late_alt_mode=early_late_alt_mode,
         late_oncall_mode=late_oncall_mode,
         visit_fairness_mode=visit_fairness_mode,
         use_slack=False,
@@ -1490,7 +1499,6 @@ def _solve_care_with_fallback(
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
         bath_supply_target=bath_supply_target,
-        early_late_alt_mode=early_late_alt_mode,
         late_oncall_mode=late_oncall_mode,
         visit_fairness_mode=visit_fairness_mode,
         use_slack=True,
@@ -1535,7 +1543,6 @@ def _solve_care_with_fallback(
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
         bath_supply_target=bath_supply_target,
-        early_late_alt_mode=early_late_alt_mode,
         late_oncall_mode=late_oncall_mode,
         visit_fairness_mode=visit_fairness_mode,
         use_slack=True,
@@ -1595,7 +1602,6 @@ def _solve_care(
     min_early_staff: int = 1,
     min_late_staff: int = 1,
     bath_supply_target: int = _BATH_MID_COUNT + _BATH_OUT_COUNT + 1,
-    early_late_alt_mode: str = "off",
     late_oncall_mode: str = "off",
     visit_fairness_mode: str = "soft",
     use_slack: bool = False,
@@ -2178,35 +2184,8 @@ def _solve_care(
                 model.add(early_count >= min_early_staff)
                 model.add(late_count >= min_late_staff)
 
-    # ==================================================================
-    # 依頼文40-C: 早番/遅番 連日回避（同じ人が連続する暦日で早番続き・遅番続きを避ける）
-    #   ソフト/ハードとも違反ペナルティで表現（hard=高重み＝事実上必須・ただし
-    #   infeasible にはせず構造的に不可能なら違反を残して警告）。各1名ちょうどの
-    #   制約（上の early_count/late_count == min）は維持する＝担当者の選び方に上乗せ。
-    # ==================================================================
-    early_late_alt_penalties = []
-    early_late_alt_trackers = []  # (staff_id, d_idx, role, viol_var)
-    if require_early_late and early_late_alt_mode in ("soft", "hard"):
-        for s in staff_ids:
-            for d_idx in range(num_days - 1):
-                for role in ("early", "late"):
-                    v = model.new_bool_var(f"el_alt_{role}_s{s}_d{d_idx}")
-                    # v = (s が d と d+1 の両方でその役割) ＝ 連続出勤日で同役割の違反
-                    model.add(v >= x[s, d_idx, role] + x[s, d_idx + 1, role] - 1)
-                    model.add(v <= x[s, d_idx, role])
-                    model.add(v <= x[s, d_idx + 1, role])
-                    early_late_alt_penalties.append(v)
-                    early_late_alt_trackers.append((s, d_idx, role, v))
-    if early_late_alt_mode == "hard":
-        early_late_alt_weight = (num_days + 1) * len(staff_ids)
-    elif early_late_alt_mode == "soft":
-        early_late_alt_weight = (num_days + 1) * 2
-    else:
-        early_late_alt_weight = 0
-    early_late_alt_penalty = (
-        sum(early_late_alt_penalties) * early_late_alt_weight
-        if early_late_alt_penalties else 0
-    )
+    # 依頼文40-C「早番/遅番 連日回避」は廃止（依頼により設定ごと削除）。
+    # 遅番の連日傾向は「遅番＝中介」(late_as_mid_mode) と「中介/外介 連日回避」で扱う。
 
     # ==================================================================
     # 依頼文41-(1): 遅番×オンコール禁止
@@ -2564,7 +2543,7 @@ def _solve_care(
             + bath_short_penalty + desk_short_penalty + counselor_soft_penalty
             + fairness_diff + total_min_pw_penalty + total_min_pw_hard_penalty
             + gender_penalty + phone_fairness + placement_penalty_total
-            + day2_count + early_late_alt_penalty
+            + day2_count
             + late_oncall_penalty + visit_fairness_penalty
         )
     else:
@@ -2573,7 +2552,7 @@ def _solve_care(
             + bath_short_penalty + desk_short_penalty + counselor_soft_penalty
             + fairness_diff + total_min_pw_penalty + total_min_pw_hard_penalty
             + gender_penalty + phone_fairness + placement_penalty_total
-            + day2_count + early_late_alt_penalty
+            + day2_count
             + late_oncall_penalty + visit_fairness_penalty
         )
 
@@ -2739,26 +2718,6 @@ def _solve_care(
                 "date": date_str,
                 "warning_type": "placement_rule_unmet",
                 "message": f"配置ルール未達: {rule_name}",
-            })
-
-    # ------------------------------------------------------------------
-    # 依頼文40-C: 早番/遅番 連日回避の違反件数を集計して警告
-    # ------------------------------------------------------------------
-    if early_late_alt_trackers:
-        early_viol = sum(
-            1 for (_s, _d, role, v) in early_late_alt_trackers
-            if role == "early" and solver.value(v)
-        )
-        late_viol = sum(
-            1 for (_s, _d, role, v) in early_late_alt_trackers
-            if role == "late" and solver.value(v)
-        )
-        if early_viol or late_viol:
-            warnings_data.append({
-                "date": all_dates[0].strftime("%Y-%m-%d"),
-                "warning_type": "early_late_alt_violation",
-                "message": f"早番/遅番 連日回避（{early_late_alt_mode}）: "
-                           f"早番連続 {early_viol}回・遅番連続 {late_viol}回",
             })
 
     # ------------------------------------------------------------------

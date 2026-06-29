@@ -214,23 +214,6 @@
                 </div>
             </div>
 
-            <!-- 早番/遅番 連日回避（依頼文40） -->
-            <div class="mt-6 pt-4 border-t border-blue-200">
-                <label for="early_late_alt_mode" class="block text-base font-medium text-gray-700 mb-2">
-                    早番/遅番 連日回避
-                </label>
-                {% set elam = settings.early_late_alt_mode if settings and settings.early_late_alt_mode else 'off' %}
-                <select id="early_late_alt_mode" name="early_late_alt_mode"
-                        class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
-                    <option value="off"  {% if elam == 'off'  %}selected{% endif %}>オフ（制約なし）</option>
-                    <option value="soft" {% if elam == 'soft' %}selected{% endif %}>ソフト（できるだけ連日を避ける）</option>
-                    <option value="hard" {% if elam == 'hard' %}selected{% endif %}>ハード（できる限り必ず非連日）</option>
-                </select>
-                <p class="text-gray-600 text-sm mt-1">
-                    同じ人が連続する出勤日（翌暦日）に早番を続けない・遅番を続けないようにします。早番/遅番が毎日各1名ちょうどの制約は維持します。達成できない場合も生成は止めず警告を出します。
-                </p>
-            </div>
-
             <!-- 遅番×オンコール禁止（依頼文41） -->
             <div class="mt-6 pt-4 border-t border-blue-200">
                 <label for="late_oncall_mode" class="block text-base font-medium text-gray-700 mb-2">
@@ -291,6 +274,23 @@
                 </select>
                 <p class="text-gray-600 text-sm mt-1">
                     同じ人が連続する出勤日（翌暦日。間に休みがあればリセット）で同じ役割（中→中、外→外）が続かないよう交互にします。達成できない場合も生成は止めず警告を出します。
+                </p>
+            </div>
+
+            <!-- 遅番を中介とする -->
+            <div class="mt-6 pt-4 border-t border-cyan-200">
+                <label for="late_as_mid_mode" class="block text-base font-medium text-gray-700 mb-2">
+                    遅番を中介とする
+                </label>
+                {% set lam = settings.late_as_mid_mode if settings and settings.late_as_mid_mode else 'hard' %}
+                <select id="late_as_mid_mode" name="late_as_mid_mode"
+                        class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
+                    <option value="off"  {% if lam == 'off'  %}selected{% endif %}>オフ（中介に固定しない）</option>
+                    <option value="soft" {% if lam == 'soft' %}selected{% endif %}>ソフト（なるべく中介。交互優先）</option>
+                    <option value="hard" {% if lam == 'hard' %}selected{% endif %}>ハード（必ず中介）</option>
+                </select>
+                <p class="text-gray-600 text-sm mt-1">
+                    その日の遅番(9:30-18:30)の人を中介助の1枠に割り当てます。<strong>ハード</strong>＝必ず中介。<strong>ソフト</strong>＝なるべく中介にしますが、前の出勤日も中介だった場合は上の「中介/外介 連日回避（交互）」を優先して見送ります。<strong>オフ</strong>＝中介に固定せず通常のフロア要員として扱います。
                 </p>
             </div>
         </div>

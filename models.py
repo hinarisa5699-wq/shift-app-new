@@ -359,8 +359,10 @@ class ShiftSettings(db.Model):
     min_bath_out = db.Column(db.Integer, default=0)   # 外介助 最低人数/日
     # 依頼文40: 中介助/外介助 連日回避（交互）モード "off"/"soft"/"hard"（既定 off）
     bath_role_alt_mode = db.Column(db.String(10), default="off", nullable=False)
-    # 依頼文40: 早番/遅番 連日回避モード "off"/"soft"/"hard"（既定 off）
+    # 依頼文40: 早番/遅番 連日回避モード（廃止・列はダミーで残置）
     early_late_alt_mode = db.Column(db.String(10), default="off", nullable=False)
+    # 遅番を中介助とするモード "off"/"soft"/"hard"（既定 hard＝従来動作）
+    late_as_mid_mode = db.Column(db.String(10), default="hard", nullable=False)
     # 依頼文41-(1): 遅番×オンコール禁止モード "off"/"soft"/"hard"（既定 off）
     late_oncall_mode = db.Column(db.String(10), default="off", nullable=False)
     # 依頼文41-(2): 訪問回数の平等化モード "off"/"soft"/"hard"（既定 soft）
@@ -392,7 +394,7 @@ class ShiftSettings(db.Model):
             "min_bath_mid": self.min_bath_mid if self.min_bath_mid is not None else 0,
             "min_bath_out": self.min_bath_out if self.min_bath_out is not None else 0,
             "bath_role_alt_mode": self.bath_role_alt_mode or "off",
-            "early_late_alt_mode": self.early_late_alt_mode or "off",
+            "late_as_mid_mode": self.late_as_mid_mode or "hard",
             "late_oncall_mode": self.late_oncall_mode or "off",
             "visit_fairness_mode": self.visit_fairness_mode or "soft",
         }

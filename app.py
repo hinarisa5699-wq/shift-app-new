@@ -370,6 +370,9 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN bath_role_alt_mode VARCHAR(10) NOT NULL DEFAULT 'off'")
     if "early_late_alt_mode" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN early_late_alt_mode VARCHAR(10) NOT NULL DEFAULT 'off'")
+    # 遅番を中介助とするモード（off/soft/hard・既定hard）
+    if "late_as_mid_mode" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN late_as_mid_mode VARCHAR(10) NOT NULL DEFAULT 'hard'")
     # 依頼文41: 遅番×オンコール禁止モード・訪問回数の平等化モード
     if "late_oncall_mode" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN late_oncall_mode VARCHAR(10) NOT NULL DEFAULT 'off'")
@@ -1687,8 +1690,10 @@ def create_app():
         s.min_bath_out = max(0, safe_int(request.form.get("min_bath_out"), 0))
         _bram = (request.form.get("bath_role_alt_mode", "off") or "off").strip().lower()
         s.bath_role_alt_mode = _bram if _bram in ("off", "soft", "hard") else "off"
-        _elam = (request.form.get("early_late_alt_mode", "off") or "off").strip().lower()
-        s.early_late_alt_mode = _elam if _elam in ("off", "soft", "hard") else "off"
+        # 「早番/遅番 連日回避」は廃止（依頼により削除）。
+        # 遅番を中介助とするモード（off/soft/hard・既定hard＝従来動作）
+        _lam = (request.form.get("late_as_mid_mode", "hard") or "hard").strip().lower()
+        s.late_as_mid_mode = _lam if _lam in ("off", "soft", "hard") else "hard"
         # 依頼文41-(1): 遅番×オンコール禁止モード（off/soft/hard、既定off）
         _lom = (request.form.get("late_oncall_mode", "off") or "off").strip().lower()
         s.late_oncall_mode = _lom if _lom in ("off", "soft", "hard") else "off"
@@ -2146,7 +2151,7 @@ def create_app():
             "min_bath_mid": getattr(settings_obj, 'min_bath_mid', 0) or 0,
             "min_bath_out": getattr(settings_obj, 'min_bath_out', 0) or 0,
             "bath_role_alt_mode": getattr(settings_obj, 'bath_role_alt_mode', 'off') or 'off',
-            "early_late_alt_mode": getattr(settings_obj, 'early_late_alt_mode', 'off') or 'off',
+            "late_as_mid_mode": getattr(settings_obj, 'late_as_mid_mode', 'hard') or 'hard',
             "late_oncall_mode": getattr(settings_obj, 'late_oncall_mode', 'off') or 'off',
             "visit_fairness_mode": getattr(settings_obj, 'visit_fairness_mode', 'soft') or 'soft',
             "placement_rules": placement_rules_data,

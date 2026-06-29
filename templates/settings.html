@@ -165,6 +165,23 @@
                 </label>
                 {% endfor %}
             </div>
+
+            <!-- 訪問回数の平等化（依頼文41） -->
+            <div class="mt-6 pt-4 border-t border-green-200">
+                <label for="visit_fairness_mode" class="block text-base font-medium text-gray-700 mb-2">
+                    訪問回数の平等化
+                </label>
+                {% set vfm = settings.visit_fairness_mode if settings and settings.visit_fairness_mode else 'soft' %}
+                <select id="visit_fairness_mode" name="visit_fairness_mode"
+                        class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
+                    <option value="off"  {% if vfm == 'off'  %}selected{% endif %}>オフ（制約なし）</option>
+                    <option value="soft" {% if vfm == 'soft' %}selected{% endif %}>ソフト（できるだけ揃える・既定）</option>
+                    <option value="hard" {% if vfm == 'hard' %}selected{% endif %}>ハード（できる限り揃える）</option>
+                </select>
+                <p class="text-gray-600 text-sm mt-1">
+                    訪問可の職員どうしで、訪問する日数の差（最大−最小）をできるだけ小さくします。完全一致はできないためソフトが既定です。達成度（差の日数）は生成後の警告に表示します。
+                </p>
+            </div>
         </div>
 
         <!-- 依頼文35: 「毎日の兼務者 最低人数」設定は削除（兼務はルール上可能なまま、下限の縛りなし） -->
@@ -211,6 +228,23 @@
                 </select>
                 <p class="text-gray-600 text-sm mt-1">
                     同じ人が連続する出勤日（翌暦日）に早番を続けない・遅番を続けないようにします。早番/遅番が毎日各1名ちょうどの制約は維持します。達成できない場合も生成は止めず警告を出します。
+                </p>
+            </div>
+
+            <!-- 遅番×オンコール禁止（依頼文41） -->
+            <div class="mt-6 pt-4 border-t border-blue-200">
+                <label for="late_oncall_mode" class="block text-base font-medium text-gray-700 mb-2">
+                    遅番×オンコール禁止
+                </label>
+                {% set lom = settings.late_oncall_mode if settings and settings.late_oncall_mode else 'off' %}
+                <select id="late_oncall_mode" name="late_oncall_mode"
+                        class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
+                    <option value="off"  {% if lom == 'off'  %}selected{% endif %}>オフ（制約なし）</option>
+                    <option value="soft" {% if lom == 'soft' %}selected{% endif %}>ソフト（できるだけ避ける）</option>
+                    <option value="hard" {% if lom == 'hard' %}selected{% endif %}>ハード（絶対に入れない）</option>
+                </select>
+                <p class="text-gray-600 text-sm mt-1">
+                    オンコール（電話当番）の日に、その担当者を遅番に入れないようにします。ハードは当番日の遅番を完全に禁止、ソフトはなるべく避けます（達成できない場合も生成は止めず警告を出します）。
                 </p>
             </div>
         </div>

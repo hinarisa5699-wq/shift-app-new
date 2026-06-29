@@ -1403,6 +1403,10 @@ def _solve_care_with_fallback(
     bath_supply_target = (_mbm + _mbo + 1) if (_mbm + _mbo) > 0 else 0
     # 依頼文40-C: 早番/遅番 連日回避モード（off/soft/hard）。
     early_late_alt_mode = (settings.get("early_late_alt_mode", "off") or "off").lower()
+    # 依頼文41-(1): 遅番×オンコール禁止モード（off/soft/hard、既定 off）。
+    late_oncall_mode = (settings.get("late_oncall_mode", "off") or "off").lower()
+    # 依頼文41-(2): 訪問回数の平等化モード（off/soft/hard、既定 soft）。
+    visit_fairness_mode = (settings.get("visit_fairness_mode", "soft") or "soft").lower()
 
     # 相談員の介護業務参加モード（依頼文32）: "off"/"soft"/"hard"（既定 off）
     counselor_care_mode = settings.get("counselor_care_mode", "off") or "off"
@@ -1452,6 +1456,8 @@ def _solve_care_with_fallback(
         min_late_staff=min_late_staff,
         bath_supply_target=bath_supply_target,
         early_late_alt_mode=early_late_alt_mode,
+        late_oncall_mode=late_oncall_mode,
+        visit_fairness_mode=visit_fairness_mode,
         use_slack=False,
         locked_assignments=locked_assignments or {},
     )
@@ -1485,6 +1491,8 @@ def _solve_care_with_fallback(
         min_late_staff=min_late_staff,
         bath_supply_target=bath_supply_target,
         early_late_alt_mode=early_late_alt_mode,
+        late_oncall_mode=late_oncall_mode,
+        visit_fairness_mode=visit_fairness_mode,
         use_slack=True,
         locked_assignments=locked_assignments or {},
     )
@@ -1528,6 +1536,8 @@ def _solve_care_with_fallback(
         min_late_staff=min_late_staff,
         bath_supply_target=bath_supply_target,
         early_late_alt_mode=early_late_alt_mode,
+        late_oncall_mode=late_oncall_mode,
+        visit_fairness_mode=visit_fairness_mode,
         use_slack=True,
         locked_assignments=locked_assignments or {},
     )
@@ -1586,6 +1596,8 @@ def _solve_care(
     min_late_staff: int = 1,
     bath_supply_target: int = _BATH_MID_COUNT + _BATH_OUT_COUNT + 1,
     early_late_alt_mode: str = "off",
+    late_oncall_mode: str = "off",
+    visit_fairness_mode: str = "soft",
     use_slack: bool = False,
     locked_assignments: dict = None,
 ):
@@ -2197,6 +2209,40 @@ def _solve_care(
     )
 
     # ==================================================================
+    # 依頼文41-(1): 遅番×オンコール禁止
+    #   オンコール（電話当番）は出勤と独立した後処理で先に確定され、当番日が
+    #   oncall_day_idx_by_staff[staff_id]={day_idx,…} として渡される。
+    #   その「オンコール当番日」に同じ職員が遅番(late)に入らないようにする。
+    #     hard: その日は late を絶対に割り当てない（x==0）
+    #     soft: なるべく避ける（違反＝当番日に late に入った件数をペナルティ化）
+    #     off : 制約なし
+    #   ※モデル内は「遅番にした人をオンコールから外す」のではなく、先に決まった
+    #     オンコール当番者を遅番にしない、という等価な向きで表現する。
+    # ==================================================================
+    late_oncall_mode = (late_oncall_mode or "off").lower()
+    late_oncall_penalties = []
+    late_oncall_trackers = []  # (staff_id, d_idx, viol_var)
+    if late_oncall_mode in ("soft", "hard"):
+        for s, day_set in oncall_day_idx_by_staff.items():
+            if s not in staff_by_id:
+                continue
+            for d_idx in day_set:
+                if late_oncall_mode == "hard":
+                    model.add(x[s, d_idx, "late"] == 0)
+                else:  # soft
+                    v = x[s, d_idx, "late"]
+                    late_oncall_penalties.append(v)
+                    late_oncall_trackers.append((s, d_idx, v))
+    if late_oncall_mode == "soft":
+        late_oncall_weight = (num_days + 1) * 2
+    else:
+        late_oncall_weight = 0
+    late_oncall_penalty = (
+        sum(late_oncall_penalties) * late_oncall_weight
+        if late_oncall_penalties else 0
+    )
+
+    # ==================================================================
     # 制約: その日の看護師の勤務時間が合計2時間(120分)以上なら看護師配置OK。
     #   依頼文18-A: 旧「9-16時に看護師/PT 1名以上」ルールを廃止し、より緩い
     #   「合計2時間以上」条件に統一。1名でも複数でも合計120分以上ならOK。
@@ -2362,6 +2408,58 @@ def _solve_care(
     fairness_diff = model.new_int_var(0, num_days, "care_fairness_diff")
     model.add(fairness_diff == max_work - min_work)
 
+    # ==================================================================
+    # 依頼文41-(2): 訪問回数（日数）の平等化
+    #   訪問可(can_visit)の全職員間で、訪問日数（VISIT_ASSIGNMENTS のいずれかに
+    #   入った日数）の差（最大−最小）を最小化する。完全一致は不可能なため soft。
+    #     soft: 差をペナルティで最小化（既定）
+    #     hard: 差を強ペナルティで最小化（事実上ほぼ揃える。infeasible にはしない）
+    #     off : 制約なし
+    #   ※純粋訪問(visit_am/visit_pm)は別制約で全日禁止のため、実質は兼務2種
+    #     (day_p3_visit_pm / visit_am_day_p4) の日数を数える。早番(early)の
+    #     AM訪問は必須ロール扱いのため対象に含めない。
+    # ==================================================================
+    visit_fairness_mode = (visit_fairness_mode or "soft").lower()
+    visit_fair_diff = 0
+    visit_fairness_penalty = 0
+
+    # 平等化の対象は「訪問可(can_visit)かつ、実際に訪問日へ出勤しうる職員」。
+    #   勤務可能曜日（fixed_days_off を除く）が訪問営業日(visit_day_indices)の曜日と
+    #   1つも重ならない職員は、構造的に訪問へ入れない（例: 土日のみ勤務可だが訪問は
+    #   月火木金）。こうした職員を含めると訪問日数が必ず0に固定され、差(最大−最小)が
+    #   見かけ上ふくらむため、平等化の対象から除外する（依頼文41の意図＝実際に訪問する
+    #   スタッフ間の平等化）。
+    _visit_op_weekdays = {all_dates[di].weekday() for di in visit_day_indices}
+    visit_capable_ids = []
+    for s in staff_ids:
+        info = staff_by_id[s]
+        if not info.get("can_visit"):
+            continue
+        eff_weekdays = (set(info.get("available_days", []))
+                        - set(info.get("fixed_days_off", []) or []))
+        if eff_weekdays & _visit_op_weekdays:
+            visit_capable_ids.append(s)
+    if visit_fairness_mode in ("soft", "hard") and len(visit_capable_ids) >= 2:
+        visit_count = {}
+        for s in visit_capable_ids:
+            visit_count[s] = sum(
+                x[s, d_idx, a]
+                for d_idx in range(num_days)
+                for a in VISIT_ASSIGNMENTS
+            )
+        max_visit = model.new_int_var(0, num_days, "care_max_visit")
+        min_visit = model.new_int_var(0, num_days, "care_min_visit")
+        for s in visit_capable_ids:
+            model.add(max_visit >= visit_count[s])
+            model.add(min_visit <= visit_count[s])
+        visit_fair_diff = model.new_int_var(0, num_days, "care_visit_fairness_diff")
+        model.add(visit_fair_diff == max_visit - min_visit)
+        if visit_fairness_mode == "hard":
+            visit_fairness_weight = (num_days + 1) * 2
+        else:  # soft
+            visit_fairness_weight = num_days + 1
+        visit_fairness_penalty = visit_fair_diff * visit_fairness_weight
+
     # 総出勤日数（最小化対象）
     total_working_days = sum(work_count[s] for s in staff_ids)
     # 週勤務回数の下限ペナルティ（依頼文27: 週N回を厳守する）。
@@ -2467,6 +2565,7 @@ def _solve_care(
             + fairness_diff + total_min_pw_penalty + total_min_pw_hard_penalty
             + gender_penalty + phone_fairness + placement_penalty_total
             + day2_count + early_late_alt_penalty
+            + late_oncall_penalty + visit_fairness_penalty
         )
     else:
         model.minimize(
@@ -2475,6 +2574,7 @@ def _solve_care(
             + fairness_diff + total_min_pw_penalty + total_min_pw_hard_penalty
             + gender_penalty + phone_fairness + placement_penalty_total
             + day2_count + early_late_alt_penalty
+            + late_oncall_penalty + visit_fairness_penalty
         )
 
     # ==================================================================
@@ -2660,6 +2760,31 @@ def _solve_care(
                 "message": f"早番/遅番 連日回避（{early_late_alt_mode}）: "
                            f"早番連続 {early_viol}回・遅番連続 {late_viol}回",
             })
+
+    # ------------------------------------------------------------------
+    # 依頼文41-(1): 遅番×オンコール（soft時の違反件数を警告）
+    # ------------------------------------------------------------------
+    if late_oncall_trackers:
+        lo_viol = sum(1 for (_s, _d, v) in late_oncall_trackers if solver.value(v))
+        if lo_viol:
+            warnings_data.append({
+                "date": all_dates[0].strftime("%Y-%m-%d"),
+                "warning_type": "late_oncall_violation",
+                "message": f"遅番×オンコール（soft）: "
+                           f"オンコール当番日に遅番が入った件数 {lo_viol}件",
+            })
+
+    # ------------------------------------------------------------------
+    # 依頼文41-(2): 訪問回数の平等化（最大−最小の差を報告）
+    # ------------------------------------------------------------------
+    if visit_fairness_mode in ("soft", "hard") and not isinstance(visit_fair_diff, int):
+        vdiff = solver.value(visit_fair_diff)
+        warnings_data.append({
+            "date": all_dates[0].strftime("%Y-%m-%d"),
+            "warning_type": "visit_fairness_info",
+            "message": f"訪問回数の平等化（{visit_fairness_mode}）: "
+                       f"訪問可職員間の訪問日数の差（最大−最小）={vdiff}日",
+        })
 
     return shifts_data, warnings_data
 

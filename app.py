@@ -368,6 +368,11 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN bath_role_alt_mode VARCHAR(10) NOT NULL DEFAULT 'off'")
     if "early_late_alt_mode" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN early_late_alt_mode VARCHAR(10) NOT NULL DEFAULT 'off'")
+    # 依頼文41: 遅番×オンコール禁止モード・訪問回数の平等化モード
+    if "late_oncall_mode" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN late_oncall_mode VARCHAR(10) NOT NULL DEFAULT 'off'")
+    if "visit_fairness_mode" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN visit_fairness_mode VARCHAR(10) NOT NULL DEFAULT 'soft'")
 
     # GeneratedShift テーブル
     columns = [row[1] for row in cursor.execute("PRAGMA table_info(generated_shift)").fetchall()]
@@ -1680,6 +1685,12 @@ def create_app():
         s.bath_role_alt_mode = _bram if _bram in ("off", "soft", "hard") else "off"
         _elam = (request.form.get("early_late_alt_mode", "off") or "off").strip().lower()
         s.early_late_alt_mode = _elam if _elam in ("off", "soft", "hard") else "off"
+        # 依頼文41-(1): 遅番×オンコール禁止モード（off/soft/hard、既定off）
+        _lom = (request.form.get("late_oncall_mode", "off") or "off").strip().lower()
+        s.late_oncall_mode = _lom if _lom in ("off", "soft", "hard") else "off"
+        # 依頼文41-(2): 訪問回数の平等化モード（off/soft/hard、既定soft）
+        _vfm = (request.form.get("visit_fairness_mode", "soft") or "soft").strip().lower()
+        s.visit_fairness_mode = _vfm if _vfm in ("off", "soft", "hard") else "soft"
         db.session.commit()
         flash("条件設定を保存しました。", "success")
         return redirect(url_for("settings"))
@@ -2131,6 +2142,8 @@ def create_app():
             "min_bath_out": getattr(settings_obj, 'min_bath_out', 0) or 0,
             "bath_role_alt_mode": getattr(settings_obj, 'bath_role_alt_mode', 'off') or 'off',
             "early_late_alt_mode": getattr(settings_obj, 'early_late_alt_mode', 'off') or 'off',
+            "late_oncall_mode": getattr(settings_obj, 'late_oncall_mode', 'off') or 'off',
+            "visit_fairness_mode": getattr(settings_obj, 'visit_fairness_mode', 'soft') or 'soft',
             "placement_rules": placement_rules_data,
             "cooking_combo_rules": cooking_combo_data,
             "cooking_types": cooking_types_data,

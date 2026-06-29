@@ -370,10 +370,15 @@ class ShiftSettings(db.Model):
     late_oncall_mode = db.Column(db.String(10), default="off", nullable=False)
     # 依頼文41-(2): 訪問回数の平等化モード "off"/"soft"/"hard"（既定 soft）
     visit_fairness_mode = db.Column(db.String(10), default="soft", nullable=False)
-    # 公休日数をカレンダー(その月の土日祝)から自動算出するか（既定 off）。
-    #   ON時: 正社員=土日祝の日数 / 週4(max_days_per_week=4)=土日祝+4 を生成時に自動反映
-    #   （職員フォームの手入力公休日数より優先）。
+    # 公休日数を法定労働時間ベースで自動算出するか（既定 off）。
+    #   ON時、生成する月について各職員の公休日数を次式で自動反映（手入力より優先）:
+    #     週所定労働時間 = min(週の勤務日数上限 × 1日の所定労働時間, 40)
+    #     所定労働日数(上限) = floor(週所定労働時間 × 暦日数 ÷ 7 ÷ 1日の所定労働時間)
+    #     公休数 = 暦日数 − 所定労働日数
+    #   ※祝日は労働日扱い（公休に数えない）。
     auto_public_holidays = db.Column(db.Boolean, default=False, nullable=False)
+    # 1日の所定労働時間（時間）。公休自動算出に使用。既定 8.0。
+    daily_work_hours = db.Column(db.Float, default=8.0, nullable=False)
 
     def to_dict(self):
         """辞書形式に変換"""
@@ -405,6 +410,7 @@ class ShiftSettings(db.Model):
             "late_oncall_mode": self.late_oncall_mode or "off",
             "visit_fairness_mode": self.visit_fairness_mode or "soft",
             "auto_public_holidays": self.auto_public_holidays or False,
+            "daily_work_hours": self.daily_work_hours if self.daily_work_hours is not None else 8.0,
         }
 
 

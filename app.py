@@ -375,9 +375,11 @@ def _run_migrations(app):
     # 遅番を中介助とするモード（off/soft/hard・既定hard）
     if "late_as_mid_mode" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN late_as_mid_mode VARCHAR(10) NOT NULL DEFAULT 'hard'")
-    # 公休日数の自動算出（カレンダーの土日祝から）
+    # 公休日数の自動算出（法定労働時間ベース）
     if "auto_public_holidays" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN auto_public_holidays BOOLEAN NOT NULL DEFAULT 0")
+    if "daily_work_hours" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN daily_work_hours REAL NOT NULL DEFAULT 8.0")
     # 依頼文41: 遅番×オンコール禁止モード・訪問回数の平等化モード
     if "late_oncall_mode" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN late_oncall_mode VARCHAR(10) NOT NULL DEFAULT 'off'")
@@ -1707,8 +1709,13 @@ def create_app():
         # 依頼文41-(2): 訪問回数の平等化モード（off/soft/hard、既定soft）
         _vfm = (request.form.get("visit_fairness_mode", "soft") or "soft").strip().lower()
         s.visit_fairness_mode = _vfm if _vfm in ("off", "soft", "hard") else "soft"
-        # 公休日数の自動算出（カレンダーの土日祝から）
+        # 公休日数の自動算出（法定労働時間ベース）
         s.auto_public_holidays = "auto_public_holidays" in request.form
+        try:
+            _dwh = float(request.form.get("daily_work_hours", 8.0) or 8.0)
+        except (TypeError, ValueError):
+            _dwh = 8.0
+        s.daily_work_hours = min(24.0, max(0.5, _dwh))
         db.session.commit()
         flash("条件設定を保存しました。", "success")
         return redirect(url_for("settings"))
@@ -2091,28 +2098,25 @@ def create_app():
         for w in StaffWorkableDate.query.all():
             workable_dates_map.setdefault(w.staff_id, []).append(w.date.isoformat())
 
-        # 公休日数の自動算出（カレンダーの土日祝から）。
-        #   ON時: 正社員=その月の土日祝の日数 / 週4(max_days_per_week==4)=土日祝+4。
-        #   それ以外の雇用形態は手入力の公休日数をそのまま使う。手入力より優先。
+        # 公休日数の自動算出（法定労働時間ベース）。ON時は手入力より優先。
+        #   週所定労働時間 = min(週の勤務日数上限 × 1日の所定労働時間, 40)   ※法定40時間で頭打ち
+        #   所定労働日数(上限) = floor(週所定労働時間 × 暦日数 ÷ 7 ÷ 1日の所定労働時間)
+        #   公休数 = 暦日数 − 所定労働日数
+        #   ※祝日は労働日扱い（公休に数えない）。
         auto_ph_enabled = bool(getattr(settings_obj, "auto_public_holidays", False))
-        weekend_holiday_count = 0
-        if auto_ph_enabled:
-            _ndays = calendar.monthrange(year, month)[1]
-            for _d in range(1, _ndays + 1):
-                _dt = date(year, month, _d)
-                # 土(5)・日(6) または 祝日 を公休として1日カウント（祝日が土日でも二重計上しない）
-                if _dt.weekday() >= 5 or jpholiday.is_holiday(_dt):
-                    weekend_holiday_count += 1
+        _calendar_days = calendar.monthrange(year, month)[1]
+        _daily_hours = float(getattr(settings_obj, "daily_work_hours", 8.0) or 8.0)
+        if _daily_hours <= 0:
+            _daily_hours = 8.0
 
         def _effective_public_holidays(s):
-            """auto_ph_enabled時の有効公休日数を返す（手入力より優先）。"""
+            """auto_ph_enabled時は法定労働時間ベースの公休日数を返す（手入力より優先）。"""
             if not auto_ph_enabled:
                 return getattr(s, "public_holiday_count", 0) or 0
-            if (s.employment_type or "") == "正社員":
-                return weekend_holiday_count
-            if (s.max_days_per_week or 0) == 4:
-                return weekend_holiday_count + 4
-            return getattr(s, "public_holiday_count", 0) or 0
+            week_days = s.max_days_per_week or 5
+            weekly_hours = min(week_days * _daily_hours, 40.0)
+            shotei_work_days = int(weekly_hours * _calendar_days / 7.0 / _daily_hours)
+            return max(0, _calendar_days - shotei_work_days)
 
         # ORM → dict 変換（部門別に分割）
         care_dicts = []

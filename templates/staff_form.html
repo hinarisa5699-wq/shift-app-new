@@ -30,6 +30,17 @@
                    placeholder="例: 山田 花子">
         </div>
 
+        <!-- 休職中 -->
+        <div class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+            <label class="flex items-center cursor-pointer">
+                <input type="checkbox" name="on_leave" value="1"
+                       {% if staff and staff.on_leave %}checked{% endif %}
+                       class="w-5 h-5 text-amber-600 border-gray-300 rounded focus:ring-amber-500">
+                <span class="ml-3 text-lg font-semibold text-gray-700">休職中</span>
+            </label>
+            <p class="text-gray-600 text-sm mt-1 ml-8">チェックを入れると、この職員はシフト生成・オンコールの対象外になり、印刷一覧にも表示されません。職員データは削除せず残ります（復職時はチェックを外してください）。</p>
+        </div>
+
         <!-- 性別 -->
         <div class="mb-6">
             <label for="gender" class="block text-lg font-semibold text-gray-700 mb-2">

@@ -290,6 +290,8 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE staff ADD COLUMN min_days_per_week INTEGER DEFAULT 0")
     if "holiday_ng" not in columns:
         cursor.execute("ALTER TABLE staff ADD COLUMN holiday_ng BOOLEAN DEFAULT 0")
+    if "on_leave" not in columns:
+        cursor.execute("ALTER TABLE staff ADD COLUMN on_leave BOOLEAN NOT NULL DEFAULT 0")
     # --- v3: 区分・役割・入浴介助可・勤務時間 ---
     if "job_category" not in columns:
         cursor.execute(
@@ -1162,6 +1164,7 @@ def create_app():
             fixed_days_off=fixed_days_off,
             weekend_constraint=request.form.get("weekend_constraint", ""),
             holiday_ng="holiday_ng" in request.form,
+            on_leave="on_leave" in request.form,
             car_commute="car_commute" in request.form,
             parking_slot=(request.form.get("parking_slot", "") or "").strip(),
             # 調理スタッフのみ新人/ベテランを保持（それ以外は未設定）
@@ -1259,6 +1262,7 @@ def create_app():
         staff.fixed_days_off = fixed_days_off
         staff.weekend_constraint = request.form.get("weekend_constraint", "")
         staff.holiday_ng = "holiday_ng" in request.form
+        staff.on_leave = "on_leave" in request.form
         # 駐車場（依頼文24）— 車通勤は care/cooking どちらも対象
         staff.car_commute = "car_commute" in request.form
         staff.parking_slot = (request.form.get("parking_slot", "") or "").strip()
@@ -2018,7 +2022,8 @@ def create_app():
                 "confirmed": True,
             }), 409
 
-        staffs = Staff.query.all()
+        # 休職中の職員は生成対象から除外（オンコールも含め一切割り当てない）。
+        staffs = Staff.query.filter_by(on_leave=False).all()
         if not staffs:
             return jsonify({"error": "職員が登録されていません"}), 400
 
@@ -2164,7 +2169,7 @@ def create_app():
                 dayoff_by_staff.setdefault(r.staff_id, set()).add(r.date.isoformat())
 
             oncall_eligible = []
-            for st in Staff.query.filter_by(has_phone_duty=True).order_by(Staff.id).all():
+            for st in Staff.query.filter_by(has_phone_duty=True, on_leave=False).order_by(Staff.id).all():
                 avail_wd = set(int(x) for x in st.available_days.split(",") if x.strip())
                 fixed_wd = (set(int(x) for x in st.fixed_days_off.split(",") if x.strip())
                             if st.fixed_days_off else set())
@@ -2382,8 +2387,8 @@ def create_app():
 
         generation_id = shifts[0].generation_id if shifts else None
 
-        # 職員一覧（department情報付き）
-        all_staff = Staff.query.order_by(Staff.id).all()
+        # 職員一覧（department情報付き）。休職中はカレンダー表示・印刷の対象外。
+        all_staff = Staff.query.filter_by(on_leave=False).order_by(Staff.id).all()
 
         # ⑧ 祝日リスト
         holidays = {}
@@ -2542,7 +2547,9 @@ def create_app():
         if not shifts:
             return None
 
-        staffs = Staff.query.order_by(Staff.id).all()
+        # 休職中の職員は印刷一覧に載せない（roster からも各シフト行からも除外）。
+        staffs = Staff.query.filter_by(on_leave=False).order_by(Staff.id).all()
+        on_leave_ids = {st.id for st in Staff.query.filter_by(on_leave=True).all()}
         warnings = ShiftWarning.query.filter_by(generation_id=generation_id).all()
 
         first_date = shifts[0].date
@@ -2556,6 +2563,9 @@ def create_app():
 
         shifts_data = []
         for s in shifts:
+            # 休職中の職員のシフト行は出力に含めない（念のための防御。通常は生成時点で除外済み）
+            if s.staff_id in on_leave_ids:
+                continue
             d = {
                 "date": s.date.isoformat(),
                 "staff_id": s.staff_id,

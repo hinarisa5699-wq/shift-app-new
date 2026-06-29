@@ -47,6 +47,8 @@ class Staff(db.Model):
     # "" = 制約なし, "one_off" = 土日どちらかは休み（毎週）
     holiday_ng = db.Column(db.Boolean, default=False)
     # True = 祝日は出勤不可
+    on_leave = db.Column(db.Boolean, default=False, nullable=False)
+    # True = 休職中（シフト生成・オンコールの対象外。一覧には残しバッジ表示）
 
     # --- 追加カラム (v3) ---
     job_category = db.Column(db.String(20), default="caregiver", nullable=False)
@@ -113,6 +115,7 @@ class Staff(db.Model):
             "gender": self.gender,
             "weekend_constraint": self.weekend_constraint or "",
             "holiday_ng": self.holiday_ng or False,
+            "on_leave": self.on_leave or False,
             "job_category": self.job_category or "caregiver",
             "role": self.role or "",
             "can_bath_assist": self.can_bath_assist or False,

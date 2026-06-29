@@ -234,6 +234,7 @@ function staffCsvConfirm(form) {
                     <tr class="hover:bg-gray-50 transition-colors">
                         <td class="px-6 py-4 whitespace-nowrap">
                             <span class="text-base font-semibold text-gray-900">{{ staff.name }}{% if staff.has_phone_duty %} <span class="text-red-500" title="オンコール担当者">★</span>{% endif %}</span>
+                            {% if staff.on_leave %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-amber-200 text-amber-900 ml-2" title="休職中（生成・印刷の対象外）">休職中</span>{% endif %}
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap">
                             {% if staff.job_category == 'cooking' %}

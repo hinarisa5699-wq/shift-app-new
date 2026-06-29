@@ -1367,6 +1367,7 @@ def _solve_care_with_fallback(
             "work_start_time": s.get("work_start_time", ""),
             "work_end_time": s.get("work_end_time", ""),
             "can_bath_assist": s.get("can_bath_assist", False),
+            "public_holiday_count": int(s.get("public_holiday_count", 0) or 0),
         }
 
     staff_ids = list(staff_by_id.keys())
@@ -1984,6 +1985,10 @@ def _solve_care(
     min_pw_hard_penalties = []
     for s in free_staff_ids:
         info = staff_by_id[s]
+        # 公休日数を指定した職員は「週の勤務日数の上下限」ではなく
+        # 「月の公休日数」で管理する（両者は矛盾し得るため。連勤上限は別途維持）。
+        if int(info.get("public_holiday_count", 0) or 0) > 0:
+            continue
         max_pw = info["max_days_per_week"]
         min_pw = info.get("min_days_per_week", 0)
         avail_set = set(info["available_days"])
@@ -2387,6 +2392,34 @@ def _solve_care(
     fairness_diff = model.new_int_var(0, num_days, "care_fairness_diff")
     model.add(fairness_diff == max_work - min_work)
 
+    # --- ソフト制約: 公休日数（月の休み日数を職員ごとに指定・ちょうど==N） ---
+    #   公休＝勤務以外の全日（事業所休業日・希望休・固定休・休養日）。
+    #   off日数 = num_days - work_count[s]。目標 = public_holiday_count（0=指定なし）。
+    #   ＝ work_count[s] を (num_days - 目標) に合わせる。過不足はソフトに最小化し、
+    #   人員不足等で満たせない月は警告のみ（無解化しない）。固定職員は対象外。
+    public_holiday_penalties = []
+    public_holiday_trackers = []  # (staff_id, target_off, over_var, under_var)
+    for s in free_staff_ids:
+        target_off = int(staff_by_id[s].get("public_holiday_count", 0) or 0)
+        if target_off <= 0:
+            continue
+        target_work = num_days - target_off
+        if target_work < 0:
+            target_work = 0
+        over = model.new_int_var(0, num_days, f"ph_over_s{s}")   # 働きすぎ＝公休不足
+        under = model.new_int_var(0, num_days, f"ph_under_s{s}")  # 働かなすぎ＝公休過多
+        model.add(work_count[s] - target_work == over - under)
+        public_holiday_penalties.append(over)
+        public_holiday_penalties.append(under)
+        public_holiday_trackers.append((s, target_off, over, under))
+    # 重み: 週下限と同等(num_days+1)*5。人員確保スラックより十分小さく、
+    #   総出勤日数最小化(headcount)は上回るので目標日数へ寄せられる。
+    public_holiday_weight = (num_days + 1) * 5
+    public_holiday_penalty = (
+        sum(public_holiday_penalties) * public_holiday_weight
+        if public_holiday_penalties else 0
+    )
+
     # ==================================================================
     # 依頼文41-(2): 訪問回数（日数）の平等化
     #   訪問可(can_visit)の全職員間で、訪問日数（VISIT_ASSIGNMENTS のいずれかに
@@ -2558,6 +2591,7 @@ def _solve_care(
             + gender_penalty + phone_fairness + placement_penalty_total
             + day2_count
             + late_oncall_penalty + visit_fairness_penalty
+            + public_holiday_penalty
         )
     else:
         model.minimize(
@@ -2567,6 +2601,7 @@ def _solve_care(
             + gender_penalty + phone_fairness + placement_penalty_total
             + day2_count
             + late_oncall_penalty + visit_fairness_penalty
+            + public_holiday_penalty
         )
 
     # ==================================================================
@@ -2761,6 +2796,25 @@ def _solve_care(
                            f"訪問可職員間の訪問日数の差（最大−最小）={vdiff}日",
             })
 
+    # ------------------------------------------------------------------
+    # 公休日数: 目標とずれた職員を警告（実公休＝num_days−実勤務日数）
+    # ------------------------------------------------------------------
+    for (s, target_off, over, under) in public_holiday_trackers:
+        actual_work = sum(
+            solver.value(x[s, d_idx, a])
+            for d_idx in range(num_days)
+            for a in CARE_WORKING_ASSIGNMENTS
+        )
+        actual_off = num_days - actual_work
+        if actual_off != target_off:
+            nm = staff_by_id[s].get("name", f"Staff_{s}")
+            warnings_data.append({
+                "date": all_dates[0].strftime("%Y-%m-%d"),
+                "warning_type": "public_holiday_unmet",
+                "message": f"公休日数: {nm} 目標{target_off}日 / 実際{actual_off}日"
+                           f"（差{actual_off - target_off:+d}日）",
+            })
+
     return shifts_data, warnings_data
 
 
@@ -2899,6 +2953,7 @@ def _solve_cooking_with_fallback(
             "experience": s.get("cooking_experience", "") or "",
             # 初出勤日（依頼文36・教育期間の起点）。"YYYY-MM-DD" or None
             "first_work_date": s.get("first_work_date") or None,
+            "public_holiday_count": int(s.get("public_holiday_count", 0) or 0),
         }
 
     staff_ids = list(staff_by_id.keys())
@@ -3145,6 +3200,9 @@ def _solve_cooking(
     cook_min_pw_penalties = []
     for s in free_staff_ids:
         info = staff_by_id[s]
+        # 公休日数を指定した職員は週の勤務日数ではなく月の公休日数で管理する。
+        if int(info.get("public_holiday_count", 0) or 0) > 0:
+            continue
         max_pw = info["max_days_per_week"]
         min_pw = info.get("min_days_per_week", 0)
         avail_set = set(info["available_days"])
@@ -3421,6 +3479,25 @@ def _solve_cooking(
     fairness_diff = model.new_int_var(0, num_days, "cook_fairness_diff")
     model.add(fairness_diff == max_work - min_work)
 
+    # --- ソフト制約: 公休日数（月の休み日数を職員ごとに指定・ちょうど==N） ---
+    #   公休＝勤務以外の全日。off日数 = num_days - work_count[s]。固定職員は対象外。
+    cook_ph_penalties = []
+    cook_ph_trackers = []  # (staff_id, target_off, over, under)
+    for s in free_staff_ids:
+        target_off = int(staff_by_id[s].get("public_holiday_count", 0) or 0)
+        if target_off <= 0:
+            continue
+        target_work = max(0, num_days - target_off)
+        over = model.new_int_var(0, num_days, f"cook_ph_over_s{s}")
+        under = model.new_int_var(0, num_days, f"cook_ph_under_s{s}")
+        model.add(work_count[s] - target_work == over - under)
+        cook_ph_penalties.append(over)
+        cook_ph_penalties.append(under)
+        cook_ph_trackers.append((s, target_off, over, under))
+    public_holiday_penalty = (
+        sum(cook_ph_penalties) * (num_days + 1) * 5 if cook_ph_penalties else 0
+    )
+
     if use_slack:
         total_slack = model.new_int_var(
             0, len(staff_ids) * num_days * num_intervals, "cook_total_slack"
@@ -3441,14 +3518,14 @@ def _solve_cooking(
         # 新人オンボーディング 同伴ミス（依頼文36→38・同一記号）。extra より強くして
         # 「同記号同伴のための2名化」が割に合うようにする（onboarding 5w > extra 2w）。
         onboarding_penalty = sum(onboarding_penalties) * (num_days + 1) * 5 if onboarding_penalties else 0
-        model.minimize(total_slack * penalty_weight + fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty)
+        model.minimize(total_slack * penalty_weight + fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty)
     else:
         cook_pw_penalty = sum(cook_min_pw_penalties) * (num_days + 1) * 10 if cook_min_pw_penalties else 0
         none_penalty = sum(none_by_day.values()) * (num_days + 1) * 50 if none_by_day else 0
         pair_penalty = pair_deficit * (num_days + 1) if pair_deficit is not None else 0
         extra_penalty = sum(extra_penalties) * (num_days + 1) * 2 if extra_penalties else 0
         onboarding_penalty = sum(onboarding_penalties) * (num_days + 1) * 5 if onboarding_penalties else 0
-        model.minimize(fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty)
+        model.minimize(fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty)
 
     # ==================================================================
     # ソルバー実行
@@ -3505,6 +3582,23 @@ def _solve_cooking(
                 "date": dt.strftime("%Y-%m-%d"),
                 "warning_type": "cook_combo_unassigned",
                 "message": "調理スタッフが足りず4通りの組み合わせを組めないため、この日の調理は未配置です。",
+            })
+
+    # 公休日数: 目標とずれた調理職員を警告（実公休＝num_days−実勤務日数）
+    for (s, target_off, over, under) in cook_ph_trackers:
+        actual_work = sum(
+            solver.value(x[s, d_idx, a])
+            for d_idx in range(num_days)
+            for a in cook_working
+        )
+        actual_off = num_days - actual_work
+        if actual_off != target_off:
+            nm = staff_by_id[s].get("name", f"Cook_{s}")
+            warnings_data.append({
+                "date": all_dates[0].strftime("%Y-%m-%d"),
+                "warning_type": "public_holiday_unmet",
+                "message": f"公休日数: {nm} 目標{target_off}日 / 実際{actual_off}日"
+                           f"（差{actual_off - target_off:+d}日）",
             })
 
     # ------------------------------------------------------------------

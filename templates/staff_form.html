@@ -412,6 +412,22 @@
             </div>
         </div>
 
+        <!-- 月の公休日数 -->
+        <div class="mb-8">
+            <label for="public_holiday_count" class="block text-lg font-semibold text-gray-700 mb-2">
+                月の公休日数（日）
+            </label>
+            <p class="text-gray-500 text-sm mb-2">
+                その月の休みの日数の目標です（勤務しない日＝事業所の休業日・希望休・固定休・その他の休みをすべて含みます）。
+                <strong>0＝指定なし（この制約をかけません）</strong>。指定するとその日数ちょうどになるよう調整し、人員の都合で合わない月は警告を出して生成は継続します。
+            </p>
+            <input type="number" id="public_holiday_count" name="public_holiday_count"
+                   min="0" max="31"
+                   value="{{ staff.public_holiday_count if staff and staff.public_holiday_count else 0 }}"
+                   class="w-32 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+            <span class="text-lg text-gray-600 ml-2">日</span>
+        </div>
+
         <!-- ボタン -->
         <div class="flex items-center space-x-4 border-t border-gray-200 pt-6">
             <button type="submit"

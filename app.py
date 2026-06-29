@@ -292,6 +292,8 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE staff ADD COLUMN holiday_ng BOOLEAN DEFAULT 0")
     if "on_leave" not in columns:
         cursor.execute("ALTER TABLE staff ADD COLUMN on_leave BOOLEAN NOT NULL DEFAULT 0")
+    if "public_holiday_count" not in columns:
+        cursor.execute("ALTER TABLE staff ADD COLUMN public_holiday_count INTEGER NOT NULL DEFAULT 0")
     # --- v3: 区分・役割・入浴介助可・勤務時間 ---
     if "job_category" not in columns:
         cursor.execute(
@@ -1168,6 +1170,7 @@ def create_app():
             weekend_constraint=request.form.get("weekend_constraint", ""),
             holiday_ng="holiday_ng" in request.form,
             on_leave="on_leave" in request.form,
+            public_holiday_count=max(0, safe_int(request.form.get("public_holiday_count"), 0)),
             car_commute="car_commute" in request.form,
             parking_slot=(request.form.get("parking_slot", "") or "").strip(),
             # 調理スタッフのみ新人/ベテランを保持（それ以外は未設定）
@@ -1266,6 +1269,7 @@ def create_app():
         staff.weekend_constraint = request.form.get("weekend_constraint", "")
         staff.holiday_ng = "holiday_ng" in request.form
         staff.on_leave = "on_leave" in request.form
+        staff.public_holiday_count = max(0, safe_int(request.form.get("public_holiday_count"), 0))
         # 駐車場（依頼文24）— 車通勤は care/cooking どちらも対象
         staff.car_commute = "car_commute" in request.form
         staff.parking_slot = (request.form.get("parking_slot", "") or "").strip()
@@ -2116,6 +2120,7 @@ def create_app():
                     s.first_work_date.isoformat()
                     if getattr(s, "first_work_date", None) else None
                 ),
+                "public_holiday_count": getattr(s, "public_holiday_count", 0) or 0,
             }
             if s.staff_group == "cooking":
                 cook_dicts.append(d)

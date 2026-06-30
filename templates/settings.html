@@ -338,7 +338,8 @@
                 <span class="ml-3 text-lg font-semibold text-gray-800">公休日数を自動算出する（法定労働時間ベース）</span>
             </label>
             <p class="text-gray-600 text-sm mt-2 ml-8">
-                ONにすると、生成する月の暦日数と各職員の「週の勤務日数の上限」から公休日数を自動で決めます（職員フォームの手入力の公休日数より優先）。
+                ONにすると、生成する月の暦日数から公休日数を自動で決めます（職員フォームの手入力の公休日数より優先）。
+                <strong>正社員（週5）を基準</strong>に算出し、週4・週3など短時間職員は<strong>週5から1日減るごとに所定労働日数を −4日</strong>（＝公休が増える）として補正します。
                 <strong>祝日は労働日として扱い、公休には数えません。</strong>
             </p>
             <div class="mt-3 ml-8 flex items-center gap-2">
@@ -352,11 +353,15 @@
             <div class="text-gray-600 text-sm mt-3 ml-8">
                 <p class="font-medium">計算式：</p>
                 <ul class="list-disc list-inside mt-1">
-                    <li>月の法定労働時間 = 40時間 × (暦日数 ÷ 7)</li>
-                    <li>所定労働日数(上限) = 月の法定労働時間 ÷ 1日の所定労働時間</li>
+                    <li>正社員(週5)の所定労働日数 = 40時間 × 暦日数 ÷ 7 ÷ 1日の所定労働時間</li>
+                    <li>短時間補正：所定労働日数 − (5 − 週の勤務日数) × 4日</li>
                     <li>公休数 = 暦日数 − 所定労働日数</li>
                 </ul>
-                <p class="mt-1">例：2026年7月（31日）・8時間 → 40×31÷7÷8≒22日勤務 → <strong>公休9日</strong>。週4勤務の方は <strong>公休14日</strong>。</p>
+                <p class="mt-1">例（8時間）：</p>
+                <ul class="list-disc list-inside mt-1">
+                    <li>31日：正社員(週5)→所定22日・<strong>公休9日</strong>／週4→所定18日・<strong>公休13日</strong>／週3→所定14日・<strong>公休17日</strong></li>
+                    <li>28日：正社員(週5)→所定20日・<strong>公休8日</strong>／週4→所定16日・<strong>公休12日</strong>／週3→所定12日・<strong>公休16日</strong></li>
+                </ul>
             </div>
         </div>
 

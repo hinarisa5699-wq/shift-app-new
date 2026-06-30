@@ -2108,24 +2108,33 @@ def create_app():
         for w in StaffWorkableDate.query.all():
             workable_dates_map.setdefault(w.staff_id, []).append(w.date.isoformat())
 
-        # 公休日数の自動算出（法定労働時間ベース）。ON時は手入力より優先。
-        #   週所定労働時間 = min(週の勤務日数上限 × 1日の所定労働時間, 40)   ※法定40時間で頭打ち
-        #   所定労働日数(上限) = floor(週所定労働時間 × 暦日数 ÷ 7 ÷ 1日の所定労働時間)
-        #   公休数 = 暦日数 − 所定労働日数
+        # 公休日数の自動算出。ON時は手入力より優先。
+        #   正社員(週5)を基準に算出し、週4・週3など短時間職員は所定労働日数を減らす。
+        #     正社員(週5)所定労働日数 = floor(40時間 × 暦日数 ÷ 7 ÷ 1日の所定労働時間)
+        #       → 31日:22 / 30日:21 / 29日:20 / 28日:20（＝公休 9/9/9/8）
+        #     短時間: 週5から1日減るごとに所定労働日数を -4日
+        #       （週4 = -4日, 週3 = -8日, 週2 = -12日 …）
+        #     所定労働日数 = max(0, 正社員所定 − (5 − 週勤務日数) × 4)
+        #     公休数 = 暦日数 − 所定労働日数
         #   ※祝日は労働日扱い（公休に数えない）。
         auto_ph_enabled = bool(getattr(settings_obj, "auto_public_holidays", False))
         _calendar_days = calendar.monthrange(year, month)[1]
         _daily_hours = float(getattr(settings_obj, "daily_work_hours", 8.0) or 8.0)
         if _daily_hours <= 0:
             _daily_hours = 8.0
+        # 正社員(週5・法定40時間)基準の所定労働日数
+        _fulltime_shotei = int(
+            min(5 * _daily_hours, 40.0) * _calendar_days / 7.0 / _daily_hours
+        )
 
         def _effective_public_holidays(s):
-            """auto_ph_enabled時は法定労働時間ベースの公休日数を返す（手入力より優先）。"""
+            """auto_ph_enabled時は正社員基準＋短時間補正の公休日数を返す（手入力より優先）。"""
             if not auto_ph_enabled:
                 return getattr(s, "public_holiday_count", 0) or 0
             week_days = s.max_days_per_week or 5
-            weekly_hours = min(week_days * _daily_hours, 40.0)
-            shotei_work_days = int(weekly_hours * _calendar_days / 7.0 / _daily_hours)
+            # 週5から1日減るごとに所定労働日数を -4日（週4=-4, 週3=-8 …）
+            reduction = max(0, 5 - week_days) * 4
+            shotei_work_days = max(0, _fulltime_shotei - reduction)
             return max(0, _calendar_days - shotei_work_days)
 
         # ORM → dict 変換（部門別に分割）

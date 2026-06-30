@@ -1767,6 +1767,21 @@ def _solve_care(
             model.add(x[s, d_idx, "visit_pm"] == 0)
 
     # ==================================================================
+    # 制約: 半日デイ（day_pattern3=デイ午前のみ / day_pattern4=デイ午後のみ）は
+    #   通常勤務（終日勤務可能）の職員には割り当てない（依頼: 半日シフトは作らない）。
+    #   ただし「午前のみ勤務(am_only)」の職員は day_pattern3 が、「午後のみ勤務(pm_only)」
+    #   の職員は day_pattern4 が唯一の勤務形のため、その場合のみ許可して締め出さない。
+    #   （兼務パターン day_p3_visit_pm / visit_am_day_p4 は別コードのため影響しない）
+    # ==================================================================
+    for s in staff_ids:
+        ts = staff_by_id[s].get("available_time_slots", "full_day")
+        for d_idx in range(num_days):
+            if ts != "am_only":
+                model.add(x[s, d_idx, "day_pattern3"] == 0)
+            if ts != "pm_only":
+                model.add(x[s, d_idx, "day_pattern4"] == 0)
+
+    # ==================================================================
     # 制約: 勤務可能曜日の遵守
     # ==================================================================
     for s in free_staff_ids:

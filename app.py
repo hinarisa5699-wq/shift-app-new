@@ -389,6 +389,19 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN late_consecutive_mode VARCHAR(10) NOT NULL DEFAULT 'soft'")
     if "late_fairness_mode" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN late_fairness_mode VARCHAR(10) NOT NULL DEFAULT 'soft'")
+    # 依頼文42-43: 早番の連日回避・早番/遅番/オンコール回数の平等化
+    if "early_consecutive_mode" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN early_consecutive_mode VARCHAR(10) NOT NULL DEFAULT 'soft'")
+    if "early_fairness_mode" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN early_fairness_mode VARCHAR(10) NOT NULL DEFAULT 'soft'")
+    if "early_fairness_max" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN early_fairness_max INTEGER NOT NULL DEFAULT 1")
+    if "late_fairness_max" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN late_fairness_max INTEGER NOT NULL DEFAULT 1")
+    if "oncall_fairness_mode" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN oncall_fairness_mode VARCHAR(10) NOT NULL DEFAULT 'soft'")
+    if "oncall_fairness_max" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN oncall_fairness_max INTEGER NOT NULL DEFAULT 1")
 
     # GeneratedShift テーブル
     columns = [row[1] for row in cursor.execute("PRAGMA table_info(generated_shift)").fetchall()]
@@ -1719,6 +1732,19 @@ def create_app():
         # 遅番日数の平等化モード（off/soft/hard、既定soft）
         _lfm = (request.form.get("late_fairness_mode", "soft") or "soft").strip().lower()
         s.late_fairness_mode = _lfm if _lfm in ("off", "soft", "hard") else "soft"
+        # 依頼文42: 早番の連日回避モード（off/soft/hard、既定soft）
+        _ecm = (request.form.get("early_consecutive_mode", "soft") or "soft").strip().lower()
+        s.early_consecutive_mode = _ecm if _ecm in ("off", "soft", "hard") else "soft"
+        # 依頼文43: 早番日数の平等化モード（off/soft/hard、既定soft）
+        _efm = (request.form.get("early_fairness_mode", "soft") or "soft").strip().lower()
+        s.early_fairness_mode = _efm if _efm in ("off", "soft", "hard") else "soft"
+        # 依頼文43: 早番/遅番平等化の hard 上限 spread（max−min ≤ N、1以上）
+        s.early_fairness_max = max(0, safe_int(request.form.get("early_fairness_max"), 1))
+        s.late_fairness_max = max(0, safe_int(request.form.get("late_fairness_max"), 1))
+        # 依頼文43: オンコール回数の平等化モード（off/soft/hard、既定soft）＋hard上限
+        _ofm = (request.form.get("oncall_fairness_mode", "soft") or "soft").strip().lower()
+        s.oncall_fairness_mode = _ofm if _ofm in ("off", "soft", "hard") else "soft"
+        s.oncall_fairness_max = max(0, safe_int(request.form.get("oncall_fairness_max"), 1))
         # 公休日数の自動算出（法定労働時間ベース）
         s.auto_public_holidays = "auto_public_holidays" in request.form
         try:
@@ -2261,6 +2287,8 @@ def create_app():
                 oncall_eligible,
                 month_dates,
                 max_consecutive=settings_dict.get("phone_duty_max_consecutive", 1),
+                fairness_mode=settings_dict.get("oncall_fairness_mode", "soft"),
+                fairness_max=settings_dict.get("oncall_fairness_max", 1),
             )
             # オンコール当番の翌日を強制休み（翌日が当月内のもののみ）
             last_dom = calendar.monthrange(year, month)[1]

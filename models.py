@@ -374,6 +374,16 @@ class ShiftSettings(db.Model):
     late_consecutive_mode = db.Column(db.String(10), default="soft", nullable=False)
     # 遅番日数の介護スタッフ間平等化モード "off"/"soft"/"hard"（既定 soft）
     late_fairness_mode = db.Column(db.String(10), default="soft", nullable=False)
+    # 依頼文42: 早番の連日回避モード "off"/"soft"/"hard"（既定 soft＝同一職員が早番を連日入らない）
+    early_consecutive_mode = db.Column(db.String(10), default="soft", nullable=False)
+    # 依頼文43: 早番日数の介護スタッフ間平等化モード "off"/"soft"/"hard"（既定 soft）
+    early_fairness_mode = db.Column(db.String(10), default="soft", nullable=False)
+    # 依頼文43: 早番/遅番平等化を hard にしたときの spread 上限（max−min ≤ この値）。既定 1。
+    early_fairness_max = db.Column(db.Integer, default=1, nullable=False)
+    late_fairness_max = db.Column(db.Integer, default=1, nullable=False)
+    # 依頼文43: オンコール回数の平等化モード "off"/"soft"/"hard"（既定 soft）＋hard時のspread上限。
+    oncall_fairness_mode = db.Column(db.String(10), default="soft", nullable=False)
+    oncall_fairness_max = db.Column(db.Integer, default=1, nullable=False)
     # 公休日数を法定労働時間ベースで自動算出するか（既定 off）。
     #   ON時、生成する月について各職員の公休日数を次式で自動反映（手入力より優先）:
     #     週所定労働時間 = min(週の勤務日数上限 × 1日の所定労働時間, 40)
@@ -415,6 +425,12 @@ class ShiftSettings(db.Model):
             "visit_fairness_mode": self.visit_fairness_mode or "soft",
             "late_consecutive_mode": self.late_consecutive_mode or "soft",
             "late_fairness_mode": self.late_fairness_mode or "soft",
+            "early_consecutive_mode": self.early_consecutive_mode or "soft",
+            "early_fairness_mode": self.early_fairness_mode or "soft",
+            "early_fairness_max": self.early_fairness_max if self.early_fairness_max is not None else 1,
+            "late_fairness_max": self.late_fairness_max if self.late_fairness_max is not None else 1,
+            "oncall_fairness_mode": self.oncall_fairness_mode or "soft",
+            "oncall_fairness_max": self.oncall_fairness_max if self.oncall_fairness_max is not None else 1,
             "auto_public_holidays": self.auto_public_holidays or False,
             "daily_work_hours": self.daily_work_hours if self.daily_work_hours is not None else 8.0,
         }

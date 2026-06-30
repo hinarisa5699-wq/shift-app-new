@@ -206,14 +206,62 @@
                     遅番日数の平等化
                 </label>
                 {% set lfm = settings.late_fairness_mode if settings and settings.late_fairness_mode else 'soft' %}
-                <select id="late_fairness_mode" name="late_fairness_mode"
+                <div class="flex items-center gap-3">
+                    <select id="late_fairness_mode" name="late_fairness_mode"
+                            class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
+                        <option value="off"  {% if lfm == 'off'  %}selected{% endif %}>オフ（制約なし）</option>
+                        <option value="soft" {% if lfm == 'soft' %}selected{% endif %}>ソフト（できるだけ揃える・既定）</option>
+                        <option value="hard" {% if lfm == 'hard' %}selected{% endif %}>ハード（spread上限以内に厳守）</option>
+                    </select>
+                    <label class="text-sm text-gray-600">ハード上限(日)
+                        <input type="number" min="0" name="late_fairness_max"
+                               value="{{ settings.late_fairness_max if settings and settings.late_fairness_max is not none else 1 }}"
+                               class="w-20 px-2 py-2 border border-gray-300 rounded-lg ml-1">
+                    </label>
+                </div>
+                <p class="text-gray-600 text-sm mt-1">
+                    遅番に入れる介護職員どうしで、遅番に入る日数の差（最大−最小）をできるだけ小さくします（看護師・PT・スポット勤務者は対象外）。ハードは差が「上限(日)」以内になるよう厳守します（人員的に不可能な月は生成できないことがあります）。達成度（差の日数）は生成後の警告に表示します。
+                </p>
+            </div>
+
+            <!-- 早番の連日回避（依頼文42） -->
+            <div class="mt-6 pt-4 border-t border-green-200">
+                <label for="early_consecutive_mode" class="block text-base font-medium text-gray-700 mb-2">
+                    早番の連日回避
+                </label>
+                {% set ecm = settings.early_consecutive_mode if settings and settings.early_consecutive_mode else 'soft' %}
+                <select id="early_consecutive_mode" name="early_consecutive_mode"
                         class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
-                    <option value="off"  {% if lfm == 'off'  %}selected{% endif %}>オフ（制約なし）</option>
-                    <option value="soft" {% if lfm == 'soft' %}selected{% endif %}>ソフト（できるだけ揃える・既定）</option>
-                    <option value="hard" {% if lfm == 'hard' %}selected{% endif %}>ハード（できる限り揃える）</option>
+                    <option value="off"  {% if ecm == 'off'  %}selected{% endif %}>オフ（制約なし）</option>
+                    <option value="soft" {% if ecm == 'soft' %}selected{% endif %}>ソフト（できるだけ連日にしない・既定）</option>
+                    <option value="hard" {% if ecm == 'hard' %}selected{% endif %}>ハード（連日を禁止）</option>
                 </select>
                 <p class="text-gray-600 text-sm mt-1">
-                    遅番に入れる介護職員どうしで、遅番に入る日数の差（最大−最小）をできるだけ小さくします（看護師・PTは対象外）。達成度（差の日数）は生成後の警告に表示します。
+                    同じ職員が早番(7:30-16:30)に連日入らないようにします。人員が足りず避けられない日があるためソフトが既定です（連日になった件数は生成後の警告に表示）。ハードは連日を完全に禁止します。
+                </p>
+            </div>
+
+            <!-- 早番日数の平等化（依頼文43） -->
+            <div class="mt-6 pt-4 border-t border-green-200">
+                <label for="early_fairness_mode" class="block text-base font-medium text-gray-700 mb-2">
+                    早番日数の平等化
+                </label>
+                {% set efm = settings.early_fairness_mode if settings and settings.early_fairness_mode else 'soft' %}
+                <div class="flex items-center gap-3">
+                    <select id="early_fairness_mode" name="early_fairness_mode"
+                            class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
+                        <option value="off"  {% if efm == 'off'  %}selected{% endif %}>オフ（制約なし）</option>
+                        <option value="soft" {% if efm == 'soft' %}selected{% endif %}>ソフト（できるだけ揃える・既定）</option>
+                        <option value="hard" {% if efm == 'hard' %}selected{% endif %}>ハード（spread上限以内に厳守）</option>
+                    </select>
+                    <label class="text-sm text-gray-600">ハード上限(日)
+                        <input type="number" min="0" name="early_fairness_max"
+                               value="{{ settings.early_fairness_max if settings and settings.early_fairness_max is not none else 1 }}"
+                               class="w-20 px-2 py-2 border border-gray-300 rounded-lg ml-1">
+                    </label>
+                </div>
+                <p class="text-gray-600 text-sm mt-1">
+                    早番に入れる介護職員どうしで、早番に入る日数の差（最大−最小）をできるだけ小さくします（看護師・PT・スポット勤務者は対象外。担当可能なら回数の多少に関わらず全員が対象）。ハードは差が「上限(日)」以内になるよう厳守します。達成度（差の日数）は生成後の警告に表示します。
                 </p>
             </div>
         </div>
@@ -495,6 +543,30 @@
                     <option value="3" {% if settings and settings.phone_duty_max_consecutive == 3 %}selected{% endif %}>3日まで</option>
                     <option value="0" {% if settings and settings.phone_duty_max_consecutive == 0 %}selected{% endif %}>制限なし</option>
                 </select>
+            </div>
+
+            <!-- オンコール回数の平等化（依頼文43） -->
+            <div class="mt-4 pt-4 border-t border-red-100">
+                <label for="oncall_fairness_mode" class="block text-base font-medium text-gray-700 mb-2">
+                    オンコール回数の平等化
+                </label>
+                {% set ofm = settings.oncall_fairness_mode if settings and settings.oncall_fairness_mode else 'soft' %}
+                <div class="flex items-center gap-3">
+                    <select id="oncall_fairness_mode" name="oncall_fairness_mode"
+                            class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-400 focus:border-red-400 bg-white">
+                        <option value="off"  {% if ofm == 'off'  %}selected{% endif %}>オフ（回数で均さない）</option>
+                        <option value="soft" {% if ofm == 'soft' %}selected{% endif %}>ソフト（できるだけ揃える・既定）</option>
+                        <option value="hard" {% if ofm == 'hard' %}selected{% endif %}>ハード（spread上限以内に厳守）</option>
+                    </select>
+                    <label class="text-sm text-gray-600">ハード上限(回)
+                        <input type="number" min="0" name="oncall_fairness_max"
+                               value="{{ settings.oncall_fairness_max if settings and settings.oncall_fairness_max is not none else 1 }}"
+                               class="w-20 px-2 py-2 border border-gray-300 rounded-lg ml-1">
+                    </label>
+                </div>
+                <p class="text-gray-600 text-sm mt-1">
+                    オンコール担当者どうしで、当番に入る回数の差（最大−最小）をできるだけ小さくします。ハードは差が「上限(回)」以内になるよう厳守します（上限を超えずに入れられる人がいない日は未割当として警告）。出勤可能日が極端に少ないスポット担当者は基準から除外します。
+                </p>
             </div>
         </div>
 

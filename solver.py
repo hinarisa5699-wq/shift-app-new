@@ -464,7 +464,8 @@ def generate_shift(
 # ===========================================================================
 # オンコール（電話当番）割り当て — 出勤と独立した後処理
 # ===========================================================================
-def assign_oncall(eligible_staff: list, dates: list, max_consecutive: int = 1):
+def assign_oncall(eligible_staff: list, dates: list, max_consecutive: int = 1,
+                  fairness_mode: str = "soft", fairness_max: int = 1):
     """オンコール担当を1日1名、各職員の制約を守って割り当てる（決定的）。
 
     eligible_staff: [{"id": int, "name": str, "unavailable": set(isoformat日付)}, ...]
@@ -473,11 +474,27 @@ def assign_oncall(eligible_staff: list, dates: list, max_consecutive: int = 1):
     dates: [datetime.date, ...]  対象月の全日（毎日1名割り当てを試みる）
     max_consecutive: 同一人物が連続で当番に入れる最大日数
                      （既定1＝連続禁止 / 0＝制限なし）
+    fairness_mode: オンコール回数の平等化（依頼文43）。
+        "off"  … 回数で均さない（直近に入った日が古い順の純ローテーション）
+        "soft" … 当番回数の少ない人を優先（spread最小化・既定）
+        "hard" … spread（最大−最小）≤ fairness_max を厳守。上限を超えずに
+                 割り当てられる担当者がいない日は無理に入れず警告（未割当）。
+        ※ 平等化の基準（active）は「構造的に出勤日数が十分にある担当者」とし、
+          出勤可能日が極端に少ないスポット職員は基準・spread集計から除外する
+          （訪問/遅番平等化が workable_dates 職員を除外するのと同じ思想）。
+    fairness_max: hard 時の spread 上限（max−min の許容値）。
 
     戻り値: (assignments, warnings)
         assignments: [{"date": date, "staff_id": int}, ...]
         warnings:    [{"date": str, "warning_type": str, "message": str}, ...]
     """
+    fairness_mode = (fairness_mode or "soft").strip().lower()
+    if fairness_mode not in ("off", "soft", "hard"):
+        fairness_mode = "soft"
+    try:
+        fairness_max = max(0, int(fairness_max))
+    except (TypeError, ValueError):
+        fairness_max = 1
     assignments: list = []
     warnings: list = []
 
@@ -498,6 +515,23 @@ def assign_oncall(eligible_staff: list, dates: list, max_consecutive: int = 1):
     last_day = {sid: -1 for sid in eligible_ids}  # 直近に当番だった日index（公平性のタイブレーク）
     prev_staff = None
     prev_run = 0  # prev_staff が直前まで連続している日数
+
+    # 平等化の基準集合（active）= 当月のオンコール可能日が月の半分以上ある担当者。
+    #   出勤可能日が極端に少ないスポット職員を基準に含めると spread が見かけ上ふくらむため除外。
+    n_days = len(dates)
+    avail_count = {
+        sid: sum(1 for d in dates if d.isoformat() not in unavailable[sid])
+        for sid in eligible_ids
+    }
+    active_ids = [sid for sid in eligible_ids if avail_count[sid] >= (n_days // 2)]
+    if not active_ids:
+        active_ids = list(eligible_ids)
+
+    def _sort_key(sid):
+        # off=回数で均さない（純ローテーション）／ soft・hard=回数の少ない順
+        if fairness_mode == "off":
+            return (last_day[sid], sid)
+        return (counts[sid], last_day[sid], sid)
 
     for i, d in enumerate(dates):
         d_iso = d.isoformat()
@@ -527,8 +561,27 @@ def assign_oncall(eligible_staff: list, dates: list, max_consecutive: int = 1):
             prev_run = 0
             continue
 
-        # 公平性: 当番回数が少ない → 最後に入った日が古い → id昇順 で決定的に選ぶ
-        chosen = min(candidates, key=lambda sid: (counts[sid], last_day[sid], sid))
+        # hard: spread上限を厳守。active職員の最小回数+上限 を超える割当を禁止。
+        #   （スポット職員は基準外なので上限判定から除外＝coverage優先で入れてよい）
+        if fairness_mode == "hard":
+            base_min = min(counts[sid] for sid in active_ids)
+            cap = base_min + fairness_max
+            hard_cands = [c for c in candidates if (c not in active_ids) or counts[c] < cap]
+            if hard_cands:
+                candidates = hard_cands
+            else:
+                # 上限を超えずに入れられる人がいない → この日は無理に割り当てず警告
+                warnings.append({
+                    "date": d_iso,
+                    "warning_type": "oncall_fairness_cap",
+                    "message": f"オンコール回数の平等化（hard）: spread上限{fairness_max}を超えずに"
+                               "割り当てられる担当者がいないため、この日は未割当にしました。",
+                })
+                prev_staff = None
+                prev_run = 0
+                continue
+
+        chosen = min(candidates, key=_sort_key)
 
         assignments.append({"date": d, "staff_id": chosen})
         counts[chosen] += 1
@@ -538,6 +591,18 @@ def assign_oncall(eligible_staff: list, dates: list, max_consecutive: int = 1):
         else:
             prev_staff = chosen
             prev_run = 1
+
+    # 平等化の達成度（active職員間の spread）を情報として報告（依頼文43）。
+    if fairness_mode in ("soft", "hard") and active_ids and dates:
+        active_counts = [counts[sid] for sid in active_ids]
+        spread = max(active_counts) - min(active_counts)
+        if spread > 0:
+            warnings.append({
+                "date": dates[0].isoformat(),
+                "warning_type": "oncall_fairness_info",
+                "message": f"オンコール回数の平等化（{fairness_mode}）: "
+                           f"主要担当者間の回数の差（最大−最小）={spread}回",
+            })
 
     return assignments, warnings
 
@@ -1424,6 +1489,19 @@ def _solve_care_with_fallback(
     late_consecutive_mode = (settings.get("late_consecutive_mode", "soft") or "soft").lower()
     # 遅番日数の介護スタッフ間平等化モード（off/soft/hard、既定 soft）。
     late_fairness_mode = (settings.get("late_fairness_mode", "soft") or "soft").lower()
+    # 依頼文42: 早番の連日回避モード（off/soft/hard、既定 soft）。
+    early_consecutive_mode = (settings.get("early_consecutive_mode", "soft") or "soft").lower()
+    # 依頼文43: 早番日数の介護スタッフ間平等化モード（off/soft/hard、既定 soft）。
+    early_fairness_mode = (settings.get("early_fairness_mode", "soft") or "soft").lower()
+    # 依頼文43: 早番/遅番平等化を hard にしたときの spread 上限（max−min ≤ N、既定 1）。
+    try:
+        early_fairness_max = max(0, int(settings.get("early_fairness_max", 1)))
+    except (TypeError, ValueError):
+        early_fairness_max = 1
+    try:
+        late_fairness_max = max(0, int(settings.get("late_fairness_max", 1)))
+    except (TypeError, ValueError):
+        late_fairness_max = 1
 
     # 相談員の介護業務参加モード（依頼文32）: "off"/"soft"/"hard"（既定 off）
     counselor_care_mode = settings.get("counselor_care_mode", "off") or "off"
@@ -1476,6 +1554,10 @@ def _solve_care_with_fallback(
         visit_fairness_mode=visit_fairness_mode,
         late_consecutive_mode=late_consecutive_mode,
         late_fairness_mode=late_fairness_mode,
+        early_consecutive_mode=early_consecutive_mode,
+        early_fairness_mode=early_fairness_mode,
+        early_fairness_max=early_fairness_max,
+        late_fairness_max=late_fairness_max,
         use_slack=False,
         locked_assignments=locked_assignments or {},
     )
@@ -1512,6 +1594,10 @@ def _solve_care_with_fallback(
         visit_fairness_mode=visit_fairness_mode,
         late_consecutive_mode=late_consecutive_mode,
         late_fairness_mode=late_fairness_mode,
+        early_consecutive_mode=early_consecutive_mode,
+        early_fairness_mode=early_fairness_mode,
+        early_fairness_max=early_fairness_max,
+        late_fairness_max=late_fairness_max,
         use_slack=True,
         locked_assignments=locked_assignments or {},
     )
@@ -1558,6 +1644,10 @@ def _solve_care_with_fallback(
         visit_fairness_mode=visit_fairness_mode,
         late_consecutive_mode=late_consecutive_mode,
         late_fairness_mode=late_fairness_mode,
+        early_consecutive_mode=early_consecutive_mode,
+        early_fairness_mode=early_fairness_mode,
+        early_fairness_max=early_fairness_max,
+        late_fairness_max=late_fairness_max,
         use_slack=True,
         locked_assignments=locked_assignments or {},
     )
@@ -1619,6 +1709,10 @@ def _solve_care(
     visit_fairness_mode: str = "soft",
     late_consecutive_mode: str = "soft",
     late_fairness_mode: str = "soft",
+    early_consecutive_mode: str = "soft",
+    early_fairness_mode: str = "soft",
+    early_fairness_max: int = 1,
+    late_fairness_max: int = 1,
     use_slack: bool = False,
     locked_assignments: dict = None,
 ):
@@ -2254,6 +2348,28 @@ def _solve_care(
         if late_consec_penalties else 0
     )
 
+    # --- 早番(early) の連日回避（依頼文42・遅番と同方式で新規配線） ---
+    #   依頼文40-Cで一度廃止された早番連日回避を、soft/hard/off トグルで再配線。
+    #   soft: 連日（カレンダー連日かつ両日早番）件数をペナルティ化 / hard: 連続2日早番を禁止。
+    early_consecutive_mode = (early_consecutive_mode or "soft").lower()
+    early_consec_penalties = []
+    early_consec_trackers = []  # (staff_id, d_idx, viol_var)
+    if early_consecutive_mode in ("soft", "hard"):
+        for s in staff_ids:
+            for d_idx in range(num_days - 1):
+                if early_consecutive_mode == "hard":
+                    model.add(x[s, d_idx, "early"] + x[s, d_idx + 1, "early"] <= 1)
+                else:  # soft: v=1 のとき連日早番（両日とも early）
+                    v = model.new_bool_var(f"early_consec_s{s}_d{d_idx}")
+                    model.add(x[s, d_idx, "early"] + x[s, d_idx + 1, "early"] - 1 <= v)
+                    early_consec_penalties.append(v)
+                    early_consec_trackers.append((s, d_idx, v))
+    early_consec_weight = (num_days + 1) * 3 if early_consecutive_mode == "soft" else 0
+    early_consec_penalty = (
+        sum(early_consec_penalties) * early_consec_weight
+        if early_consec_penalties else 0
+    )
+
     # --- 遅番日数の平等化（介護スタッフ間） ---
     late_fairness_mode = (late_fairness_mode or "soft").lower()
     late_fair_diff = 0
@@ -2293,10 +2409,58 @@ def _solve_care(
             model.add(min_late <= late_day_count[s])
         late_fair_diff = model.new_int_var(0, num_days, "care_late_fairness_diff")
         model.add(late_fair_diff == max_late - min_late)
+        # hard: spread（最大−最小）≤ late_fairness_max を厳守（依頼文43）。
+        #   soft/hard とも penalty で最小化しつつ、hard は上限を真のハード制約で課す。
+        if late_fairness_mode == "hard":
+            model.add(late_fair_diff <= late_fairness_max)
         late_fairness_weight = (
             (num_days + 1) * 2 if late_fairness_mode == "hard" else (num_days + 1)
         )
         late_fairness_penalty = late_fair_diff * late_fairness_weight
+
+    # --- 早番日数の平等化（介護スタッフ間・依頼文43・遅番と同方式） ---
+    early_fairness_mode = (early_fairness_mode or "soft").lower()
+    early_fair_diff = 0
+    early_fairness_penalty = 0
+    # 平等化プール = 看護師/PT を除く介護職員のうち、構造的に早番に入れる職員。
+    #   現状の早番回数の多寡では除外しない（依頼文43: 担当可能なら全員対象）。
+    early_capable_ids = []
+    for s in staff_ids:
+        if s in nurse_ids:
+            continue
+        if nurse_pt_qual_ids and nurse_pt_qual_ids.intersection(
+            set(staff_by_id[s].get("qualification_ids", []))
+        ):
+            continue
+        info = staff_by_id[s]
+        if not _has_any_available_day(info):
+            continue
+        # スポット/希望日のみ勤務者は構造的に出勤が少なく差がふくらむため除外（遅番平等化と同じ）。
+        if info.get("workable_dates"):
+            continue
+        allow = _care_allowable_working_assignments(
+            info, set((allowed_patterns or {}).get(s, ()) or ())
+        )
+        if "early" in allow:
+            early_capable_ids.append(s)
+    if early_fairness_mode in ("soft", "hard") and len(early_capable_ids) >= 2:
+        early_day_count = {
+            s: sum(x[s, d_idx, "early"] for d_idx in range(num_days))
+            for s in early_capable_ids
+        }
+        max_early = model.new_int_var(0, num_days, "care_max_early")
+        min_early = model.new_int_var(0, num_days, "care_min_early")
+        for s in early_capable_ids:
+            model.add(max_early >= early_day_count[s])
+            model.add(min_early <= early_day_count[s])
+        early_fair_diff = model.new_int_var(0, num_days, "care_early_fairness_diff")
+        model.add(early_fair_diff == max_early - min_early)
+        if early_fairness_mode == "hard":
+            model.add(early_fair_diff <= early_fairness_max)
+        early_fairness_weight = (
+            (num_days + 1) * 2 if early_fairness_mode == "hard" else (num_days + 1)
+        )
+        early_fairness_penalty = early_fair_diff * early_fairness_weight
 
     # ==================================================================
     # 依頼文41-(1): 遅番×オンコール禁止
@@ -2702,6 +2866,7 @@ def _solve_care(
             + day2_count
             + late_oncall_penalty + visit_fairness_penalty
             + late_consec_penalty + late_fairness_penalty
+            + early_consec_penalty + early_fairness_penalty
             + public_holiday_penalty
         )
     else:
@@ -2713,6 +2878,7 @@ def _solve_care(
             + day2_count
             + late_oncall_penalty + visit_fairness_penalty
             + late_consec_penalty + late_fairness_penalty
+            + early_consec_penalty + early_fairness_penalty
             + public_holiday_penalty
         )
 
@@ -2931,6 +3097,31 @@ def _solve_care(
                 "warning_type": "late_fairness_info",
                 "message": f"遅番日数の平等化（{late_fairness_mode}）: "
                            f"介護職員間の遅番日数の差（最大−最小）={ldiff}日",
+            })
+
+    # ------------------------------------------------------------------
+    # 早番の連日回避（soft時の連日件数を警告・依頼文42）
+    # ------------------------------------------------------------------
+    if early_consec_trackers:
+        ec_viol = sum(1 for (_s, _d, v) in early_consec_trackers if solver.value(v))
+        if ec_viol:
+            warnings_data.append({
+                "date": all_dates[0].strftime("%Y-%m-%d"),
+                "warning_type": "early_consecutive_violation",
+                "message": f"早番の連日回避（soft）: 同一職員が早番に連日入った件数 {ec_viol}件",
+            })
+
+    # ------------------------------------------------------------------
+    # 早番日数の平等化（最大−最小の差を報告・依頼文43）
+    # ------------------------------------------------------------------
+    if early_fairness_mode in ("soft", "hard") and not isinstance(early_fair_diff, int):
+        ediff = solver.value(early_fair_diff)
+        if ediff > 0:
+            warnings_data.append({
+                "date": all_dates[0].strftime("%Y-%m-%d"),
+                "warning_type": "early_fairness_info",
+                "message": f"早番日数の平等化（{early_fairness_mode}）: "
+                           f"介護職員間の早番日数の差（最大−最小）={ediff}日",
             })
 
     # ------------------------------------------------------------------

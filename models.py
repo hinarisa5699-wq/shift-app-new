@@ -370,6 +370,10 @@ class ShiftSettings(db.Model):
     late_oncall_mode = db.Column(db.String(10), default="off", nullable=False)
     # 依頼文41-(2): 訪問回数の平等化モード "off"/"soft"/"hard"（既定 soft）
     visit_fairness_mode = db.Column(db.String(10), default="soft", nullable=False)
+    # 遅番の連日回避モード "off"/"soft"/"hard"（既定 soft＝同一職員が遅番を連日入らない）
+    late_consecutive_mode = db.Column(db.String(10), default="soft", nullable=False)
+    # 遅番日数の介護スタッフ間平等化モード "off"/"soft"/"hard"（既定 soft）
+    late_fairness_mode = db.Column(db.String(10), default="soft", nullable=False)
     # 公休日数を法定労働時間ベースで自動算出するか（既定 off）。
     #   ON時、生成する月について各職員の公休日数を次式で自動反映（手入力より優先）:
     #     週所定労働時間 = min(週の勤務日数上限 × 1日の所定労働時間, 40)
@@ -409,6 +413,8 @@ class ShiftSettings(db.Model):
             "late_as_mid_mode": self.late_as_mid_mode or "hard",
             "late_oncall_mode": self.late_oncall_mode or "off",
             "visit_fairness_mode": self.visit_fairness_mode or "soft",
+            "late_consecutive_mode": self.late_consecutive_mode or "soft",
+            "late_fairness_mode": self.late_fairness_mode or "soft",
             "auto_public_holidays": self.auto_public_holidays or False,
             "daily_work_hours": self.daily_work_hours if self.daily_work_hours is not None else 8.0,
         }

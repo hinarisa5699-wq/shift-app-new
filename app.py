@@ -385,6 +385,10 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN late_oncall_mode VARCHAR(10) NOT NULL DEFAULT 'off'")
     if "visit_fairness_mode" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN visit_fairness_mode VARCHAR(10) NOT NULL DEFAULT 'soft'")
+    if "late_consecutive_mode" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN late_consecutive_mode VARCHAR(10) NOT NULL DEFAULT 'soft'")
+    if "late_fairness_mode" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN late_fairness_mode VARCHAR(10) NOT NULL DEFAULT 'soft'")
 
     # GeneratedShift テーブル
     columns = [row[1] for row in cursor.execute("PRAGMA table_info(generated_shift)").fetchall()]
@@ -1709,6 +1713,12 @@ def create_app():
         # 依頼文41-(2): 訪問回数の平等化モード（off/soft/hard、既定soft）
         _vfm = (request.form.get("visit_fairness_mode", "soft") or "soft").strip().lower()
         s.visit_fairness_mode = _vfm if _vfm in ("off", "soft", "hard") else "soft"
+        # 遅番の連日回避モード（off/soft/hard、既定soft）
+        _lcm = (request.form.get("late_consecutive_mode", "soft") or "soft").strip().lower()
+        s.late_consecutive_mode = _lcm if _lcm in ("off", "soft", "hard") else "soft"
+        # 遅番日数の平等化モード（off/soft/hard、既定soft）
+        _lfm = (request.form.get("late_fairness_mode", "soft") or "soft").strip().lower()
+        s.late_fairness_mode = _lfm if _lfm in ("off", "soft", "hard") else "soft"
         # 公休日数の自動算出（法定労働時間ベース）
         s.auto_public_holidays = "auto_public_holidays" in request.form
         try:
@@ -2191,6 +2201,8 @@ def create_app():
             "late_as_mid_mode": getattr(settings_obj, 'late_as_mid_mode', 'hard') or 'hard',
             "late_oncall_mode": getattr(settings_obj, 'late_oncall_mode', 'off') or 'off',
             "visit_fairness_mode": getattr(settings_obj, 'visit_fairness_mode', 'soft') or 'soft',
+            "late_consecutive_mode": getattr(settings_obj, 'late_consecutive_mode', 'soft') or 'soft',
+            "late_fairness_mode": getattr(settings_obj, 'late_fairness_mode', 'soft') or 'soft',
             "placement_rules": placement_rules_data,
             "cooking_combo_rules": cooking_combo_data,
             "cooking_types": cooking_types_data,

@@ -182,6 +182,40 @@
                     訪問可の職員どうしで、訪問する日数の差（最大−最小）をできるだけ小さくします。完全一致はできないためソフトが既定です。達成度（差の日数）は生成後の警告に表示します。
                 </p>
             </div>
+
+            <!-- 遅番の連日回避 -->
+            <div class="mt-6 pt-4 border-t border-green-200">
+                <label for="late_consecutive_mode" class="block text-base font-medium text-gray-700 mb-2">
+                    遅番の連日回避
+                </label>
+                {% set lcm = settings.late_consecutive_mode if settings and settings.late_consecutive_mode else 'soft' %}
+                <select id="late_consecutive_mode" name="late_consecutive_mode"
+                        class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
+                    <option value="off"  {% if lcm == 'off'  %}selected{% endif %}>オフ（制約なし）</option>
+                    <option value="soft" {% if lcm == 'soft' %}selected{% endif %}>ソフト（できるだけ連日にしない・既定）</option>
+                    <option value="hard" {% if lcm == 'hard' %}selected{% endif %}>ハード（連日を禁止）</option>
+                </select>
+                <p class="text-gray-600 text-sm mt-1">
+                    同じ職員が遅番(9:30-18:30)に連日入らないようにします。人員が足りず避けられない日があるためソフトが既定です（連日になった件数は生成後の警告に表示）。ハードは連日を完全に禁止します。
+                </p>
+            </div>
+
+            <!-- 遅番日数の平等化 -->
+            <div class="mt-6 pt-4 border-t border-green-200">
+                <label for="late_fairness_mode" class="block text-base font-medium text-gray-700 mb-2">
+                    遅番日数の平等化
+                </label>
+                {% set lfm = settings.late_fairness_mode if settings and settings.late_fairness_mode else 'soft' %}
+                <select id="late_fairness_mode" name="late_fairness_mode"
+                        class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
+                    <option value="off"  {% if lfm == 'off'  %}selected{% endif %}>オフ（制約なし）</option>
+                    <option value="soft" {% if lfm == 'soft' %}selected{% endif %}>ソフト（できるだけ揃える・既定）</option>
+                    <option value="hard" {% if lfm == 'hard' %}selected{% endif %}>ハード（できる限り揃える）</option>
+                </select>
+                <p class="text-gray-600 text-sm mt-1">
+                    遅番に入れる介護職員どうしで、遅番に入る日数の差（最大−最小）をできるだけ小さくします（看護師・PTは対象外）。達成度（差の日数）は生成後の警告に表示します。
+                </p>
+            </div>
         </div>
 
         <!-- 依頼文35: 「毎日の兼務者 最低人数」設定は削除（兼務はルール上可能なまま、下限の縛りなし） -->

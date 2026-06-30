@@ -1418,6 +1418,10 @@ def _solve_care_with_fallback(
     late_oncall_mode = (settings.get("late_oncall_mode", "off") or "off").lower()
     # 依頼文41-(2): 訪問回数の平等化モード（off/soft/hard、既定 soft）。
     visit_fairness_mode = (settings.get("visit_fairness_mode", "soft") or "soft").lower()
+    # 遅番の連日回避モード（off/soft/hard、既定 soft）。同一職員が遅番を連日入らない。
+    late_consecutive_mode = (settings.get("late_consecutive_mode", "soft") or "soft").lower()
+    # 遅番日数の介護スタッフ間平等化モード（off/soft/hard、既定 soft）。
+    late_fairness_mode = (settings.get("late_fairness_mode", "soft") or "soft").lower()
 
     # 相談員の介護業務参加モード（依頼文32）: "off"/"soft"/"hard"（既定 off）
     counselor_care_mode = settings.get("counselor_care_mode", "off") or "off"
@@ -1468,6 +1472,8 @@ def _solve_care_with_fallback(
         bath_supply_target=bath_supply_target,
         late_oncall_mode=late_oncall_mode,
         visit_fairness_mode=visit_fairness_mode,
+        late_consecutive_mode=late_consecutive_mode,
+        late_fairness_mode=late_fairness_mode,
         use_slack=False,
         locked_assignments=locked_assignments or {},
     )
@@ -1502,6 +1508,8 @@ def _solve_care_with_fallback(
         bath_supply_target=bath_supply_target,
         late_oncall_mode=late_oncall_mode,
         visit_fairness_mode=visit_fairness_mode,
+        late_consecutive_mode=late_consecutive_mode,
+        late_fairness_mode=late_fairness_mode,
         use_slack=True,
         locked_assignments=locked_assignments or {},
     )
@@ -1546,6 +1554,8 @@ def _solve_care_with_fallback(
         bath_supply_target=bath_supply_target,
         late_oncall_mode=late_oncall_mode,
         visit_fairness_mode=visit_fairness_mode,
+        late_consecutive_mode=late_consecutive_mode,
+        late_fairness_mode=late_fairness_mode,
         use_slack=True,
         locked_assignments=locked_assignments or {},
     )
@@ -1605,6 +1615,8 @@ def _solve_care(
     bath_supply_target: int = _BATH_MID_COUNT + _BATH_OUT_COUNT + 1,
     late_oncall_mode: str = "off",
     visit_fairness_mode: str = "soft",
+    late_consecutive_mode: str = "soft",
+    late_fairness_mode: str = "soft",
     use_slack: bool = False,
     locked_assignments: dict = None,
 ):
@@ -2193,6 +2205,75 @@ def _solve_care(
     # 遅番の連日傾向は「遅番＝中介」(late_as_mid_mode) と「中介/外介 連日回避」で扱う。
 
     # ==================================================================
+    # 追加ルール: 遅番(late) の連日回避 ＋ 介護スタッフ間の平等化
+    #   ・late_consecutive_mode: 同一職員が遅番を連日（前日も遅番）入らないようにする。
+    #       hard: 連続2日とも遅番を禁止（x[s,d]+x[s,d+1] <= 1）
+    #       soft: 連日になった件数をペナルティ化（既定）。物理的に避けられない日は許容。
+    #       off : 制約なし
+    #   ・late_fairness_mode: 遅番に入れる介護スタッフ間で遅番日数の差(最大−最小)を最小化。
+    #       看護師/PT は遅番=中介(late_as_mid)の対象外のため平等化プールから除外する。
+    #       hard: 差を強ペナルティで最小化 / soft: ペナルティ化（既定） / off: なし
+    # ==================================================================
+    late_consecutive_mode = (late_consecutive_mode or "soft").lower()
+    late_consec_penalties = []
+    late_consec_trackers = []  # (staff_id, d_idx, viol_var)
+    if late_consecutive_mode in ("soft", "hard"):
+        for s in staff_ids:
+            for d_idx in range(num_days - 1):
+                if late_consecutive_mode == "hard":
+                    model.add(x[s, d_idx, "late"] + x[s, d_idx + 1, "late"] <= 1)
+                else:  # soft: v=1 のとき連日遅番（両日とも late）
+                    v = model.new_bool_var(f"late_consec_s{s}_d{d_idx}")
+                    model.add(x[s, d_idx, "late"] + x[s, d_idx + 1, "late"] - 1 <= v)
+                    late_consec_penalties.append(v)
+                    late_consec_trackers.append((s, d_idx, v))
+    # 重み: 連日遅番1件を訪問平等化の最大改善より重く（num_days+1）×3。
+    late_consec_weight = (num_days + 1) * 3 if late_consecutive_mode == "soft" else 0
+    late_consec_penalty = (
+        sum(late_consec_penalties) * late_consec_weight
+        if late_consec_penalties else 0
+    )
+
+    # --- 遅番日数の平等化（介護スタッフ間） ---
+    late_fairness_mode = (late_fairness_mode or "soft").lower()
+    late_fair_diff = 0
+    late_fairness_penalty = 0
+    # 平等化プール = 看護師/PT を除く介護職員のうち、構造的に遅番に入れる職員。
+    #   （許可パターン・勤務時間帯で遅番が常に不可な職員を含めると差が見かけ上ふくらむ）
+    late_capable_ids = []
+    for s in staff_ids:
+        if s in nurse_ids:
+            continue
+        if nurse_pt_qual_ids and nurse_pt_qual_ids.intersection(
+            set(staff_by_id[s].get("qualification_ids", []))
+        ):
+            continue
+        info = staff_by_id[s]
+        if not _has_any_available_day(info):
+            continue
+        allow = _care_allowable_working_assignments(
+            info, set((allowed_patterns or {}).get(s, ()) or ())
+        )
+        if "late" in allow:
+            late_capable_ids.append(s)
+    if late_fairness_mode in ("soft", "hard") and len(late_capable_ids) >= 2:
+        late_day_count = {
+            s: sum(x[s, d_idx, "late"] for d_idx in range(num_days))
+            for s in late_capable_ids
+        }
+        max_late = model.new_int_var(0, num_days, "care_max_late")
+        min_late = model.new_int_var(0, num_days, "care_min_late")
+        for s in late_capable_ids:
+            model.add(max_late >= late_day_count[s])
+            model.add(min_late <= late_day_count[s])
+        late_fair_diff = model.new_int_var(0, num_days, "care_late_fairness_diff")
+        model.add(late_fair_diff == max_late - min_late)
+        late_fairness_weight = (
+            (num_days + 1) * 2 if late_fairness_mode == "hard" else (num_days + 1)
+        )
+        late_fairness_penalty = late_fair_diff * late_fairness_weight
+
+    # ==================================================================
     # 依頼文41-(1): 遅番×オンコール禁止
     #   オンコール（電話当番）は出勤と独立した後処理で先に確定され、当番日が
     #   oncall_day_idx_by_staff[staff_id]={day_idx,…} として渡される。
@@ -2591,6 +2672,7 @@ def _solve_care(
             + gender_penalty + phone_fairness + placement_penalty_total
             + day2_count
             + late_oncall_penalty + visit_fairness_penalty
+            + late_consec_penalty + late_fairness_penalty
             + public_holiday_penalty
         )
     else:
@@ -2601,6 +2683,7 @@ def _solve_care(
             + gender_penalty + phone_fairness + placement_penalty_total
             + day2_count
             + late_oncall_penalty + visit_fairness_penalty
+            + late_consec_penalty + late_fairness_penalty
             + public_holiday_penalty
         )
 
@@ -2794,6 +2877,31 @@ def _solve_care(
                 "warning_type": "visit_fairness_info",
                 "message": f"訪問回数の平等化（{visit_fairness_mode}）: "
                            f"訪問可職員間の訪問日数の差（最大−最小）={vdiff}日",
+            })
+
+    # ------------------------------------------------------------------
+    # 遅番の連日回避（soft時の連日件数を警告）
+    # ------------------------------------------------------------------
+    if late_consec_trackers:
+        lc_viol = sum(1 for (_s, _d, v) in late_consec_trackers if solver.value(v))
+        if lc_viol:
+            warnings_data.append({
+                "date": all_dates[0].strftime("%Y-%m-%d"),
+                "warning_type": "late_consecutive_violation",
+                "message": f"遅番の連日回避（soft）: 同一職員が遅番に連日入った件数 {lc_viol}件",
+            })
+
+    # ------------------------------------------------------------------
+    # 遅番日数の平等化（最大−最小の差を報告）
+    # ------------------------------------------------------------------
+    if late_fairness_mode in ("soft", "hard") and not isinstance(late_fair_diff, int):
+        ldiff = solver.value(late_fair_diff)
+        if ldiff > 0:
+            warnings_data.append({
+                "date": all_dates[0].strftime("%Y-%m-%d"),
+                "warning_type": "late_fairness_info",
+                "message": f"遅番日数の平等化（{late_fairness_mode}）: "
+                           f"介護職員間の遅番日数の差（最大−最小）={ldiff}日",
             })
 
     # ------------------------------------------------------------------

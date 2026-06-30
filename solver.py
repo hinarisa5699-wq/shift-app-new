@@ -709,7 +709,9 @@ _FLOOR_PATTERNS = {"day_pattern1", "day_pattern2", "late"}
 
 # お風呂当番の候補となる「昼帯にフロア在席」パターン。
 # 早番(7:30-16:30)・遅番(9:30-18:30)も含める（早番は非訪問日は終日デイ、訪問日も午後はデイ）。
-_BATH_FLOOR_PATTERNS = {"day_pattern1", "day_pattern2", "early", "late"}
+# 午前デイ→午後訪問(day_p3_visit_pm)も含める。入浴帯(11:30-13:00)前半は事業所デイに在席するため、
+# 中介助/外介助とも他パターンと完全に同等扱いで候補にする。
+_BATH_FLOOR_PATTERNS = {"day_pattern1", "day_pattern2", "early", "late", "day_p3_visit_pm"}
 
 # 依頼文40-D: 看護師(入浴介助可)もお風呂当番候補に含める際の在席パターン。
 #   看護師短時間 nurse_short(9:30-13:30) は入浴時間帯(11:30-13:00)に在席するため追加。

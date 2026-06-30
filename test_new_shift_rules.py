@@ -180,8 +180,15 @@ def test_visit_is_always_dual_and_exactly_one(month=7):
             assert am == 1, f"{d}: AM訪問兼務は1名のはず (={am})"
             assert pm == 1, f"{d}: PM訪問兼務は1名のはず (={pm})"
             for it in items:
-                if it["assignment"] in ("visit_am_day_p4", "day_p3_visit_pm"):
+                # visit_am_day_p4(午前訪問→午後デイ)は従来どおり休憩12:30。
+                if it["assignment"] == "visit_am_day_p4":
                     assert it["break_start"] == "12:30", f"{d}: 訪問担当の休憩は12:30"
+                # day_p3_visit_pm(午前デイ→午後訪問)はお風呂当番(中介助)候補に含めたため、
+                # 中介助に選ばれた日は11:30休憩（休憩明け食事介助12:30-13:00）になり得る。
+                # それ以外は従来どおり12:30休憩。
+                elif it["assignment"] == "day_p3_visit_pm":
+                    assert it["break_start"] in ("11:30", "12:30"), \
+                        f"{d}: 訪問兼務(午前デイ午後訪問)の休憩は11:30か12:30"
         else:
             assert am == 0 and pm == 0, f"{d}: 非営業日に訪問が出現"
     assert checked > 0, "営業日が検査されていない"

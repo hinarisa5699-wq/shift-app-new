@@ -2129,6 +2129,11 @@ def create_app():
 
         def _effective_public_holidays(s):
             """auto_ph_enabled時は正社員基準＋短時間補正の公休日数を返す（手入力より優先）。"""
+            # 出勤可能日(whitelist)を登録した“スポット/希望日のみ”勤務者は、月の勤務日数が
+            # 登録日に限定されるため公休目標の概念が当てはまらない。目標0=対象外にして
+            # 「公休が多すぎ」等の誤警告を出さない（自動・手入力どちらのモードでも対象外）。
+            if workable_dates_map.get(s.id):
+                return 0
             if not auto_ph_enabled:
                 return getattr(s, "public_holiday_count", 0) or 0
             week_days = s.max_days_per_week or 5

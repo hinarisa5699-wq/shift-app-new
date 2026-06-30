@@ -2251,6 +2251,11 @@ def _solve_care(
         info = staff_by_id[s]
         if not _has_any_available_day(info):
             continue
+        # 出勤可能日(whitelist)を登録した“スポット/希望日のみ”勤務者は、月数日しか
+        # 出勤しないため遅番日数も構造的に少なく、平等化プールに入れると差(最大−最小)が
+        # 見かけ上ふくらむ。訪問平等化と同様に対象から除外する。
+        if info.get("workable_dates"):
+            continue
         allow = _care_allowable_working_assignments(
             info, set((allowed_patterns or {}).get(s, ()) or ())
         )
@@ -2527,6 +2532,10 @@ def _solve_care(
     for s in staff_ids:
         info = staff_by_id[s]
         if not info.get("can_visit"):
+            continue
+        # 出勤可能日(whitelist)を登録した“スポット/希望日のみ”勤務者は除外（数日しか
+        # 出勤せず訪問日数も少なく、差が見かけ上ふくらむため）。
+        if info.get("workable_dates"):
             continue
         eff_weekdays = (set(info.get("available_days", []))
                         - set(info.get("fixed_days_off", []) or []))

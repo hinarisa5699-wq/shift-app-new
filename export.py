@@ -1042,6 +1042,211 @@ def export_pdf(
     return _render_pdf_table(title, sel, staff_rows, summary_rows)
 
 
+# ---------------------------------------------------------------------------
+# 職員1人ずつの月間カレンダーPDF（縦A4・1人1ページ）
+# ---------------------------------------------------------------------------
+# カレンダーは日曜始まり（列: 日 月 火 水 木 金 土）。
+_PDF_CAL_WD = ["日", "月", "火", "水", "木", "金", "土"]
+
+
+def _cal_col_index(d):
+    """日曜始まりの列インデックス（Python weekday: 月=0..日=6 → 日=0..土=6）。"""
+    return (d.weekday() + 1) % 7
+
+
+def export_pdf_individual(
+    shifts_data: list,
+    staff_list: list,
+    year: int,
+    month: int,
+    staff_ids: list = None,
+    oncall_map: dict = None,
+    cook_labels: dict = None,
+) -> BytesIO:
+    """職員1人につき1ページの月間カレンダーPDF（縦A4）。
+
+    staff_ids: 対象 staff_id のリスト（None なら staff_list 全員）。staff_list は
+    呼び出し側で在籍者のみに絞られている前提（休職者は含まれない）。
+    """
+    _register_cook_labels(cook_labels)
+    dates, assignment_map, _summary_map, _phone_map, desk_slot_map, _break_map, bath_map, _meal_map = _build_daily_data(
+        shifts_data, staff_list, year, month
+    )
+    parking_map = _build_parking_map(shifts_data)
+
+    if staff_ids is not None:
+        want = set(staff_ids)
+        targets = [s for s in staff_list if s["id"] in want]
+    else:
+        targets = list(staff_list)
+
+    # is_phone_duty を (staff_id → 日付集合) に集約（オンコール★表示用）
+    phone_by_sid = {}
+    for item in (shifts_data or []):
+        if item.get("is_phone_duty"):
+            phone_by_sid.setdefault(item["staff_id"], set()).add(item["date"])
+
+    def cell_for(staff, d):
+        """(表示テキスト, 勤務フラグ, オンコールフラグ) を返す。"""
+        sid = staff["id"]
+        is_cook = (staff.get("department") == "cooking")
+        d_str = d.isoformat()
+        if is_cook:
+            asgn = assignment_map.get(d_str, {}).get(sid, "")
+            text = ASSIGNMENT_LABELS.get(asgn, "")
+        else:
+            asgn, text = _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map)
+        text = _append_parking(text, parking_map, d_str, sid)
+        off_token = "cook_off" if is_cook else "off"
+        working = asgn not in (off_token, "")
+        if not text:
+            # 休み（off）・未割当は「休」表示。空文字は当該日に行が無い＝休扱い。
+            text = "休"
+        is_oncall = d_str in phone_by_sid.get(sid, set())
+        if oncall_map and oncall_map.get(d_str) == staff.get("name"):
+            is_oncall = True
+        return text, working, is_oncall
+
+    return _render_pdf_individual_calendars(targets, dates, year, month, cell_for)
+
+
+def _render_pdf_individual_calendars(targets, dates, year, month, cell_for):
+    """縦A4・1人1ページの月間カレンダーを描画する。"""
+    from fpdf import FPDF  # 遅延 import
+
+    MARGIN = 10.0
+    TITLE_H = 11.0
+    WD_H = 7.0            # 曜日見出しの高さ
+    GAP = 2.0
+    FOOTER_H = 8.0
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(False)
+    pdf.add_font(_PDF_FONT, "", _PDF_FONT_PATH)
+
+    page_w = 210.0
+    page_h = 297.0
+    usable_w = page_w - MARGIN * 2
+    col_w = usable_w / 7.0
+
+    num_days = calendar.monthrange(year, month)[1]
+    first = date(year, month, 1)
+    start_col = _cal_col_index(first)
+    n_weeks = (start_col + num_days + 6) // 7
+
+    grid_top = MARGIN + TITLE_H + GAP + WD_H
+    grid_bottom = page_h - MARGIN - FOOTER_H
+    row_h = (grid_bottom - grid_top) / max(n_weeks, 1)
+
+    day_num_fs = 10.0
+    body_fs = 9.0
+
+    def line_h(fs):
+        return _pdf_line_h(fs)
+
+    def text_block(x, y, w, h, text, fs, color=(0, 0, 0), align="C"):
+        if not text:
+            return
+        max_lines = max(1, int(h / line_h(fs)))
+        lines = _pdf_wrap(pdf, text, w, fs)[:max_lines]
+        pdf.set_font(_PDF_FONT, "", fs)
+        pdf.set_text_color(*color)
+        lh = line_h(fs)
+        ty = y + (h - lh * len(lines)) / 2
+        for ln in lines:
+            pdf.set_xy(x, ty)
+            pdf.cell(w, lh, ln, align=align)
+            ty += lh
+        pdf.set_text_color(0, 0, 0)
+
+    if not targets:
+        # 空でも1ページは出す（「対象なし」）
+        pdf.add_page()
+        pdf.set_font(_PDF_FONT, "", 14)
+        pdf.set_xy(MARGIN, MARGIN)
+        pdf.cell(usable_w, TITLE_H, f"{year}年{month}月 個別シフト（対象職員なし）", align="C")
+        buf = BytesIO()
+        buf.write(bytes(pdf.output()))
+        buf.seek(0)
+        return buf
+
+    for staff in targets:
+        pdf.add_page()
+
+        # タイトル
+        pdf.set_font(_PDF_FONT, "", 15)
+        pdf.set_xy(MARGIN, MARGIN)
+        pdf.cell(usable_w, TITLE_H, f"{year}年{month}月 シフト表　{staff.get('name', '')}", align="C")
+
+        # 曜日見出し（日=赤 / 土=青）
+        wd_y = MARGIN + TITLE_H + GAP
+        for c in range(7):
+            x = MARGIN + col_w * c
+            if c == 0:
+                fill = _PDF_SUN_BG
+            elif c == 6:
+                fill = _PDF_SAT_BG
+            else:
+                fill = _PDF_SUMMARY_BG
+            pdf.set_fill_color(*fill)
+            pdf.rect(x, wd_y, col_w, WD_H, style="DF")
+            col = (204, 0, 0) if c == 0 else ((0, 0, 204) if c == 6 else (0, 0, 0))
+            text_block(x, wd_y, col_w, WD_H, _PDF_CAL_WD[c], 11.0, color=col)
+
+        # 日付グリッド
+        work_days = 0
+        off_days = 0
+        for day in range(1, num_days + 1):
+            d = date(year, month, day)
+            idx = start_col + (day - 1)
+            wk = idx // 7
+            col = idx % 7
+            x = MARGIN + col_w * col
+            y = grid_top + row_h * wk
+
+            fill = _pdf_weekend_color(d)
+            if fill:
+                pdf.set_fill_color(*fill)
+                pdf.rect(x, y, col_w, row_h, style="DF")
+            else:
+                pdf.rect(x, y, col_w, row_h, style="D")
+
+            # 日番号（左上・日曜赤/土曜青/祝日赤）
+            if jpholiday.is_holiday(d) or col == 0:
+                dcol = (204, 0, 0)
+            elif col == 6:
+                dcol = (0, 0, 204)
+            else:
+                dcol = (0, 0, 0)
+            pdf.set_font(_PDF_FONT, "", day_num_fs)
+            pdf.set_text_color(*dcol)
+            pdf.set_xy(x + 1.0, y + 0.8)
+            pdf.cell(col_w - 2.0, line_h(day_num_fs), str(day), align="L")
+            pdf.set_text_color(0, 0, 0)
+
+            text, working, is_oncall = cell_for(staff, d)
+            if working:
+                work_days += 1
+            else:
+                off_days += 1
+            body = ("★" + text) if is_oncall else text
+            body_color = (204, 0, 0) if is_oncall else (0, 0, 0)
+            # 日番号帯の下に本文
+            top_pad = line_h(day_num_fs) + 1.2
+            text_block(x, y + top_pad, col_w, row_h - top_pad, body, body_fs, color=body_color)
+
+        # フッター（勤務日数）
+        pdf.set_font(_PDF_FONT, "", 11.0)
+        pdf.set_xy(MARGIN, grid_bottom + 1.5)
+        pdf.cell(usable_w, FOOTER_H - 1.5,
+                 f"勤務日数: {work_days}日　休み: {off_days}日　（★=オンコール）", align="R")
+
+    buf = BytesIO()
+    buf.write(bytes(pdf.output()))
+    buf.seek(0)
+    return buf
+
+
 # 調理/介護サマリーのラベル（Excel解析でスタッフ行と区別する用）
 _PDF_SUMMARY_LABELS = {
     "訪問午前", "訪問午後", "デイ午前", "デイ午後", "兼務者数", "オンコール", "調理配置数",

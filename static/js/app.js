@@ -10,6 +10,7 @@ let currentGenerationId = null;
 let isGenerating = false;
 let currentYear = null;
 let currentMonth = null;
+let currentStaffList = [];
 
 /* ============================================
    CSRF トークン管理
@@ -138,6 +139,8 @@ function loadShifts(year, month) {
 
             if (hasShifts) {
                 currentGenerationId = data.generation_id;
+                currentStaffList = data.staff_list || [];
+                populateIndividualStaffSelect();
                 renderCalendar(data, year, month);
                 renderWarnings(data.warnings || []);
                 renderConfirmation(data.confirmation);
@@ -598,6 +601,50 @@ function exportPdf(group, half) {
         return;
     }
     window.location.href = `/api/export/${currentGenerationId}/pdf?group=${group}&half=${half}`;
+}
+
+// 個別PDF: 職員選択プルダウンを在籍職員で埋める
+function populateIndividualStaffSelect() {
+    const sel = document.getElementById('individual-staff-select');
+    if (!sel) return;
+    sel.innerHTML = '';
+    if (!currentStaffList.length) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '職員なし';
+        sel.appendChild(opt);
+        return;
+    }
+    currentStaffList.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.id;
+        opt.textContent = s.name;
+        sel.appendChild(opt);
+    });
+}
+
+// 個別PDF: 在籍職員全員を1つのPDF（1人1ページ）で出力
+function exportPdfIndividualAll() {
+    if (!currentGenerationId) {
+        alert('エクスポートするシフトデータがありません。先にシフトを生成してください。');
+        return;
+    }
+    window.location.href = `/api/export/${currentGenerationId}/pdf-individual`;
+}
+
+// 個別PDF: 選択した職員1名だけを出力
+function exportPdfIndividualOne() {
+    if (!currentGenerationId) {
+        alert('エクスポートするシフトデータがありません。先にシフトを生成してください。');
+        return;
+    }
+    const sel = document.getElementById('individual-staff-select');
+    const sid = sel ? sel.value : '';
+    if (!sid) {
+        alert('職員を選択してください。');
+        return;
+    }
+    window.location.href = `/api/export/${currentGenerationId}/pdf-individual?staff_id=${sid}`;
 }
 
 // Excel出力（4分割: group=care|cooking, half=first|second）

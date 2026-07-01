@@ -54,7 +54,7 @@ from solver import (
     _period_from_time_window,
 )
 from export import (
-    export_excel, export_csv, export_pdf,
+    export_excel, export_csv, export_pdf, export_pdf_individual,
     export_excel_group_half, export_pdf_from_excel,
     parse_uploaded_shift_excel, parse_shift_cell, state_to_cell_text,
     recompute_warnings_from_shifts, ASSIGNMENT_LABELS,
@@ -2811,6 +2811,52 @@ def create_app():
             download_name=filename,
         )
 
+    @app.route("/api/export/<generation_id>/pdf-individual", methods=["GET"])
+    def api_export_pdf_individual(generation_id):
+        """職員1人ずつの月間カレンダーPDF（縦A4・1人1ページ）。
+
+        クエリ: ?staff_id=N を付けるとその職員1名のみ。無指定なら在籍職員全員（1人1ページ）。
+        休職者は _build_export_payload の時点で除外されるため出力に含まれない。
+        """
+        payload = _build_export_payload(generation_id)
+        if payload is None:
+            return jsonify({"error": "該当するシフトデータがありません"}), 404
+        shifts_data, warnings_data, staff_list_data, year, month, oncall_map, cook_labels = payload
+
+        if not staff_list_data:
+            return jsonify({"error": "対象の職員がいません"}), 404
+
+        staff_ids = None
+        staff_id_arg = request.args.get("staff_id")
+        if staff_id_arg:
+            try:
+                sid = int(staff_id_arg)
+            except (TypeError, ValueError):
+                return jsonify({"error": "staff_id が不正です"}), 400
+            match = next((s for s in staff_list_data if s["id"] == sid), None)
+            if match is None:
+                return jsonify({"error": "対象の職員が見つかりません（休職中または存在しません）"}), 404
+            staff_ids = [sid]
+
+        buf = export_pdf_individual(
+            shifts_data, staff_list_data, year, month,
+            staff_ids=staff_ids, oncall_map=oncall_map, cook_labels=cook_labels,
+        )
+
+        if staff_ids:
+            nm = next(s["name"] for s in staff_list_data if s["id"] == staff_ids[0])
+            safe_nm = re.sub(r'[\\/:*?"<>|]', "_", nm).replace(" ", "")
+            filename = f"シフト表_{year}年{month:02d}月_{safe_nm}.pdf"
+        else:
+            filename = f"シフト表_個別_{year}年{month:02d}月.pdf"
+
+        return send_file(
+            buf,
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=filename,
+        )
+
     @app.route("/api/export/excel-to-pdf", methods=["POST"])
     def api_export_excel_to_pdf():
         """依頼文23-B: アップロードされた（手直し済み）Excelの内容から該当PDFを作る。
@@ -2853,7 +2899,9 @@ def create_app():
         return d
 
     def _group_staff_rows(group):
-        staffs = Staff.query.order_by(Staff.id).all()
+        # 休職中は出力（Excel/PDF/CSV）に出さないため、反映の「期待職員セット」からも除外する。
+        # これを含めると休職者が出力に無いことを「ファイルに不足」と誤検知し構造不一致になる（依頼文44-c）。
+        staffs = Staff.query.filter_by(on_leave=False).order_by(Staff.id).all()
         if group == "cooking":
             return [s for s in staffs if s.staff_group == "cooking"]
         return [s for s in staffs if s.staff_group != "cooking"]
@@ -2946,7 +2994,7 @@ def create_app():
             {"id": s.id, "name": s.name,
              "qualification_codes": qc.get(s.id, []),
              "qualifications": qn.get(s.id, [])}
-            for s in Staff.query.all()
+            for s in Staff.query.filter_by(on_leave=False).all()
         ]
 
     @app.route("/api/shift/upload-preview", methods=["POST"])

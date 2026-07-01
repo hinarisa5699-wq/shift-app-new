@@ -1356,6 +1356,11 @@ def parse_shift_cell(text):
     for ln in lines:
         if ln in ("中介助", "外介助"):
             bath_role = ln[0]  # "中" / "外"
+        elif ln == "コイン" or re.match(r"^P\w+$", ln):
+            # 駐車場ラベル（依頼文24・表示専用）は割当ではないので無視する。
+            # これを base_lines に入れると「基本ラベルが一意に取れない」で
+            # 解釈不能になり、車通勤者のセルが全て書き戻し不可になってしまう。
+            continue
         elif ln in ("相談（終日）", "相談(終日)"):
             desk_slots = [0, 1, 2, 3]
         elif ln.startswith("相談:") or ln.startswith("相談："):

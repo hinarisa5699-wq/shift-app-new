@@ -1198,6 +1198,12 @@ def _render_pdf_individual_calendars(targets, dates, year, month, cell_for):
             col = (204, 0, 0) if c == 0 else ((0, 0, 204) if c == 6 else (0, 0, 0))
             text_block(x, wd_y, col_w, WD_H, _PDF_CAL_WD[c], 11.0, color=col)
 
+        # まずカレンダー全マス（月外の空白マスも含む）に枠線を引く。
+        # 日付のあるマスだけ描くと、月初・月末の空きマスに線が入らず欠けて見えるため。
+        for wk in range(n_weeks):
+            for col in range(7):
+                pdf.rect(MARGIN + col_w * col, grid_top + row_h * wk, col_w, row_h, style="D")
+
         # 日付グリッド
         work_days = 0
         off_days = 0

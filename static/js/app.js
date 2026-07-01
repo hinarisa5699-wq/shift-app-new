@@ -623,7 +623,7 @@ function populateIndividualStaffSelect() {
     });
 }
 
-// 個別PDF: 在籍職員全員を1つのPDF（1人1ページ）で出力
+// 個別PDF: 在籍職員全員を「1人1ファイルのPDF」にしてZIPで出力
 function exportPdfIndividualAll() {
     if (!currentGenerationId) {
         alert('エクスポートするシフトデータがありません。先にシフトを生成してください。');

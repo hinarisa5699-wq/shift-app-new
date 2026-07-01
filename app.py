@@ -13,6 +13,7 @@ import shutil
 import threading
 import uuid
 import sqlite3
+import zipfile
 import calendar
 from datetime import date, datetime, timedelta, timezone
 
@@ -2813,9 +2814,10 @@ def create_app():
 
     @app.route("/api/export/<generation_id>/pdf-individual", methods=["GET"])
     def api_export_pdf_individual(generation_id):
-        """職員1人ずつの月間カレンダーPDF（縦A4・1人1ページ）。
+        """職員1人ずつの月間カレンダーPDF（縦A4）。
 
-        クエリ: ?staff_id=N を付けるとその職員1名のみ。無指定なら在籍職員全員（1人1ページ）。
+        クエリ: ?staff_id=N を付けるとその職員1名のPDF。
+        無指定なら在籍職員全員を「1人1ファイルのPDF」にしてZIPでまとめて返す。
         休職者は _build_export_payload の時点で除外されるため出力に含まれない。
         """
         payload = _build_export_payload(generation_id)
@@ -2826,9 +2828,12 @@ def create_app():
         if not staff_list_data:
             return jsonify({"error": "対象の職員がいません"}), 404
 
-        staff_ids = None
+        def _safe_name(nm):
+            return re.sub(r'[\\/:*?"<>|]', "_", nm).replace(" ", "")
+
         staff_id_arg = request.args.get("staff_id")
         if staff_id_arg:
+            # --- 個別1名: 単一PDF ---
             try:
                 sid = int(staff_id_arg)
             except (TypeError, ValueError):
@@ -2836,25 +2841,39 @@ def create_app():
             match = next((s for s in staff_list_data if s["id"] == sid), None)
             if match is None:
                 return jsonify({"error": "対象の職員が見つかりません（休職中または存在しません）"}), 404
-            staff_ids = [sid]
+            buf = export_pdf_individual(
+                shifts_data, staff_list_data, year, month,
+                staff_ids=[sid], oncall_map=oncall_map, cook_labels=cook_labels,
+            )
+            filename = f"シフト表_{year}年{month:02d}月_{_safe_name(match['name'])}.pdf"
+            return send_file(
+                buf, mimetype="application/pdf",
+                as_attachment=True, download_name=filename,
+            )
 
-        buf = export_pdf_individual(
-            shifts_data, staff_list_data, year, month,
-            staff_ids=staff_ids, oncall_map=oncall_map, cook_labels=cook_labels,
-        )
-
-        if staff_ids:
-            nm = next(s["name"] for s in staff_list_data if s["id"] == staff_ids[0])
-            safe_nm = re.sub(r'[\\/:*?"<>|]', "_", nm).replace(" ", "")
-            filename = f"シフト表_{year}年{month:02d}月_{safe_nm}.pdf"
-        else:
-            filename = f"シフト表_個別_{year}年{month:02d}月.pdf"
-
+        # --- 全員: 1人1ファイルのPDFを作りZIPでまとめる ---
+        zip_buf = BytesIO()
+        used_names = set()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for s in staff_list_data:
+                pdf_buf = export_pdf_individual(
+                    shifts_data, staff_list_data, year, month,
+                    staff_ids=[s["id"]], oncall_map=oncall_map, cook_labels=cook_labels,
+                )
+                base = f"シフト表_{year}年{month:02d}月_{_safe_name(s['name'])}"
+                entry = f"{base}.pdf"
+                idx = 2
+                while entry in used_names:  # 同名職員がいても衝突しないよう連番
+                    entry = f"{base}_{idx}.pdf"
+                    idx += 1
+                used_names.add(entry)
+                zf.writestr(entry, pdf_buf.getvalue())
+        zip_buf.seek(0)
         return send_file(
-            buf,
-            mimetype="application/pdf",
+            zip_buf,
+            mimetype="application/zip",
             as_attachment=True,
-            download_name=filename,
+            download_name=f"シフト表_個別_{year}年{month:02d}月.zip",
         )
 
     @app.route("/api/export/excel-to-pdf", methods=["POST"])

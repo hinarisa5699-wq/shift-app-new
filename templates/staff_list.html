@@ -17,32 +17,6 @@
     </a>
 </div>
 
-<!-- 入浴介助可 一括設定 -->
-<div class="bg-white rounded-xl shadow-md p-6 mb-6">
-    <h2 class="text-lg font-bold text-primary-800 mb-3">入浴介助可の一括設定</h2>
-    <p class="text-sm text-gray-600 mb-3">お風呂当番(中介助2・外介助1)の候補は「入浴介助可」の介護職員から選ばれます。個別に設定するか、ここでまとめて設定できます。</p>
-    <div class="flex flex-wrap items-center gap-3">
-        <form action="{{ url_for('staff_bulk_bath_assist') }}" method="POST"
-              onsubmit="return confirm('すべての介護職員に『入浴介助可』を付与します。よろしいですか？');">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <input type="hidden" name="enable" value="1">
-            <button type="submit"
-                    class="inline-flex items-center bg-sky-600 hover:bg-sky-700 text-white font-medium py-2 px-4 rounded-lg transition-colors text-sm">
-                介護職員に入浴介助可を一括付与
-            </button>
-        </form>
-        <form action="{{ url_for('staff_bulk_bath_assist') }}" method="POST"
-              onsubmit="return confirm('すべての介護職員の『入浴介助可』を解除します。よろしいですか？');">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <input type="hidden" name="enable" value="0">
-            <button type="submit"
-                    class="inline-flex items-center bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium py-2 px-4 rounded-lg transition-colors text-sm">
-                一括解除
-            </button>
-        </form>
-    </div>
-</div>
-
 <!-- CSV 一括管理 -->
 <div class="bg-white rounded-xl shadow-md p-6 mb-6">
     <h2 class="text-lg font-bold text-primary-800 mb-3">CSVで一括管理</h2>

@@ -338,9 +338,11 @@ def _write_group_sheet(
     is_cook,
     fit_one_page=False,
     parking_map=None,
+    title_override=None,
 ):
     """1 グループ（介護 or 調理）を「縦＝職員名・横＝日付」で 1 シートに書き込む。
-    fit_one_page=True のとき、印刷時に横もA4横1ページに収める（依頼文25・4分割向け）。"""
+    fit_one_page=True のとき、印刷時に横もA4横1ページに収める（依頼文25・4分割向け）。
+    title_override を渡すとタイトル文字列を差し替える（PDFと書式を揃える用）。"""
     num_days = len(dates)
     name_col = 1
     first_date_col = 2
@@ -355,7 +357,8 @@ def _write_group_sheet(
 
     # --- タイトル行 ---
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_col)
-    title_cell = ws.cell(row=1, column=1, value=f"{year}年{month}月 シフト表（{title_label}）")
+    title_value = title_override or f"{year}年{month}月 シフト表（{title_label}）"
+    title_cell = ws.cell(row=1, column=1, value=title_value)
     title_cell.font = TITLE_FONT
     title_cell.alignment = CENTER_ALIGN
 
@@ -434,7 +437,9 @@ def _write_group_sheet(
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             cell.border = THIN_BORDER
 
-            if asgn in ASSIGNMENT_FILL:
+            # 調理はPDFと書式を揃えるため、種類別の色付け（オレンジ系）はせず
+            # 週末・祝日の列色のみを敷く（PDFと同じ白基調）。介護は従来通り色分け。
+            if (not is_cook) and asgn in ASSIGNMENT_FILL:
                 cell.fill = ASSIGNMENT_FILL[asgn]
             elif col_fill:
                 cell.fill = col_fill
@@ -1572,7 +1577,13 @@ def export_excel_group_half(
 
     is_cook = (group == "cooking")
     gstaff = [s for s in staff_list if (s.get("department") == "cooking") == is_cook]
-    sel, _ = _half_dates(dates, half)
+    sel, half_label = _half_dates(dates, half)
+
+    # PDFと同じタイトル書式（例:「2026年7月 シフト表（調理 前半：1〜15日）」）
+    group_label = "調理" if is_cook else "介護・看護"
+    first_d = sel[0].day if sel else 1
+    last_d = sel[-1].day if sel else 1
+    title = f"{year}年{month}月 シフト表（{group_label} {half_label}：{first_d}〜{last_d}日）"
 
     wb = Workbook()
     ws = wb.active
@@ -1583,6 +1594,7 @@ def export_excel_group_half(
         phone_duty_map=phone_duty_map, desk_slot_map=desk_slot_map,
         bath_map=bath_map, warnings_data=warnings_data, is_cook=is_cook,
         fit_one_page=True, parking_map=_build_parking_map(shifts_data),
+        title_override=title,
     )
     buf = BytesIO()
     wb.save(buf)

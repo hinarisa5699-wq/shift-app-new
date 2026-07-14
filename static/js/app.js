@@ -362,6 +362,27 @@ function renderCalendar(data, year, month) {
 
     const daysInMonth = new Date(year, month, 0).getDate();
 
+    // --- 階ごとの デイ利用日／訪問日（曜日ルール）。getDay() 0=日,1=月,…,6=土 ---
+    //   3階: デイ=火金日 / 訪問=月木 ,  2階: デイ=月木土 / 訪問=火金
+    //   → デイは水曜のみ無し（＝利用者がいない曜日）。訪問は月火木金。
+    //   施設のルール変更時はこの2つの対応表だけ直せばよい。
+    const FLOOR_DAY_SERVICE = { 0: '3階', 1: '2階', 2: '3階', 4: '2階', 5: '3階', 6: '2階' };
+    const FLOOR_VISIT = { 1: '3階', 2: '2階', 4: '3階', 5: '2階' };
+    function floorAnnotHtml(dow) {
+        const ds = FLOOR_DAY_SERVICE[dow];
+        const vs = FLOOR_VISIT[dow];
+        let s = '';
+        if (ds) {
+            s += `<span style="display:inline-block;background:#FDE047;color:#333;`
+               + `font-size:8px;line-height:1.3;padding:0 2px;border-radius:2px">デイ${ds}</span>`;
+        }
+        if (vs) {
+            s += `<span style="display:inline-block;color:#1d4ed8;font-weight:700;`
+               + `font-size:8px;line-height:1.3;margin-left:1px">訪${vs}</span>`;
+        }
+        return s ? `<br>${s}` : '';
+    }
+
     // 各日付（列）のメタ情報を事前計算（縦＝職員名・横＝日付）
     const dayMeta = [];
     for (let day = 1; day <= daysInMonth; day++) {
@@ -380,7 +401,7 @@ function renderCalendar(data, year, month) {
         dayMeta.push({
             dateStr,
             colClass,
-            label: `${month}/${day}<br>${DAY_NAMES[dayOfWeek]}${holidayName}`,
+            label: `${month}/${day}<br>${DAY_NAMES[dayOfWeek]}${holidayName}${floorAnnotHtml(dayOfWeek)}`,
         });
     }
 

@@ -1517,6 +1517,31 @@ def create_app():
             return None, "ambiguous"
         return None, "none"
 
+    @app.route("/api/debug/cooks", methods=["GET"])
+    def debug_cooks():
+        """調理職員の生設定を可視化（診断用・読み取り専用）。"""
+        allowed = {}
+        for ap in StaffAllowedPattern.query.all():
+            allowed.setdefault(ap.staff_id, []).append(ap.assignment_code)
+        offs = {}
+        for r in DayOffRequest.query.all():
+            offs.setdefault(r.staff_id, []).append(r.date.isoformat())
+        out = []
+        for s in Staff.query.filter_by(staff_group="cooking").order_by(Staff.id).all():
+            out.append({
+                "id": s.id,
+                "name": s.name,
+                "on_leave(休職中)": bool(s.on_leave),
+                "available_days(勤務可能曜日)": s.available_days or "(空)",
+                "fixed_days_off(勤務不可曜日)": s.fixed_days_off or "(なし)",
+                "min_days_per_week(週下限)": getattr(s, "min_days_per_week", 0),
+                "max_days_per_week(週上限)": s.max_days_per_week,
+                "cooking_experience(経験)": s.cooking_experience or "(未設定)",
+                "allowed_patterns(許可)": allowed.get(s.id, "(制限なし=全許可)"),
+                "day_off_requests(希望休)": offs.get(s.id, []),
+            })
+        return jsonify(out)
+
     @app.route("/api/staff/import-csv", methods=["POST"])
     def staff_import_csv():
         """職員一覧をCSVから一括取り込み（全置き換え / 差分）。"""

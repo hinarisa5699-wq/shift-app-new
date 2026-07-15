@@ -431,6 +431,24 @@ def _run_migrations(app):
             cursor.execute("ALTER TABLE shift_pattern ADD COLUMN covers_am BOOLEAN DEFAULT 1")
         if "covers_pm" not in columns:
             cursor.execute("ALTER TABLE shift_pattern ADD COLUMN covers_pm BOOLEAN DEFAULT 1")
+        # 調理フォールバック用: 9:00-16:00 の調理パターンを保証（1人で昼夜をまかなう）
+        cursor.execute(
+            "SELECT COUNT(*) FROM shift_pattern "
+            "WHERE staff_group='cooking' AND start_time='09:00' AND end_time='16:00'"
+        )
+        if cursor.fetchone()[0] == 0:
+            cursor.execute(
+                "SELECT COALESCE(MAX(display_order), 0) + 1 FROM shift_pattern "
+                "WHERE staff_group='cooking'"
+            )
+            _co = cursor.fetchone()[0]
+            cursor.execute(
+                "INSERT INTO shift_pattern "
+                "(code, staff_group, label, start_time, end_time, has_break, "
+                " break_minutes, display_order, period, covers_am, covers_pm) "
+                "VALUES ('cooking_6','cooking','(6) 9:00-16:00','09:00','16:00',0,0,?,'full',1,1)",
+                (_co,),
+            )
 
     # GeneratedShift: day_am → day_pattern3, day_pm → day_pattern4 リネーム
     if "generated_shift" in tables:

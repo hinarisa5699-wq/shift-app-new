@@ -3604,6 +3604,15 @@ def _solve_cooking(
             pat_norm = [a for a in pat if a in cook_working]
             if pat_norm and pat_norm not in combo_patterns:
                 combo_patterns.append(pat_norm)
+    # 調理フォールバック（依頼）: 通常の4通りが組めない日は全休(0)ではなく
+    #   「1人・9:00-16:00」で昼夜をまかなう特別編成を、不足時のみ発動で追加する。
+    #   9-16のカバレッジは(朝0/昼1/夜1)。この編成の日は朝[6-8)の下限を課さない。
+    fb_code = next((c for c in cook_working
+                    if cook_time_ranges.get(c) == (9 * 60, 16 * 60)), None)
+    fb_combo_idx = None
+    if fb_code is not None and combo_patterns:
+        combo_patterns.append([fb_code])
+        fb_combo_idx = len(combo_patterns) - 1
     combo_active = bool(combo_patterns)
 
     # ==================================================================
@@ -3630,6 +3639,7 @@ def _solve_cooking(
     #   どの4通りも組めない日は none になり、警告を出す（無言で③だけ等にしない）。
     # ==================================================================
     none_by_day = {}
+    fb_by_day = {}  # 調理フォールバック(1人9-16)が選択された日 → その選択変数
     if combo_active:
         for d_idx in range(num_days):
             if d_idx in closed_day_indices:
@@ -3638,6 +3648,8 @@ def _solve_cooking(
             for p_idx, pattern in enumerate(combo_patterns):
                 pv = model.new_bool_var(f"cook_pat_d{d_idx}_p{p_idx}")
                 sel_vars.append(pv)
+                if p_idx == fb_combo_idx:
+                    fb_by_day[d_idx] = pv
                 pset = set(pattern)
                 for a in cook_working:
                     cnt = sum(x[s, d_idx, a] for s in staff_ids)
@@ -3685,11 +3697,15 @@ def _solve_cooking(
                 for a in cook_working
             )
             if use_slack:
-                model.add(
+                cc = model.add(
                     coverage_count + slack_interval[d_idx][iv] >= cook_min_staff[iv]
                 )
             else:
-                model.add(coverage_count >= cook_min_staff[iv])
+                cc = model.add(coverage_count >= cook_min_staff[iv])
+            # フォールバック(1人9-16)選択日は各区間の下限を課さない
+            #   （朝[6-8)は不可＝昼夜のみ対応。編成制約が9-16の1名を保証する）。
+            if d_idx in fb_by_day:
+                cc.only_enforce_if(fb_by_day[d_idx].Not())
 
     # ==================================================================
     # ソフト目標: 新人×ベテランのペア成立回数（依頼文28）
@@ -3860,6 +3876,11 @@ def _solve_cooking(
     public_holiday_penalty = (
         sum(cook_ph_penalties) * (num_days + 1) * 5 if cook_ph_penalties else 0
     )
+    # 調理フォールバック発動ペナルティ。通常編成(0) < フォールバック(40w) < 未配置(50w)
+    #   の順にして「組める日は通常編成／組めない日は0ではなく1人9-16で回す」を実現。
+    fb_penalty = (
+        sum(fb_by_day.values()) * (num_days + 1) * 40 if fb_by_day else 0
+    )
 
     if use_slack:
         total_slack = model.new_int_var(
@@ -3881,14 +3902,14 @@ def _solve_cooking(
         # 新人オンボーディング 同伴ミス（依頼文36→38・同一記号）。extra より強くして
         # 「同記号同伴のための2名化」が割に合うようにする（onboarding 5w > extra 2w）。
         onboarding_penalty = sum(onboarding_penalties) * (num_days + 1) * 5 if onboarding_penalties else 0
-        model.minimize(total_slack * penalty_weight + fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty)
+        model.minimize(total_slack * penalty_weight + fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty + fb_penalty)
     else:
         cook_pw_penalty = sum(cook_min_pw_penalties) * (num_days + 1) * 10 if cook_min_pw_penalties else 0
         none_penalty = sum(none_by_day.values()) * (num_days + 1) * 50 if none_by_day else 0
         pair_penalty = pair_deficit * (num_days + 1) if pair_deficit is not None else 0
         extra_penalty = sum(extra_penalties) * (num_days + 1) * 2 if extra_penalties else 0
         onboarding_penalty = sum(onboarding_penalties) * (num_days + 1) * 5 if onboarding_penalties else 0
-        model.minimize(fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty)
+        model.minimize(fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty + fb_penalty)
 
     # ==================================================================
     # ソルバー実行

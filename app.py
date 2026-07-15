@@ -83,11 +83,14 @@ _PATTERN_CODE_TO_ASSIGNMENT = {
     "cooking_3": "cooking_3",
     "cooking_4": "cooking_4",
     "cooking_5": "cooking_5",
+    "cooking_6": "cooking_6",
 }
 
 _VALID_ALLOWED_BY_GROUP = {
     "care": set(CARE_ASSIGNMENTS) - {"off"},
-    "cooking": set(COOK_ASSIGNMENTS) - {"cook_off"},
+    # cooking_6(9:00-16:00 フォールバック)は COOK_ASSIGNMENTS(静的①〜⑤)に無いため
+    # 明示的に許可対象へ追加（これが無いと⑥にチェックしても保存時に捨てられる）。
+    "cooking": (set(COOK_ASSIGNMENTS) | {"cooking_6"}) - {"cook_off"},
 }
 
 _COUNSELOR_QUALIFICATION_CODES = {"counselor", "social_worker"}

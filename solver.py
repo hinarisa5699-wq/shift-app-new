@@ -2828,8 +2828,11 @@ def _solve_care(
         #   依頼: 「早番・遅番の配置は絶対」。他のどの不足よりも優先して必ず埋める。
         all_slack_terms = []
         el_slack_terms = []
+        visit_slack_terms = []
         for d in range(num_days):
-            all_slack_terms.extend([slack_day_am[d], slack_day_pm[d], slack_visit_am[d], slack_visit_pm[d]])
+            all_slack_terms.extend([slack_day_am[d], slack_day_pm[d]])
+            # 訪問スラックは別枠（下で早番/遅番の次に高い重みを付ける）
+            visit_slack_terms.extend([slack_visit_am[d], slack_visit_pm[d]])
             all_slack_terms.extend([slack_staff_9[d], slack_staff_11[d], slack_staff_13[d], slack_staff_15[d]])
             if require_early_late:
                 el_slack_terms.extend([slack_early[d], slack_late[d]])
@@ -2856,8 +2859,18 @@ def _solve_care(
         early_late_slack_penalty = (
             sum(el_slack_terms) * el_slack_weight if el_slack_terms else 0
         )
+        # 訪問(訪問日ちょうど指定人数)を「早番/遅番の次」の最優先で埋める。
+        #   依頼: 早番/遅番/相談員の役割に関係なく、訪問可の職員を訪問へ割り当てる。
+        #   訪問可職員はデイ/相談/早遅番に取られがちで、一般スラックと同重みだと訪問=0が
+        #   居座る。訪問スラック1件が他の全（early/late以外の）不足スラック合計を上回る重み
+        #   （el_slack_weight の半分）にし、訪問をデイ・相談等より優先して確保する。
+        visit_slack_weight = slack_weight * (max_other_slack + 1)
+        visit_slack_penalty = (
+            sum(visit_slack_terms) * visit_slack_weight if visit_slack_terms else 0
+        )
         model.minimize(
             early_late_slack_penalty
+            + visit_slack_penalty
             + total_slack * slack_weight
             + total_working_days * headcount_weight
             + bath_short_penalty + desk_short_penalty + counselor_soft_penalty

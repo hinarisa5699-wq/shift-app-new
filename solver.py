@@ -1445,6 +1445,13 @@ def _solve_care_with_fallback(
     min_visit_pm = settings.get("min_visit_pm", 1)
     closed_days_set = set(settings.get("closed_days", [5, 6]))
     visit_operating_days = settings.get("visit_operating_days", [0, 1, 3, 4])
+    # デイ利用者がいない曜日（月=0..日=6）。その曜日はデイ必要人数を最小(1名)に緩和し、
+    #   浮いた職員を訪問等へ回せるようにする（利用者ゼロなのに複数名要求→訪問不足の一因）。
+    no_day_service_weekdays = set(settings.get("no_day_service_days", []) or [])
+    no_service_day_indices = {
+        d_idx for d_idx, _dt in enumerate(all_dates)
+        if _dt.weekday() in no_day_service_weekdays
+    }
     am_preferred_gender = settings.get("am_preferred_gender", "")
     phone_duty_enabled = settings.get("phone_duty_enabled", False)
     phone_duty_max_consecutive = settings.get("phone_duty_max_consecutive", 1)
@@ -1544,6 +1551,7 @@ def _solve_care_with_fallback(
         counselor_care_mode=counselor_care_mode,
         allowed_patterns=allowed_patterns or {},
         max_day_service=max_day_service,
+        no_service_day_indices=no_service_day_indices,
         oncall_forced_off=oncall_forced_off,
         oncall_work_days=oncall_work_days,
         require_early_late=True,
@@ -1584,6 +1592,7 @@ def _solve_care_with_fallback(
         counselor_care_mode=counselor_care_mode,
         allowed_patterns=allowed_patterns or {},
         max_day_service=max_day_service,
+        no_service_day_indices=no_service_day_indices,
         oncall_forced_off=oncall_forced_off,
         oncall_work_days=oncall_work_days,
         require_early_late=True,
@@ -1634,6 +1643,7 @@ def _solve_care_with_fallback(
         counselor_care_mode=counselor_care_mode,
         allowed_patterns=allowed_patterns or {},
         max_day_service=max_day_service,
+        no_service_day_indices=no_service_day_indices,
         oncall_forced_off=oncall_forced_off,
         oncall_work_days=oncall_work_days,
         require_early_late=True,
@@ -1699,6 +1709,7 @@ def _solve_care(
     counselor_care_mode: str = "off",
     allowed_patterns: dict = None,
     max_day_service: int = 0,
+    no_service_day_indices: set = None,
     oncall_forced_off: list = None,
     oncall_work_days: list = None,
     require_early_late: bool = False,
@@ -1728,6 +1739,8 @@ def _solve_care(
         placement_rules = []
     if counselor_staff_ids is None:
         counselor_staff_ids = []
+    if no_service_day_indices is None:
+        no_service_day_indices = set()
     if oncall_forced_off is None:
         oncall_forced_off = []
     if oncall_work_days is None:
@@ -2211,12 +2224,14 @@ def _solve_care(
         day_pm_count = sum(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in DAY_PM_ASSIGNMENTS
         )
+        # デイ利用者がいない曜日はデイ下限を1名に緩和（浮いた人員は訪問等へ）
+        eff_min_day = 1 if d_idx in no_service_day_indices else min_day_service
         if use_slack:
-            model.add(day_am_count + slack_day_am[d_idx] >= min_day_service)
-            model.add(day_pm_count + slack_day_pm[d_idx] >= min_day_service)
+            model.add(day_am_count + slack_day_am[d_idx] >= eff_min_day)
+            model.add(day_pm_count + slack_day_pm[d_idx] >= eff_min_day)
         else:
-            model.add(day_am_count >= min_day_service)
-            model.add(day_pm_count >= min_day_service)
+            model.add(day_am_count >= eff_min_day)
+            model.add(day_pm_count >= eff_min_day)
         # 上限制約（スラック有無に関わらず常に有効）
         model.add(day_am_count <= max_day_service)
         model.add(day_pm_count <= max_day_service)
@@ -2284,16 +2299,23 @@ def _solve_care(
         count_15 = sum(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in PRESENT_AT_14
         )
-        if use_slack:
-            model.add(count_9 + slack_staff_9[d_idx] >= min_staff_at_9)
-            model.add(count_11 + slack_staff_11[d_idx] >= min_staff_at_11)
-            model.add(count_13 + slack_staff_13[d_idx] >= min_staff_at_13)
-            model.add(count_15 + slack_staff_15[d_idx] >= min_staff_at_15)
+        # デイ利用者がいない曜日は在籍下限も1名に緩和（浮いた人員は訪問等へ）
+        if d_idx in no_service_day_indices:
+            _m9 = _m11 = _m13 = _m15 = 1
         else:
-            model.add(count_9 >= min_staff_at_9)
-            model.add(count_11 >= min_staff_at_11)
-            model.add(count_13 >= min_staff_at_13)
-            model.add(count_15 >= min_staff_at_15)
+            _m9, _m11, _m13, _m15 = (
+                min_staff_at_9, min_staff_at_11, min_staff_at_13, min_staff_at_15
+            )
+        if use_slack:
+            model.add(count_9 + slack_staff_9[d_idx] >= _m9)
+            model.add(count_11 + slack_staff_11[d_idx] >= _m11)
+            model.add(count_13 + slack_staff_13[d_idx] >= _m13)
+            model.add(count_15 + slack_staff_15[d_idx] >= _m15)
+        else:
+            model.add(count_9 >= _m9)
+            model.add(count_11 >= _m11)
+            model.add(count_13 >= _m13)
+            model.add(count_15 >= _m15)
 
     # ==================================================================
     # 変更: 早番(early)・遅番(late) を毎営業日それぞれ1名以上、必須配置。

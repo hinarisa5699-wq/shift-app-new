@@ -143,6 +143,31 @@
             </div>
         </div>
 
+        <!-- デイ利用者がいない曜日 -->
+        <div class="mb-8 p-6 bg-yellow-50 rounded-lg border border-yellow-300">
+            <label class="block text-lg font-semibold text-gray-800 mb-2">
+                デイサービス利用者がいない曜日
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                デイ利用者がいない曜日を選ぶと、その曜日はデイの必要人数を<strong>1名まで緩和</strong>します。
+                浮いた職員は訪問など他の業務に回せます（利用者ゼロなのに複数名を要求して訪問が組めない、を防ぎます）。
+            </p>
+            {% set no_ds = settings.no_day_service_days.split(',') if settings and settings.no_day_service_days else [] %}
+            <div class="flex flex-wrap gap-3">
+                {% for i in range(7) %}
+                <label class="inline-flex items-center cursor-pointer bg-white border border-gray-200 rounded-lg px-4 py-3 hover:bg-yellow-100 hover:border-yellow-400 transition-colors has-[:checked]:bg-yellow-100 has-[:checked]:border-yellow-500">
+                    <input type="checkbox" name="no_day_service_days" value="{{ i }}"
+                           {% if i|string in no_ds %}checked{% endif %}
+                           class="w-5 h-5 text-yellow-600 border-gray-300 rounded focus:ring-yellow-500">
+                    <span class="ml-2 text-base font-medium
+                        {% if i == 5 %}text-blue-600{% elif i == 6 %}text-red-600{% else %}text-gray-700{% endif %}">
+                        {{ day_names[i] }}
+                    </span>
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+
         <!-- 訪問介護の営業曜日 -->
         <div class="mb-8 p-6 bg-green-50 rounded-lg border border-green-200">
             <label class="block text-lg font-semibold text-gray-800 mb-2">

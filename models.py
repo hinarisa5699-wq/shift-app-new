@@ -325,6 +325,9 @@ class ShiftSettings(db.Model):
     visit_operating_days = db.Column(
         db.String(50), default="0,1,3,4"
     )  # 訪問介護の営業曜日
+    no_day_service_days = db.Column(
+        db.String(50), default="", nullable=False
+    )  # デイ利用者がいない曜日 (0=月〜6=日, カンマ区切り)。この曜日はデイ人員を1名に緩和。
     min_cooking_staff = db.Column(
         db.Integer, default=1
     )  # 調理スタッフ最低配置人数/日
@@ -406,6 +409,7 @@ class ShiftSettings(db.Model):
             "min_late_staff": self.min_late_staff if self.min_late_staff is not None else 1,
             "closed_days": self.closed_days,
             "visit_operating_days": self.visit_operating_days,
+            "no_day_service_days": self.no_day_service_days or "",
             "min_cooking_staff": self.min_cooking_staff,
             "min_cooking_overlap": self.min_cooking_overlap,
             "am_preferred_gender": self.am_preferred_gender,

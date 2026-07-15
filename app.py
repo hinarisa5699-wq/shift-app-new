@@ -340,6 +340,8 @@ def _run_migrations(app):
     columns = [row[1] for row in cursor.execute("PRAGMA table_info(shift_settings)").fetchall()]
     if "visit_operating_days" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN visit_operating_days VARCHAR(50) DEFAULT '0,1,3,4'")
+    if "no_day_service_days" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN no_day_service_days VARCHAR(50) NOT NULL DEFAULT ''")
     if "min_cooking_staff" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN min_cooking_staff INTEGER DEFAULT 1")
     if "min_early_staff" not in columns:
@@ -1697,6 +1699,7 @@ def create_app():
         s.min_late_staff = safe_int(request.form.get("min_late_staff"), 1)
         s.closed_days = ",".join(request.form.getlist("closed_days"))
         s.visit_operating_days = ",".join(request.form.getlist("visit_operating_days"))
+        s.no_day_service_days = ",".join(request.form.getlist("no_day_service_days"))
         s.min_cooking_staff = safe_int(request.form.get("min_cooking_staff"), 1)
         s.min_cooking_overlap = safe_int(request.form.get("min_cooking_overlap"), 2)
         s.am_preferred_gender = request.form.get("am_preferred_gender", "")
@@ -2217,6 +2220,7 @@ def create_app():
 
         closed_days = [int(x) for x in settings_obj.closed_days.split(",") if x.strip()] if settings_obj.closed_days else []
         visit_days = [int(x) for x in settings_obj.visit_operating_days.split(",") if x.strip()] if settings_obj.visit_operating_days else []
+        no_ds_days = [int(x) for x in (settings_obj.no_day_service_days or "").split(",") if x.strip()] if getattr(settings_obj, "no_day_service_days", "") else []
 
         settings_dict = {
             "min_day_service": settings_obj.min_day_service,
@@ -2226,6 +2230,7 @@ def create_app():
             "min_late_staff": getattr(settings_obj, 'min_late_staff', 1) if getattr(settings_obj, 'min_late_staff', 1) is not None else 1,
             "closed_days": closed_days,
             "visit_operating_days": visit_days,
+            "no_day_service_days": no_ds_days,
             "min_cooking_staff": settings_obj.min_cooking_staff,
             "min_cooking_overlap": settings_obj.min_cooking_overlap,
             "am_preferred_gender": getattr(settings_obj, 'am_preferred_gender', '') or '',

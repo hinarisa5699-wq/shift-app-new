@@ -368,13 +368,19 @@ function renderCalendar(data, year, month) {
     //   施設のルール変更時はこの2つの対応表だけ直せばよい。
     const FLOOR_DAY_SERVICE = { 0: '3階', 1: '2階', 2: '3階', 4: '2階', 5: '3階', 6: '2階' };
     const FLOOR_VISIT = { 1: '3階', 2: '2階', 4: '3階', 5: '2階' };
+    // 階ごとに色を分ける（3階=黄・2階=橙）。水曜(3)は外部デイ＝内部人員不要。
+    const DS_COLOR = { '3階': '#FDE047', '2階': '#FDBA74' };
     function floorAnnotHtml(dow) {
         const ds = FLOOR_DAY_SERVICE[dow];
         const vs = FLOOR_VISIT[dow];
         let s = '';
         if (ds) {
-            s += `<span style="display:inline-block;background:#FDE047;color:#333;`
+            s += `<span style="display:inline-block;background:${DS_COLOR[ds]};color:#333;`
                + `font-size:8px;line-height:1.3;padding:0 2px;border-radius:2px">デイ${ds}</span>`;
+        }
+        if (dow === 3) {
+            s += `<span style="display:inline-block;background:#CBD5E1;color:#334155;`
+               + `font-size:8px;line-height:1.3;padding:0 2px;border-radius:2px">外部デイ</span>`;
         }
         if (vs) {
             s += `<span style="display:inline-block;color:#1d4ed8;font-weight:700;`

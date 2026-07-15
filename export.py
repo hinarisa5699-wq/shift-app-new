@@ -83,6 +83,26 @@ ASSIGNMENT_FILL = {
 # 曜日名
 WEEKDAY_NAMES = ["月", "火", "水", "木", "金", "土", "日"]
 
+# 階ごとの デイ利用日／訪問日（曜日ルール）。d.weekday(): 0=月..6=日。
+#   3階: デイ=火金日 / 訪問=月木 ,  2階: デイ=月木土 / 訪問=火金 , 水=外部デイ。
+_FLOOR_DAY_SERVICE = {1: "3階", 4: "3階", 6: "3階", 0: "2階", 3: "2階", 5: "2階"}
+_FLOOR_VISIT = {0: "3階", 3: "3階", 1: "2階", 4: "2階"}
+
+
+def _floor_annotation(d):
+    """日付 d の階別 デイ/訪問 注記（例 'デイ2階 訪3階'）。無ければ空文字。"""
+    wd = d.weekday()
+    parts = []
+    ds = _FLOOR_DAY_SERVICE.get(wd)
+    if ds:
+        parts.append(f"デイ{ds}")
+    if wd == 2:
+        parts.append("外部デイ")
+    vs = _FLOOR_VISIT.get(wd)
+    if vs:
+        parts.append(f"訪{vs}")
+    return " ".join(parts)
+
 # サマリー列ヘッダー (ケア)
 # 値の並びは [day_am, day_pm, visit_am, visit_pm, ...]。ラベルは実体に一致させる。
 SUMMARY_HEADERS = ["デイ午前", "デイ午後", "訪問午前", "訪問午後", "兼務者数", "オンコール"]
@@ -400,6 +420,10 @@ def _write_group_sheet(
             dow_value = f"{weekday_name}\n{jpholiday.is_holiday_name(d)}"
         else:
             dow_value = weekday_name
+        # 階別 デイ/訪問 注記（画面カレンダーと同じ）を曜日の下に追記
+        _floor = _floor_annotation(d)
+        if _floor:
+            dow_value = f"{dow_value}\n{_floor}"
         c2 = ws.cell(row=header_row2, column=col, value=dow_value)
         c2.font = NORMAL_FONT
         c2.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -871,7 +895,7 @@ def _render_pdf_table(title, sel_dates, staff_rows, summary_rows):
     name_w = 30.0
     total_w = 13.0
     date_w = (usable_w - name_w - total_w) / max(n_dates, 1)
-    total_rows = 2 + len(staff_rows) + len(summary_rows)  # ヘッダー2行ぶん
+    total_rows = 3 + len(staff_rows) + len(summary_rows)  # ヘッダー3行ぶん（日付/曜日/階別注記）
     row_h = usable_h / max(total_rows, 1)
 
     def line_h(fs):
@@ -907,9 +931,13 @@ def _render_pdf_table(title, sel_dates, staff_rows, summary_rows):
             ty += lh
         pdf.set_text_color(0, 0, 0)
 
-    # --- ヘッダー行（日付 / 曜日）---
+    # --- ヘッダー行（日付 / 曜日＋階別注記）---
+    #   曜日行を2段分の高さにして「曜日＋デイ○階/訪○階/外部デイ」を表示、
+    #   データ行はさらに1段下げる（ヘッダ計3段）。
     y = table_top
-    draw_cell(MARGIN, y, name_w, row_h * 2, "職員名", header_fs,
+    _floor_fs = max(header_fs - 3.0, 6.0)  # 階別注記は小さめフォント
+    header_h = row_h * 3
+    draw_cell(MARGIN, y, name_w, header_h, "職員名", header_fs,
               fill=_PDF_HEADER_BG, bold_color=(255, 255, 255))
     x = MARGIN + name_w
     for d in sel_dates:
@@ -919,12 +947,16 @@ def _render_pdf_table(title, sel_dates, staff_rows, summary_rows):
         if jpholiday.is_holiday(d):
             wd = f"{wd}/祝"
         draw_cell(x, y + row_h, date_w, row_h, wd, header_fs, fill=_pdf_weekend_color(d))
+        # 階別注記（デイ○階／訪○階／外部デイ）を曜日の下に小さく
+        _floor = _floor_annotation(d)
+        draw_cell(x, y + row_h * 2, date_w, row_h, _floor, _floor_fs,
+                  fill=_pdf_weekend_color(d))
         x += date_w
-    draw_cell(x, y, total_w, row_h * 2, "出勤\n日数", header_fs,
+    draw_cell(x, y, total_w, header_h, "出勤\n日数", header_fs,
               fill=_PDF_HEADER_BG, bold_color=(255, 255, 255))
 
-    # --- 職員行 ---
-    y = table_top + row_h * 2
+    # --- 職員行 ---（ヘッダは3段：日付/曜日/階別注記）
+    y = table_top + row_h * 3
     for name, cells, work in staff_rows:
         draw_cell(MARGIN, y, name_w, row_h, name, body_fs, align="L")
         x = MARGIN + name_w

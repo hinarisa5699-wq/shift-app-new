@@ -3740,20 +3740,27 @@ def _solve_cooking(
     new_ids = [s for s in staff_ids if staff_by_id[s].get("experience") == "new"]
     vet_ids = [s for s in staff_ids if staff_by_id[s].get("experience") == "veteran"]
 
-    # ハード制約（依頼）: 新人を1人にしない。新人がやる「時間帯(=同じシフト記号)」に、
-    #   必ずベテランも同じシフトに入る（＝初出勤から同時間帯で同行）。同じ日でも時間帯が
-    #   違えば同行にならないため、日単位ではなくシフト単位で必須にする。
+    # ハード制約（依頼）: 新人を1人にしない。新人がやる「時間帯」に、必ずベテランも
+    #   同じ時間帯で同行する（＝初出勤から同時間帯で同行）。ただし記号完全一致ではなく
+    #   「同じ食事帯(カバレッジ)」を同行とみなす（例: 宇佐美③12-19 と 池田⑧13-19 は
+    #   同じ"夜"帯=イコール、④6-13 と ⑦6-12 は同じ"朝昼"帯=イコール）。
     #   これにより1人フォールバック(9-16)の担当も新人には割り当たらない（＝ベテランのみ）。
     #   ベテランが1人も居ない場合は課さない（無解化防止）。新人を休みにすれば常に充足可。
     if new_ids and vet_ids:
+        # 各シフト記号 a に対し「同じ食事帯」の記号集合を事前計算
+        equiv_of = {
+            a: [b for b in cook_working if cook_coverage.get(b) == cook_coverage.get(a)]
+            for a in cook_working
+        }
         for d_idx in range(num_days):
             if d_idx in closed_day_indices:
                 continue
             for n in new_ids:
                 for a in cook_working:
-                    model.add(
-                        sum(x[v, d_idx, a] for v in vet_ids) >= 1
-                    ).only_enforce_if(x[n, d_idx, a])
+                    vet_terms = [
+                        x[v, d_idx, b] for v in vet_ids for b in equiv_of[a]
+                    ]
+                    model.add(sum(vet_terms) >= 1).only_enforce_if(x[n, d_idx, a])
 
     pair_target = max(0, int(pair_target or 0))
     pair_active = pair_target > 0 and bool(new_ids) and bool(vet_ids)

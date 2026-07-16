@@ -496,6 +496,27 @@
             </div>
         </div>
 
+        <!-- 朝食なし期間 -->
+        <div class="mb-8 p-6 bg-amber-50 rounded-lg border border-amber-200">
+            <label class="block text-lg font-semibold text-gray-800 mb-2">
+                朝食なし期間（調理）
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                この期間は朝食を作らないため、<strong>朝6:00-8:00の調理人数を要求せず</strong>、
+                <strong>④6:00-13:00 の担当を ②8:00-13:00（8時開始）</strong>として組みます。
+                空欄なら従来どおり（毎日朝食あり）。
+            </p>
+            <div class="flex items-center gap-2 flex-wrap">
+                <input type="date" name="breakfast_off_start"
+                       value="{{ settings.breakfast_off_start if settings and settings.breakfast_off_start else '' }}"
+                       class="px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
+                <span class="text-lg text-gray-600">〜</span>
+                <input type="date" name="breakfast_off_end"
+                       value="{{ settings.breakfast_off_end if settings and settings.breakfast_off_end else '' }}"
+                       class="px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
+            </div>
+        </div>
+
         <!-- 調理 新人×ベテランのペア成立回数（依頼文28・当月の目標） -->
         <div class="mb-8 p-6 bg-amber-50 rounded-lg border border-amber-200">
             <label for="cooking_pair_target" class="block text-lg font-semibold text-gray-800 mb-2">

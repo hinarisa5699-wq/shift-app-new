@@ -353,6 +353,10 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN min_late_staff INTEGER DEFAULT 1")
     if "min_cooking_overlap" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN min_cooking_overlap INTEGER DEFAULT 2")
+    if "breakfast_off_start" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN breakfast_off_start VARCHAR(10) NOT NULL DEFAULT ''")
+    if "breakfast_off_end" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN breakfast_off_end VARCHAR(10) NOT NULL DEFAULT ''")
     if "am_preferred_gender" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN am_preferred_gender VARCHAR(10) DEFAULT ''")
     if "phone_duty_enabled" not in columns:
@@ -1748,6 +1752,8 @@ def create_app():
         s.no_day_service_days = ",".join(request.form.getlist("no_day_service_days"))
         s.min_cooking_staff = safe_int(request.form.get("min_cooking_staff"), 1)
         s.min_cooking_overlap = safe_int(request.form.get("min_cooking_overlap"), 2)
+        s.breakfast_off_start = (request.form.get("breakfast_off_start", "") or "").strip()
+        s.breakfast_off_end = (request.form.get("breakfast_off_end", "") or "").strip()
         s.am_preferred_gender = request.form.get("am_preferred_gender", "")
         s.phone_duty_enabled = "phone_duty_enabled" in request.form
         s.phone_duty_max_consecutive = safe_int(request.form.get("phone_duty_max_consecutive"), 1)
@@ -2279,6 +2285,8 @@ def create_app():
             "no_day_service_days": no_ds_days,
             "min_cooking_staff": settings_obj.min_cooking_staff,
             "min_cooking_overlap": settings_obj.min_cooking_overlap,
+            "breakfast_off_start": getattr(settings_obj, 'breakfast_off_start', '') or '',
+            "breakfast_off_end": getattr(settings_obj, 'breakfast_off_end', '') or '',
             "am_preferred_gender": getattr(settings_obj, 'am_preferred_gender', '') or '',
             "phone_duty_enabled": getattr(settings_obj, 'phone_duty_enabled', False) or False,
             "phone_duty_max_consecutive": getattr(settings_obj, 'phone_duty_max_consecutive', 1) or 1,

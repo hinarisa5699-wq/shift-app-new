@@ -334,6 +334,9 @@ class ShiftSettings(db.Model):
     min_cooking_overlap = db.Column(
         db.Integer, default=2
     )  # 引き継ぎ時間帯の重複人数 (12:00-13:00)
+    # 朝食なし期間（この期間は朝[6-8]の調理を要求せず ④6-13 を ②8-13 表示に）。"YYYY-MM-DD" 空=無効
+    breakfast_off_start = db.Column(db.String(10), default="", nullable=False)
+    breakfast_off_end = db.Column(db.String(10), default="", nullable=False)
     am_preferred_gender = db.Column(db.String(10), default="")
     phone_duty_enabled = db.Column(db.Boolean, default=True)
     phone_duty_max_consecutive = db.Column(db.Integer, default=1)
@@ -412,6 +415,8 @@ class ShiftSettings(db.Model):
             "no_day_service_days": self.no_day_service_days or "",
             "min_cooking_staff": self.min_cooking_staff,
             "min_cooking_overlap": self.min_cooking_overlap,
+            "breakfast_off_start": self.breakfast_off_start or "",
+            "breakfast_off_end": self.breakfast_off_end or "",
             "am_preferred_gender": self.am_preferred_gender,
             "phone_duty_enabled": self.phone_duty_enabled,
             "phone_duty_max_consecutive": self.phone_duty_max_consecutive,

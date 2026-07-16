@@ -3331,6 +3331,21 @@ def _solve_cooking_with_fallback(
     min_cooking = settings.get("min_cooking_staff") or 1
     cook_min_staff = (min_cooking, min_cooking, min_cooking)
 
+    # 朝食なし期間（依頼）: 開始日〜終了日の各日は朝[6:00-8:00)の調理人数を要求せず、
+    #   ④6:00-13:00 の担当を ②8:00-13:00(8時開始)として扱う（出力もそのまま8-13）。
+    _bo_s = (settings.get("breakfast_off_start") or "").strip()
+    _bo_e = (settings.get("breakfast_off_end") or "").strip()
+    no_breakfast_day_indices = set()
+    if _bo_s and _bo_e:
+        try:
+            _s = datetime.date.fromisoformat(_bo_s)
+            _e = datetime.date.fromisoformat(_bo_e)
+            no_breakfast_day_indices = {
+                i for i, d in enumerate(all_dates) if _s <= d <= _e
+            }
+        except (TypeError, ValueError):
+            no_breakfast_day_indices = set()
+
     # Phase 1: ハード制約のみ
     shifts_data, warnings_data = _solve_cooking(
         year, month, all_dates, staff_ids, staff_by_id,
@@ -3341,6 +3356,7 @@ def _solve_cooking_with_fallback(
         use_slack=False,
         locked_assignments=locked_assignments or {},
         pair_target=pair_target,
+        no_breakfast_day_indices=no_breakfast_day_indices,
     )
     if shifts_data is not None:
         return shifts_data, warnings_data
@@ -3355,6 +3371,7 @@ def _solve_cooking_with_fallback(
         use_slack=True,
         locked_assignments=locked_assignments or {},
         pair_target=pair_target,
+        no_breakfast_day_indices=no_breakfast_day_indices,
     )
     if shifts_data is not None:
         return shifts_data, warnings_data
@@ -3384,6 +3401,7 @@ def _solve_cooking(
     use_slack: bool = False,
     locked_assignments: dict = None,
     pair_target: int = 0,
+    no_breakfast_day_indices: set = None,
 ):
     """
     調理職員の CP-SAT モデルを構築し解を求める。
@@ -3398,6 +3416,8 @@ def _solve_cooking(
     """
     if cooking_combo_rules is None:
         cooking_combo_rules = []
+    if no_breakfast_day_indices is None:
+        no_breakfast_day_indices = set()
     if locked_assignments is None:
         locked_assignments = {}
 
@@ -3690,7 +3710,10 @@ def _solve_cooking(
     for d_idx in range(num_days):
         if d_idx in closed_day_indices:
             continue
+        # 朝食なし日は朝[6:00-8:00)(iv==0)の必要人数を課さない
+        _bf_off = d_idx in no_breakfast_day_indices
         for iv in range(num_intervals):
+            need = 0 if (_bf_off and iv == 0) else cook_min_staff[iv]
             coverage_count = sum(
                 x[s, d_idx, a] * cook_coverage[a][iv]
                 for s in staff_ids
@@ -3698,10 +3721,10 @@ def _solve_cooking(
             )
             if use_slack:
                 cc = model.add(
-                    coverage_count + slack_interval[d_idx][iv] >= cook_min_staff[iv]
+                    coverage_count + slack_interval[d_idx][iv] >= need
                 )
             else:
-                cc = model.add(coverage_count >= cook_min_staff[iv])
+                cc = model.add(coverage_count >= need)
             # フォールバック(1人9-16)選択日は各区間の下限を課さない
             #   （朝[6-8)は不可＝昼夜のみ対応。編成制約が9-16の1名を保証する）。
             if d_idx in fb_by_day:
@@ -3932,14 +3955,17 @@ def _solve_cooking(
 
     for d_idx, dt in enumerate(all_dates):
         date_str = dt.strftime("%Y-%m-%d")
+        _bf_off = d_idx in no_breakfast_day_indices
         for s in staff_ids:
             for a in cook_assignments:
                 if solver.value(x[s, d_idx, a]) == 1:
                     if a != "cook_off":
+                        # 朝食なし日は ④6:00-13:00 → ②8:00-13:00(8時開始)として出力
+                        out_a = "cooking_2" if (_bf_off and a == "cooking_4") else a
                         shifts_data.append({
                             "date": date_str,
                             "staff_id": s,
-                            "assignment": a,
+                            "assignment": out_a,
                         })
                     break
 

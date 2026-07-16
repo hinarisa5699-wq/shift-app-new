@@ -3976,8 +3976,8 @@ def _solve_cooking(
             for a in cook_assignments:
                 if solver.value(x[s, d_idx, a]) == 1:
                     if a != "cook_off":
-                        # 朝食なし日は ④6:00-13:00 → ②8:00-13:00(8時開始)として出力
-                        out_a = "cooking_2" if (_bf_off and a == "cooking_4") else a
+                        # 朝食なし日は ④6-13 / ⑦6-12 → ②8:00-13:00(8時開始・池田さんも同じ)
+                        out_a = "cooking_2" if (_bf_off and a in ("cooking_4", "cooking_7")) else a
                         shifts_data.append({
                             "date": date_str,
                             "staff_id": s,

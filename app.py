@@ -84,13 +84,15 @@ _PATTERN_CODE_TO_ASSIGNMENT = {
     "cooking_4": "cooking_4",
     "cooking_5": "cooking_5",
     "cooking_6": "cooking_6",
+    "cooking_7": "cooking_7",
+    "cooking_8": "cooking_8",
 }
 
 _VALID_ALLOWED_BY_GROUP = {
     "care": set(CARE_ASSIGNMENTS) - {"off"},
-    # cooking_6(9:00-16:00 フォールバック)は COOK_ASSIGNMENTS(静的①〜⑤)に無いため
-    # 明示的に許可対象へ追加（これが無いと⑥にチェックしても保存時に捨てられる）。
-    "cooking": (set(COOK_ASSIGNMENTS) | {"cooking_6"}) - {"cook_off"},
+    # cooking_6/7/8 は COOK_ASSIGNMENTS(静的①〜⑤)に無いため明示的に許可対象へ追加
+    # （無いとチェックしても保存時に捨てられる）。6=9-16, 7=6-12, 8=13-19。
+    "cooking": (set(COOK_ASSIGNMENTS) | {"cooking_6", "cooking_7", "cooking_8"}) - {"cook_off"},
 }
 
 _COUNSELOR_QUALIFICATION_CODES = {"counselor", "social_worker"}
@@ -456,6 +458,45 @@ def _run_migrations(app):
                 "VALUES ('cooking_6','cooking','(6) 9:00-16:00','09:00','16:00',0,0,?,'full',1,1)",
                 (_co,),
             )
+        # 池田さん向け 6:00-12:00(⑦) / 13:00-19:00(⑧) パターンを保証（休憩なし）
+        for _code, _label, _st, _et in (
+            ("cooking_7", "(7) 6:00-12:00", "06:00", "12:00"),
+            ("cooking_8", "(8) 13:00-19:00", "13:00", "19:00"),
+        ):
+            cursor.execute(
+                "SELECT COUNT(*) FROM shift_pattern WHERE staff_group='cooking' AND code=?",
+                (_code,),
+            )
+            if cursor.fetchone()[0] == 0:
+                cursor.execute(
+                    "SELECT COALESCE(MAX(display_order), 0) + 1 FROM shift_pattern "
+                    "WHERE staff_group='cooking'"
+                )
+                _co2 = cursor.fetchone()[0]
+                cursor.execute(
+                    "INSERT INTO shift_pattern "
+                    "(code, staff_group, label, start_time, end_time, has_break, "
+                    " break_minutes, display_order, period, covers_am, covers_pm) "
+                    "VALUES (?,'cooking',?,?,?,0,0,?,'full',1,1)",
+                    (_code, _label, _st, _et, _co2),
+                )
+
+    # 池田さん向け組み合わせ（⑦6-12＋③12-19 / ④6-13＋⑧13-19）を保証。無ければ追加。
+    if "cooking_combo_rule" in tables:
+        for _name, _pats in (
+            ("池田朝(⑦6-12)+夜(③12-19)", '["cooking_7", "cooking_3"]'),
+            ("朝(④6-13)+池田夜(⑧13-19)", '["cooking_4", "cooking_8"]'),
+        ):
+            cursor.execute(
+                "SELECT COUNT(*) FROM cooking_combo_rule WHERE allowed_patterns_json=?",
+                (_pats,),
+            )
+            if cursor.fetchone()[0] == 0:
+                cursor.execute(
+                    "INSERT INTO cooking_combo_rule (name, allowed_patterns_json, is_active) "
+                    "VALUES (?,?,1)",
+                    (_name, _pats),
+                )
 
     # GeneratedShift: day_am → day_pattern3, day_pm → day_pattern4 リネーム
     if "generated_shift" in tables:

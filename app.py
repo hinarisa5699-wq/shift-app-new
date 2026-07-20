@@ -58,7 +58,7 @@ from export import (
     export_excel, export_csv, export_pdf, export_pdf_individual,
     export_excel_group_half, export_pdf_from_excel,
     parse_uploaded_shift_excel, parse_shift_cell, state_to_cell_text,
-    recompute_warnings_from_shifts, ASSIGNMENT_LABELS,
+    recompute_warnings_from_shifts, ASSIGNMENT_LABELS, configure_operating_days,
 )
 
 
@@ -343,10 +343,27 @@ def _run_migrations(app):
 
     # ShiftSettings テーブル
     columns = [row[1] for row in cursor.execute("PRAGMA table_info(shift_settings)").fetchall()]
+    # 階別の営業曜日（0=月〜6=日）。既定は従来ハードコードされていた運用そのまま。
+    if "floor3_day_service_days" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN floor3_day_service_days VARCHAR(50) NOT NULL DEFAULT '1,4,6'")
+    if "floor3_visit_days" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN floor3_visit_days VARCHAR(50) NOT NULL DEFAULT '0,3'")
+    if "floor2_day_service_days" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN floor2_day_service_days VARCHAR(50) NOT NULL DEFAULT '0,3,5'")
+    if "floor2_visit_days" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN floor2_visit_days VARCHAR(50) NOT NULL DEFAULT '1,4'")
+    if "external_day_service_days" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN external_day_service_days VARCHAR(50) NOT NULL DEFAULT '2'")
+    # 以下3つは階別設定からの派生値（保存時に自動算出）
     if "visit_operating_days" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN visit_operating_days VARCHAR(50) DEFAULT '0,1,3,4'")
     if "no_day_service_days" not in columns:
-        cursor.execute("ALTER TABLE shift_settings ADD COLUMN no_day_service_days VARCHAR(50) NOT NULL DEFAULT ''")
+        # デイは水曜のみ無し（＝外部デイの日）
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN no_day_service_days VARCHAR(50) NOT NULL DEFAULT '2'")
+    if "day_service_operating_days" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN day_service_operating_days VARCHAR(50) NOT NULL DEFAULT '0,1,3,4,5,6'")
+    if "closed_dates" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN closed_dates TEXT NOT NULL DEFAULT ''")
     if "min_cooking_staff" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN min_cooking_staff INTEGER DEFAULT 1")
     if "min_early_staff" not in columns:
@@ -397,6 +414,10 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN late_oncall_mode VARCHAR(10) NOT NULL DEFAULT 'off'")
     if "visit_fairness_mode" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN visit_fairness_mode VARCHAR(10) NOT NULL DEFAULT 'soft'")
+    if "visit_fairness_max" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN visit_fairness_max INTEGER NOT NULL DEFAULT 1")
+    if "nurse_early_late_mode" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN nurse_early_late_mode VARCHAR(10) NOT NULL DEFAULT 'hard'")
     if "late_consecutive_mode" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN late_consecutive_mode VARCHAR(10) NOT NULL DEFAULT 'soft'")
     if "late_fairness_mode" not in columns:
@@ -1789,8 +1810,43 @@ def create_app():
         s.min_early_staff = safe_int(request.form.get("min_early_staff"), 1)
         s.min_late_staff = safe_int(request.form.get("min_late_staff"), 1)
         s.closed_days = ",".join(request.form.getlist("closed_days"))
-        s.visit_operating_days = ",".join(request.form.getlist("visit_operating_days"))
-        s.no_day_service_days = ",".join(request.form.getlist("no_day_service_days"))
+        # 休業日（日付指定・主に年末年始）。YYYY-MM-DD のみ受け付け、重複除去して昇順保存。
+        _closed_dates = set()
+        for _raw in request.form.getlist("closed_dates"):
+            _raw = (_raw or "").strip()
+            if not _raw:
+                continue
+            try:
+                _closed_dates.add(datetime.strptime(_raw, "%Y-%m-%d").date().isoformat())
+            except ValueError:
+                continue  # 不正な日付は黙って捨てる（フォームは date 入力なので通常起きない）
+        s.closed_dates = ",".join(sorted(_closed_dates))
+        # --- 階別の営業曜日（これが設定の正）---
+        def _form_dows(field):
+            return sorted({
+                int(x) for x in request.form.getlist(field)
+                if x.strip().isdigit() and 0 <= int(x) <= 6
+            })
+
+        _f3_ds = _form_dows("floor3_day_service_days")
+        _f3_v = _form_dows("floor3_visit_days")
+        _f2_ds = _form_dows("floor2_day_service_days")
+        _f2_v = _form_dows("floor2_visit_days")
+        _ext_ds = _form_dows("external_day_service_days")
+        s.floor3_day_service_days = ",".join(str(i) for i in _f3_ds)
+        s.floor3_visit_days = ",".join(str(i) for i in _f3_v)
+        s.floor2_day_service_days = ",".join(str(i) for i in _f2_ds)
+        s.floor2_visit_days = ",".join(str(i) for i in _f2_v)
+        s.external_day_service_days = ",".join(str(i) for i in _ext_ds)
+
+        # --- 派生値（シフト自動作成が参照する）---
+        #   デイ／訪問の営業曜日は 2階∪3階。外部デイは内部人員が不要なので含めない。
+        #   no_day_service_days（デイ人員を緩和する曜日）はデイ営業日の裏返し。
+        _ds_days = sorted(set(_f3_ds) | set(_f2_ds))
+        _v_days = sorted(set(_f3_v) | set(_f2_v))
+        s.day_service_operating_days = ",".join(str(i) for i in _ds_days)
+        s.visit_operating_days = ",".join(str(i) for i in _v_days)
+        s.no_day_service_days = ",".join(str(i) for i in range(7) if i not in _ds_days)
         s.min_cooking_staff = safe_int(request.form.get("min_cooking_staff"), 1)
         s.min_cooking_overlap = safe_int(request.form.get("min_cooking_overlap"), 2)
         s.breakfast_off_start = (request.form.get("breakfast_off_start", "") or "").strip()
@@ -1823,6 +1879,10 @@ def create_app():
         # 依頼文41-(2): 訪問回数の平等化モード（off/soft/hard、既定soft）
         _vfm = (request.form.get("visit_fairness_mode", "soft") or "soft").strip().lower()
         s.visit_fairness_mode = _vfm if _vfm in ("off", "soft", "hard") else "soft"
+        s.visit_fairness_max = max(0, safe_int(request.form.get("visit_fairness_max"), 1))
+        # 看護師・PT を早番/遅番に入れないか（off/hard、既定hard）
+        _nel = (request.form.get("nurse_early_late_mode", "hard") or "hard").strip().lower()
+        s.nurse_early_late_mode = _nel if _nel in ("off", "hard") else "hard"
         # 遅番の連日回避モード（off/soft/hard、既定soft）
         _lcm = (request.form.get("late_consecutive_mode", "soft") or "soft").strip().lower()
         s.late_consecutive_mode = _lcm if _lcm in ("off", "soft", "hard") else "soft"
@@ -2312,6 +2372,10 @@ def create_app():
         ]
 
         closed_days = [int(x) for x in settings_obj.closed_days.split(",") if x.strip()] if settings_obj.closed_days else []
+        closed_dates = [
+            x.strip() for x in (getattr(settings_obj, "closed_dates", "") or "").split(",")
+            if x.strip()
+        ]
         visit_days = [int(x) for x in settings_obj.visit_operating_days.split(",") if x.strip()] if settings_obj.visit_operating_days else []
         no_ds_days = [int(x) for x in (settings_obj.no_day_service_days or "").split(",") if x.strip()] if getattr(settings_obj, "no_day_service_days", "") else []
 
@@ -2322,6 +2386,7 @@ def create_app():
             "min_early_staff": getattr(settings_obj, 'min_early_staff', 1) if getattr(settings_obj, 'min_early_staff', 1) is not None else 1,
             "min_late_staff": getattr(settings_obj, 'min_late_staff', 1) if getattr(settings_obj, 'min_late_staff', 1) is not None else 1,
             "closed_days": closed_days,
+            "closed_dates": closed_dates,
             "visit_operating_days": visit_days,
             "no_day_service_days": no_ds_days,
             "min_cooking_staff": settings_obj.min_cooking_staff,
@@ -2341,9 +2406,17 @@ def create_app():
             "bath_role_alt_mode": getattr(settings_obj, 'bath_role_alt_mode', 'off') or 'off',
             "late_as_mid_mode": getattr(settings_obj, 'late_as_mid_mode', 'hard') or 'hard',
             "late_oncall_mode": getattr(settings_obj, 'late_oncall_mode', 'off') or 'off',
+            "nurse_early_late_mode": getattr(settings_obj, 'nurse_early_late_mode', 'hard') or 'hard',
             "visit_fairness_mode": getattr(settings_obj, 'visit_fairness_mode', 'soft') or 'soft',
+            "visit_fairness_max": getattr(settings_obj, 'visit_fairness_max', 1) if getattr(settings_obj, 'visit_fairness_max', 1) is not None else 1,
             "late_consecutive_mode": getattr(settings_obj, 'late_consecutive_mode', 'soft') or 'soft',
             "late_fairness_mode": getattr(settings_obj, 'late_fairness_mode', 'soft') or 'soft',
+            "late_fairness_max": getattr(settings_obj, 'late_fairness_max', 1) if getattr(settings_obj, 'late_fairness_max', 1) is not None else 1,
+            "early_consecutive_mode": getattr(settings_obj, 'early_consecutive_mode', 'soft') or 'soft',
+            "early_fairness_mode": getattr(settings_obj, 'early_fairness_mode', 'soft') or 'soft',
+            "early_fairness_max": getattr(settings_obj, 'early_fairness_max', 1) if getattr(settings_obj, 'early_fairness_max', 1) is not None else 1,
+            "oncall_fairness_mode": getattr(settings_obj, 'oncall_fairness_mode', 'soft') or 'soft',
+            "oncall_fairness_max": getattr(settings_obj, 'oncall_fairness_max', 1) if getattr(settings_obj, 'oncall_fairness_max', 1) is not None else 1,
             "placement_rules": placement_rules_data,
             "cooking_combo_rules": cooking_combo_data,
             "cooking_types": cooking_types_data,
@@ -2623,6 +2696,31 @@ def create_app():
             f.staff_id for f in ShiftFix.query.filter_by(year=year, month=month).all()
         ]
 
+        # カレンダー日付ヘッダの「デイ／訪問」表示用（0=月〜6=日）。設定画面の値を正とする。
+        _st = ShiftSettings.query.first()
+
+        def _dow_list(raw, fallback):
+            # 未設定(None)なら既定値。空文字は「その曜日は無し」という明示的な指定として尊重する。
+            if raw is None:
+                return fallback
+            vals = [x.strip() for x in raw.split(",") if x.strip().isdigit()]
+            return sorted({int(v) for v in vals if 0 <= int(v) <= 6})
+
+        operating_days = {
+            # 階別（日付ヘッダの「デイ3階」「訪2階」などの表示に使う）
+            "floor3_day_service": _dow_list(
+                getattr(_st, "floor3_day_service_days", None), [1, 4, 6]
+            ),
+            "floor3_visit": _dow_list(getattr(_st, "floor3_visit_days", None), [0, 3]),
+            "floor2_day_service": _dow_list(
+                getattr(_st, "floor2_day_service_days", None), [0, 3, 5]
+            ),
+            "floor2_visit": _dow_list(getattr(_st, "floor2_visit_days", None), [1, 4]),
+            "external_day_service": _dow_list(
+                getattr(_st, "external_day_service_days", None), [2]
+            ),
+        }
+
         return jsonify(
             {
                 "year": year,
@@ -2635,6 +2733,7 @@ def create_app():
                 "parking": parking_map,
                 "confirmation": conf.to_dict() if conf else None,
                 "fixed_staff_ids": fixed_staff_ids,
+                "operating_days": operating_days,
                 "staff_list": [
                     {
                         "id": st.id,
@@ -2743,6 +2842,28 @@ def create_app():
         shifts = GeneratedShift.query.filter_by(generation_id=generation_id).all()
         if not shifts:
             return None
+
+        # 曜日行の「デイ／訪問」注記を設定画面の営業曜日に合わせる（画面カレンダーと同じ）
+        _st = ShiftSettings.query.first()
+
+        def _dow_list(raw):
+            # None（列なし／設定未作成）は既定値据え置き、空文字は「無し」の明示指定。
+            if raw is None:
+                return None
+            return [
+                int(x) for x in raw.split(",")
+                if x.strip().isdigit() and 0 <= int(x) <= 6
+            ]
+
+        configure_operating_days(
+            floor3_day_service_days=_dow_list(getattr(_st, "floor3_day_service_days", None)),
+            floor3_visit_days=_dow_list(getattr(_st, "floor3_visit_days", None)),
+            floor2_day_service_days=_dow_list(getattr(_st, "floor2_day_service_days", None)),
+            floor2_visit_days=_dow_list(getattr(_st, "floor2_visit_days", None)),
+            external_day_service_days=_dow_list(
+                getattr(_st, "external_day_service_days", None)
+            ),
+        )
 
         # 休職中の職員は印刷一覧に載せない（roster からも各シフト行からも除外）。
         staffs = Staff.query.filter_by(on_leave=False).order_by(Staff.id).all()
@@ -3094,9 +3215,10 @@ def create_app():
         so = ShiftSettings.query.first()
         closed = [int(x) for x in (so.closed_days or "").split(",") if x.strip()] if so and so.closed_days else []
         vdays = [int(x) for x in (so.visit_operating_days or "").split(",") if x.strip()] if so and so.visit_operating_days else []
+        cdates = [x.strip() for x in (getattr(so, "closed_dates", "") or "").split(",") if x.strip()]
         placement = [r.to_dict() for r in PlacementRule.query.filter_by(is_active=True).all()]
         return {
-            "closed_days": closed, "visit_operating_days": vdays,
+            "closed_days": closed, "closed_dates": cdates, "visit_operating_days": vdays,
             "min_day_service": getattr(so, "min_day_service", 0) or 0,
             "min_visit_am": getattr(so, "min_visit_am", 0) or 0,
             "min_visit_pm": getattr(so, "min_visit_pm", 0) or 0,

@@ -8,6 +8,7 @@ OR-Tools CP-SAT を使用した制約充足・最適化ソルバー
 import calendar
 import datetime
 import json
+import os
 import jpholiday
 from ortools.sat.python import cp_model
 
@@ -265,6 +266,31 @@ def _get_counselor_qualification_ids(placement_rules: list[dict]) -> set[int]:
         if "相談" in rule_name or "counselor" in rule_name.lower():
             counselor_qual_ids.update(rule.get("target_qualification_ids", []))
     return counselor_qual_ids
+
+
+# ===========================================================================
+# 休業日（日付指定）のパース
+# ===========================================================================
+def _parse_closed_dates(raw) -> set:
+    """設定の closed_dates を date の集合にする。
+
+    受け取る形は "YYYY-MM-DD" の文字列リスト（または カンマ区切り文字列）。
+    主に年末年始の休業日に使う。曜日休業(closed_days)と同じく全員 off になる。
+    """
+    if not raw:
+        return set()
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    out = set()
+    for item in raw:
+        if isinstance(item, datetime.date):
+            out.add(item)
+            continue
+        try:
+            out.add(datetime.datetime.strptime(str(item).strip(), "%Y-%m-%d").date())
+        except (ValueError, TypeError):
+            continue
+    return out
 
 
 # ===========================================================================
@@ -1444,6 +1470,8 @@ def _solve_care_with_fallback(
     min_visit_am = settings.get("min_visit_am", 1)
     min_visit_pm = settings.get("min_visit_pm", 1)
     closed_days_set = set(settings.get("closed_days", [5, 6]))
+    # 休業日（日付指定・主に年末年始）。曜日休業と同じく全員 off にする。
+    closed_dates_set = _parse_closed_dates(settings.get("closed_dates"))
     visit_operating_days = settings.get("visit_operating_days", [0, 1, 3, 4])
     # デイ利用者がいない曜日（月=0..日=6）。その曜日はデイ必要人数を最小(1名)に緩和し、
     #   浮いた職員を訪問等へ回せるようにする（利用者ゼロなのに複数名要求→訪問不足の一因）。
@@ -1490,8 +1518,15 @@ def _solve_care_with_fallback(
     bath_supply_target = (_mbm + _mbo + 1) if (_mbm + _mbo) > 0 else 0
     # 依頼文41-(1): 遅番×オンコール禁止モード（off/soft/hard、既定 off）。
     late_oncall_mode = (settings.get("late_oncall_mode", "off") or "off").lower()
+    # 看護師・PT を早番/遅番に入れないか（off/hard、既定 hard＝入れない）。
+    nurse_early_late_mode = (settings.get("nurse_early_late_mode", "hard") or "hard").lower()
     # 依頼文41-(2): 訪問回数の平等化モード（off/soft/hard、既定 soft）。
     visit_fairness_mode = (settings.get("visit_fairness_mode", "soft") or "soft").lower()
+    # 訪問回数の平等化を hard にしたときの spread 上限（max−min ≤ N、既定 1・早番/遅番と同様）。
+    try:
+        visit_fairness_max = max(0, int(settings.get("visit_fairness_max", 1)))
+    except (TypeError, ValueError):
+        visit_fairness_max = 1
     # 遅番の連日回避モード（off/soft/hard、既定 soft）。同一職員が遅番を連日入らない。
     late_consecutive_mode = (settings.get("late_consecutive_mode", "soft") or "soft").lower()
     # 遅番日数の介護スタッフ間平等化モード（off/soft/hard、既定 soft）。
@@ -1538,6 +1573,7 @@ def _solve_care_with_fallback(
         year, month, all_dates, staff_ids, staff_by_id,
         off_request_set, min_day_service, min_visit_am, min_visit_pm,
         closed_days_set, visit_operating_days,
+        closed_dates_set=closed_dates_set,
         am_preferred_gender=am_preferred_gender,
         phone_duty_enabled=phone_duty_enabled,
         phone_duty_max_consecutive=phone_duty_max_consecutive,
@@ -1559,7 +1595,9 @@ def _solve_care_with_fallback(
         min_late_staff=min_late_staff,
         bath_supply_target=bath_supply_target,
         late_oncall_mode=late_oncall_mode,
+        nurse_early_late_mode=nurse_early_late_mode,
         visit_fairness_mode=visit_fairness_mode,
+        visit_fairness_max=visit_fairness_max,
         late_consecutive_mode=late_consecutive_mode,
         late_fairness_mode=late_fairness_mode,
         early_consecutive_mode=early_consecutive_mode,
@@ -1579,6 +1617,7 @@ def _solve_care_with_fallback(
         year, month, all_dates, staff_ids, staff_by_id,
         off_request_set, min_day_service, min_visit_am, min_visit_pm,
         closed_days_set, visit_operating_days,
+        closed_dates_set=closed_dates_set,
         am_preferred_gender=am_preferred_gender,
         phone_duty_enabled=phone_duty_enabled,
         phone_duty_max_consecutive=phone_duty_max_consecutive,
@@ -1600,7 +1639,9 @@ def _solve_care_with_fallback(
         min_late_staff=min_late_staff,
         bath_supply_target=bath_supply_target,
         late_oncall_mode=late_oncall_mode,
+        nurse_early_late_mode=nurse_early_late_mode,
         visit_fairness_mode=visit_fairness_mode,
+        visit_fairness_max=visit_fairness_max,
         late_consecutive_mode=late_consecutive_mode,
         late_fairness_mode=late_fairness_mode,
         early_consecutive_mode=early_consecutive_mode,
@@ -1630,6 +1671,7 @@ def _solve_care_with_fallback(
         year, month, all_dates, staff_ids, staff_by_id,
         off_request_set, min_day_service, min_visit_am, min_visit_pm,
         closed_days_set, visit_operating_days,
+        closed_dates_set=closed_dates_set,
         am_preferred_gender=am_preferred_gender,
         phone_duty_enabled=phone_duty_enabled,
         phone_duty_max_consecutive=phone_duty_max_consecutive,
@@ -1651,7 +1693,9 @@ def _solve_care_with_fallback(
         min_late_staff=min_late_staff,
         bath_supply_target=bath_supply_target,
         late_oncall_mode=late_oncall_mode,
+        nurse_early_late_mode=nurse_early_late_mode,
         visit_fairness_mode=visit_fairness_mode,
+        visit_fairness_max=visit_fairness_max,
         late_consecutive_mode=late_consecutive_mode,
         late_fairness_mode=late_fairness_mode,
         early_consecutive_mode=early_consecutive_mode,
@@ -1696,6 +1740,7 @@ def _solve_care(
     year, month, all_dates, staff_ids, staff_by_id, off_request_set,
     min_day_service, min_visit_am, min_visit_pm,
     closed_days_set, visit_operating_days,
+    closed_dates_set: set = None,
     am_preferred_gender: str = "",
     phone_duty_enabled: bool = False,
     phone_duty_max_consecutive: int = 1,
@@ -1717,7 +1762,9 @@ def _solve_care(
     min_late_staff: int = 1,
     bath_supply_target: int = _BATH_MID_COUNT + _BATH_OUT_COUNT + 1,
     late_oncall_mode: str = "off",
+    nurse_early_late_mode: str = "hard",
     visit_fairness_mode: str = "soft",
+    visit_fairness_max: int = 1,
     late_consecutive_mode: str = "soft",
     late_fairness_mode: str = "soft",
     early_consecutive_mode: str = "soft",
@@ -1775,10 +1822,12 @@ def _solve_care(
 
     # ==================================================================
     # 制約: 休業日は全員 off
+    #   休業曜日(closed_days_set) と 日付指定の休業日(closed_dates_set・年末年始等) の両方。
     # ==================================================================
+    closed_dates_set = closed_dates_set or set()
     closed_day_indices = set()
     for d_idx, dt in enumerate(all_dates):
-        if dt.weekday() in closed_days_set:
+        if dt.weekday() in closed_days_set or dt in closed_dates_set:
             closed_day_indices.add(d_idx)
             for s in staff_ids:
                 model.add(x[s, d_idx, "off"] == 1)
@@ -1851,6 +1900,25 @@ def _solve_care(
         if s not in nurse_ids:
             for d_idx in range(num_days):
                 model.add(x[s, d_idx, "nurse_short"] == 0)
+
+    # 看護師・PT は早番(early)/遅番(late)に入れない（ユーザー指定）。
+    #   早番・遅番はフロア必須ロールだが、専門職は本来業務に専念させ、介護職の
+    #   ローテとする。従来は看護師が遅番を独占(月13回等)する偏りが生じていた。
+    #   hard=禁止(既定) / off=従来どおり許可。早番/遅番の必要数は他の介護職＋不足
+    #   スラック(高ペナルティ)で満たすため、これをハード禁止にしても無解化しない
+    #   （どうしても人手が無い日のみ未配置＝スラックで許容）。
+    if (nurse_early_late_mode or "hard").lower() != "off":
+        _specialist_ids = set(nurse_ids)
+        if nurse_pt_qual_ids:
+            for s in staff_ids:
+                if nurse_pt_qual_ids.intersection(
+                    set(staff_by_id[s].get("qualification_ids", []))
+                ):
+                    _specialist_ids.add(s)
+        for s in _specialist_ids:
+            for d_idx in range(num_days):
+                model.add(x[s, d_idx, "early"] == 0)
+                model.add(x[s, d_idx, "late"] == 0)
 
     # ==================================================================
     # 制約: 訪問非営業日（営業曜日外＋祝日）は訪問系アサインメント不可
@@ -2392,6 +2460,11 @@ def _solve_care(
         if early_consec_penalties else 0
     )
 
+    # 早番/遅番/訪問 平等化ペナルティの重み係数。連日回避(×3)より優先させるため×4。
+    #   実データ検証: これ以上上げても全配置を保った上での最小spreadは変わらず
+    #   （＝残差は職員の勤務可能曜日・週回数による構造的な上限）、逆に週回数の下限(×5)を
+    #   割り込ませないため4に留める（4<5）。SHIFT_FAIR_FACTOR で調査用に上書き可。
+    _fair_factor = int(os.environ.get("SHIFT_FAIR_FACTOR", "4"))
     # --- 遅番日数の平等化（介護スタッフ間） ---
     late_fairness_mode = (late_fairness_mode or "soft").lower()
     late_fair_diff = 0
@@ -2435,8 +2508,11 @@ def _solve_care(
         #   soft/hard とも penalty で最小化しつつ、hard は上限を真のハード制約で課す。
         if late_fairness_mode == "hard":
             model.add(late_fair_diff <= late_fairness_max)
+        # soft でも「回数の公平化」を徹底するため、連日回避(×3)より重い×4 とする。
+        #   （遅番は必須ロールで“誰が入るか”の入替なので総出勤日数は増えず、重くしても
+        #     人員増を招かない。週回数の下限×5 だけは崩さないよう×4 に留める。）
         late_fairness_weight = (
-            (num_days + 1) * 2 if late_fairness_mode == "hard" else (num_days + 1)
+            (num_days + 1) * _fair_factor
         )
         late_fairness_penalty = late_fair_diff * late_fairness_weight
 
@@ -2479,8 +2555,9 @@ def _solve_care(
         model.add(early_fair_diff == max_early - min_early)
         if early_fairness_mode == "hard":
             model.add(early_fair_diff <= early_fairness_max)
+        # soft でも早番回数を徹底的に均すため連日回避(×3)より重い×4（遅番と同方針）。
         early_fairness_weight = (
-            (num_days + 1) * 2 if early_fairness_mode == "hard" else (num_days + 1)
+            (num_days + 1) * _fair_factor
         )
         early_fairness_penalty = early_fair_diff * early_fairness_weight
 
@@ -2762,10 +2839,13 @@ def _solve_care(
             model.add(min_visit <= visit_count[s])
         visit_fair_diff = model.new_int_var(0, num_days, "care_visit_fairness_diff")
         model.add(visit_fair_diff == max_visit - min_visit)
+        # hard: 早番/遅番と同様に spread（最大−最小）≤ visit_fairness_max を真の
+        #   ハード制約で課す（従来は重み2倍だけで上限が無く“徹底”できていなかった）。
         if visit_fairness_mode == "hard":
-            visit_fairness_weight = (num_days + 1) * 2
-        else:  # soft
-            visit_fairness_weight = num_days + 1
+            model.add(visit_fair_diff <= visit_fairness_max)
+        # soft でも訪問回数を徹底的に均すため×4（早番/遅番と同方針。訪問兼務は
+        #   “誰が入るか”の入替なので総出勤日数は増えない）。
+        visit_fairness_weight = (num_days + 1) * _fair_factor
         visit_fairness_penalty = visit_fair_diff * visit_fairness_weight
 
     # 総出勤日数（最小化対象）
@@ -2923,11 +3003,15 @@ def _solve_care(
     solver = cp_model.CpSolver()
     # 依頼文30: 本番(Render)の弱いCPU＋gunicornタイムアウトでワーカーが落ちないよう、
     # 探索時間を短縮（45→25秒）。num_workers=8 で並列探索し短時間でも解の質を確保。
-    solver.parameters.max_time_in_seconds = 25
+    solver.parameters.max_time_in_seconds = float(os.environ.get("SHIFT_SOLVER_MAX_SEC", "25"))
     solver.parameters.num_workers = 8
     solver.parameters.random_seed = 0
 
     status = solver.solve(model)
+    if os.environ.get("SHIFT_SOLVER_DEBUG"):
+        print(f"[solver] status={solver.status_name(status)} "
+              f"obj={solver.objective_value} best_bound={solver.best_objective_bound} "
+              f"time={solver.wall_time:.1f}s", flush=True)
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return None, None
@@ -3321,6 +3405,7 @@ def _solve_cooking_with_fallback(
 
     staff_ids = list(staff_by_id.keys())
     closed_days_set = set(settings.get("closed_days", [5, 6]))
+    closed_dates_set = _parse_closed_dates(settings.get("closed_dates"))
     cooking_combo_rules = settings.get("cooking_combo_rules", [])
     cooking_types = settings.get("cooking_types", [])  # 調理シフト種類マスタ
     # 新人×ベテランのペア成立回数の目標値（依頼文28・0=無効）
@@ -3350,6 +3435,7 @@ def _solve_cooking_with_fallback(
     shifts_data, warnings_data = _solve_cooking(
         year, month, all_dates, staff_ids, staff_by_id,
         off_request_set, closed_days_set, cook_min_staff,
+        closed_dates_set=closed_dates_set,
         cooking_combo_rules=cooking_combo_rules,
         allowed_patterns=allowed_patterns or {},
         cooking_types=cooking_types,
@@ -3365,6 +3451,7 @@ def _solve_cooking_with_fallback(
     shifts_data, warnings_data = _solve_cooking(
         year, month, all_dates, staff_ids, staff_by_id,
         off_request_set, closed_days_set, cook_min_staff,
+        closed_dates_set=closed_dates_set,
         cooking_combo_rules=cooking_combo_rules,
         allowed_patterns=allowed_patterns or {},
         cooking_types=cooking_types,
@@ -3395,6 +3482,7 @@ def _solve_cooking_with_fallback(
 def _solve_cooking(
     year, month, all_dates, staff_ids, staff_by_id, off_request_set,
     closed_days_set, cook_min_staff,
+    closed_dates_set: set = None,
     cooking_combo_rules: list = None,
     allowed_patterns: dict = None,
     cooking_types: list = None,
@@ -3447,10 +3535,13 @@ def _solve_cooking(
 
     # ==================================================================
     # 制約: 休業日は全員 cook_off
+    #   休業曜日(closed_days_set) と 日付指定の休業日(closed_dates_set・年末年始等) の両方。
+    #   調理は曜日休業を持たない運用（毎日）だが、年末年始はここで停止する。
     # ==================================================================
+    closed_dates_set = closed_dates_set or set()
     closed_day_indices = set()
     for d_idx, dt in enumerate(all_dates):
-        if dt.weekday() in closed_days_set:
+        if dt.weekday() in closed_days_set or dt in closed_dates_set:
             closed_day_indices.add(d_idx)
             for s in staff_ids:
                 model.add(x[s, d_idx, "cook_off"] == 1)

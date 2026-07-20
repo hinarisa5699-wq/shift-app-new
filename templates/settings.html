@@ -143,52 +143,88 @@
             </div>
         </div>
 
-        <!-- デイ利用者がいない曜日 -->
+        <!-- 階別の営業曜日（デイ／訪問／外部デイ）-->
         <div class="mb-8 p-6 bg-yellow-50 rounded-lg border border-yellow-300">
             <label class="block text-lg font-semibold text-gray-800 mb-2">
-                デイサービス利用者がいない曜日
+                階別の営業曜日（デイ・訪問・外部デイ）
             </label>
-            <p class="text-gray-600 text-sm mb-3">
-                デイ利用者がいない曜日を選ぶと、その曜日はデイの必要人数を<strong>1名まで緩和</strong>します。
-                浮いた職員は訪問など他の業務に回せます（利用者ゼロなのに複数名を要求して訪問が組めない、を防ぎます）。
+            <p class="text-gray-600 text-sm mb-4">
+                2階・3階それぞれのデイ利用日と訪問日、および外部デイの曜日を設定します。
+                ここで設定した内容が<strong>カレンダー上部の日付ヘッダ</strong>と
+                <strong>Excel／PDF出力の曜日行</strong>に表示されます。<br>
+                シフト自動作成にも反映され、2階・3階どちらもデイでない日（外部デイのみの日）は
+                デイの必要人数を<strong>1名まで緩和</strong>し、浮いた職員を訪問など他の業務に回せます。
             </p>
-            {% set no_ds = settings.no_day_service_days.split(',') if settings and settings.no_day_service_days else [] %}
-            <div class="flex flex-wrap gap-3">
-                {% for i in range(7) %}
-                <label class="inline-flex items-center cursor-pointer bg-white border border-gray-200 rounded-lg px-4 py-3 hover:bg-yellow-100 hover:border-yellow-400 transition-colors has-[:checked]:bg-yellow-100 has-[:checked]:border-yellow-500">
-                    <input type="checkbox" name="no_day_service_days" value="{{ i }}"
-                           {% if i|string in no_ds %}checked{% endif %}
-                           class="w-5 h-5 text-yellow-600 border-gray-300 rounded focus:ring-yellow-500">
-                    <span class="ml-2 text-base font-medium
-                        {% if i == 5 %}text-blue-600{% elif i == 6 %}text-red-600{% else %}text-gray-700{% endif %}">
-                        {{ day_names[i] }}
-                    </span>
-                </label>
-                {% endfor %}
+
+            {#- 階別の曜日ピッカー。name はそのまま app.py の保存項目と対応する -#}
+            {% set floor_groups = [
+                {'name': 'floor3_day_service_days', 'label': '3階 デイ',   'default': ['1','4','6'],
+                 'value': settings.floor3_day_service_days if settings else None,
+                 'badge': 'デイ3階', 'bg': '#FDE047', 'fg': '#333'},
+                {'name': 'floor3_visit_days',       'label': '3階 訪問',   'default': ['0','3'],
+                 'value': settings.floor3_visit_days if settings else None,
+                 'badge': '訪3階', 'bg': '#DBEAFE', 'fg': '#1d4ed8'},
+                {'name': 'floor2_day_service_days', 'label': '2階 デイ',   'default': ['0','3','5'],
+                 'value': settings.floor2_day_service_days if settings else None,
+                 'badge': 'デイ2階', 'bg': '#FDBA74', 'fg': '#333'},
+                {'name': 'floor2_visit_days',       'label': '2階 訪問',   'default': ['1','4'],
+                 'value': settings.floor2_visit_days if settings else None,
+                 'badge': '訪2階', 'bg': '#DBEAFE', 'fg': '#1d4ed8'},
+                {'name': 'external_day_service_days', 'label': '外部デイ', 'default': ['2'],
+                 'value': settings.external_day_service_days if settings else None,
+                 'badge': '外部デイ', 'bg': '#CBD5E1', 'fg': '#334155'}
+            ] %}
+
+            {% for g in floor_groups %}
+            {# value が None（未設定）のときだけ既定値。空文字は「無し」の明示指定として尊重する #}
+            {% set sel = g.value.split(',') if g.value is not none else g.default %}
+            <div class="mb-4 last:mb-0 p-4 bg-white rounded-lg border border-gray-200">
+                <div class="flex items-center mb-2">
+                    <span class="inline-block px-2 py-0.5 rounded text-xs font-bold mr-2"
+                          style="background-color:{{ g.bg }};color:{{ g.fg }}">{{ g.badge }}</span>
+                    <span class="text-base font-medium text-gray-800">{{ g.label }}の曜日</span>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                    {% for i in range(7) %}
+                    <label class="inline-flex items-center cursor-pointer bg-white border border-gray-200 rounded-lg px-3 py-2 hover:bg-yellow-100 hover:border-yellow-400 transition-colors has-[:checked]:bg-yellow-100 has-[:checked]:border-yellow-500">
+                        <input type="checkbox" name="{{ g.name }}" value="{{ i }}"
+                               {% if i|string in sel %}checked{% endif %}
+                               class="w-5 h-5 text-yellow-600 border-gray-300 rounded focus:ring-yellow-500">
+                        <span class="ml-2 text-base font-medium
+                            {% if i == 5 %}text-blue-600{% elif i == 6 %}text-red-600{% else %}text-gray-700{% endif %}">
+                            {{ day_names[i] }}
+                        </span>
+                    </label>
+                    {% endfor %}
+                </div>
             </div>
+            {% endfor %}
         </div>
 
-        <!-- 訪問介護の営業曜日 -->
+        <!-- 訪問介護のその他の設定 -->
         <div class="mb-8 p-6 bg-green-50 rounded-lg border border-green-200">
             <label class="block text-lg font-semibold text-gray-800 mb-2">
-                訪問介護の営業曜日
+                訪問介護の設定
             </label>
             <p class="text-gray-600 text-sm mb-3">
-                訪問介護が営業する曜日を選択してください。
+                訪問介護の営業曜日は上の「階別の営業曜日」で階ごとに設定します
+                （2階・3階のいずれかが訪問の日＝訪問の営業日として扱われます）。
             </p>
-            {% set visit_days = settings.visit_operating_days.split(',') if settings and settings.visit_operating_days else ['0','1','3','4'] %}
-            <div class="flex flex-wrap gap-3">
-                {% for i in range(7) %}
-                <label class="inline-flex items-center cursor-pointer bg-white border border-gray-200 rounded-lg px-4 py-3 hover:bg-green-100 hover:border-green-400 transition-colors has-[:checked]:bg-green-100 has-[:checked]:border-green-500">
-                    <input type="checkbox" name="visit_operating_days" value="{{ i }}"
-                           {% if i|string in visit_days %}checked{% endif %}
-                           class="w-5 h-5 text-green-600 border-gray-300 rounded focus:ring-green-500">
-                    <span class="ml-2 text-base font-medium
-                        {% if i == 5 %}text-blue-600{% elif i == 6 %}text-red-600{% else %}text-gray-700{% endif %}">
-                        {{ day_names[i] }}
-                    </span>
+
+            <!-- 看護師・PT を早番/遅番に入れない -->
+            <div class="mt-6 pt-4 border-t border-green-200">
+                <label for="nurse_early_late_mode" class="block text-base font-medium text-gray-700 mb-2">
+                    看護師・PTを早番/遅番に入れない
                 </label>
-                {% endfor %}
+                {% set nel = settings.nurse_early_late_mode if settings and settings.nurse_early_late_mode else 'hard' %}
+                <select id="nurse_early_late_mode" name="nurse_early_late_mode"
+                        class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
+                    <option value="hard" {% if nel == 'hard' %}selected{% endif %}>入れない（介護職のローテ・既定）</option>
+                    <option value="off"  {% if nel == 'off'  %}selected{% endif %}>入れてよい（従来どおり）</option>
+                </select>
+                <p class="text-gray-600 text-sm mt-1">
+                    早番(7:30-16:30)・遅番(9:30-18:30)を介護職だけのローテにし、看護師・PTは本来業務に専念させます。オフにすると看護師・PTも早番/遅番に入れます（従来は看護師が遅番を独占して偏る原因になっていました）。
+                </p>
             </div>
 
             <!-- 訪問回数の平等化（依頼文41） -->
@@ -197,14 +233,21 @@
                     訪問回数の平等化
                 </label>
                 {% set vfm = settings.visit_fairness_mode if settings and settings.visit_fairness_mode else 'soft' %}
-                <select id="visit_fairness_mode" name="visit_fairness_mode"
-                        class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
-                    <option value="off"  {% if vfm == 'off'  %}selected{% endif %}>オフ（制約なし）</option>
-                    <option value="soft" {% if vfm == 'soft' %}selected{% endif %}>ソフト（できるだけ揃える・既定）</option>
-                    <option value="hard" {% if vfm == 'hard' %}selected{% endif %}>ハード（できる限り揃える）</option>
-                </select>
+                <div class="flex items-center gap-3">
+                    <select id="visit_fairness_mode" name="visit_fairness_mode"
+                            class="w-64 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white">
+                        <option value="off"  {% if vfm == 'off'  %}selected{% endif %}>オフ（制約なし）</option>
+                        <option value="soft" {% if vfm == 'soft' %}selected{% endif %}>ソフト（できるだけ揃える・既定）</option>
+                        <option value="hard" {% if vfm == 'hard' %}selected{% endif %}>ハード（spread上限以内に厳守）</option>
+                    </select>
+                    <label class="text-sm text-gray-600">ハード上限(日)
+                        <input type="number" min="0" name="visit_fairness_max"
+                               value="{{ settings.visit_fairness_max if settings and settings.visit_fairness_max is not none else 1 }}"
+                               class="w-20 px-2 py-2 border border-gray-300 rounded-lg ml-1">
+                    </label>
+                </div>
                 <p class="text-gray-600 text-sm mt-1">
-                    訪問可の職員どうしで、訪問する日数の差（最大−最小）をできるだけ小さくします。完全一致はできないためソフトが既定です。達成度（差の日数）は生成後の警告に表示します。
+                    訪問可の職員どうしで、訪問する日数の差（最大−最小）をできるだけ小さくします。ソフトでも回数の公平化を最優先で強くかけます。ハードは差が「上限(日)」以内になるよう厳守します（人員的に不可能な月は生成できないことがあります）。達成度（差の日数）は生成後の警告に表示します。
                 </p>
             </div>
 
@@ -460,6 +503,39 @@
                 </label>
                 {% endfor %}
             </div>
+        </div>
+
+        <!-- 休業日（日付指定・年末年始など） -->
+        <div class="mb-8 p-6 bg-gray-50 rounded-lg border border-gray-200">
+            <label class="block text-lg font-semibold text-gray-800 mb-2">
+                休業日（日付で指定）
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                年末年始など、日付を決めて休業する日を登録してください。
+                登録した日は<strong>介護・調理とも全員お休み</strong>になります（休業曜日と同じ扱い）。
+            </p>
+            <div class="flex flex-wrap items-center gap-2 mb-3">
+                <input type="date" id="closedDateInput"
+                       class="border border-gray-300 rounded-lg px-3 py-2 text-base focus:ring-2 focus:ring-red-400 focus:border-red-400">
+                <button type="button" id="closedDateAddBtn"
+                        class="bg-red-500 hover:bg-red-600 text-white font-medium px-4 py-2 rounded-lg transition-colors">
+                    追加
+                </button>
+            </div>
+            {% set closed_dates = settings.closed_dates.split(',') if settings and settings.closed_dates else [] %}
+            <div id="closedDateList" class="flex flex-wrap gap-2">
+                {% for d in closed_dates %}{% if d.strip() %}
+                <span class="closed-date-chip inline-flex items-center bg-white border border-red-300 rounded-lg pl-3 pr-2 py-2">
+                    <input type="hidden" name="closed_dates" value="{{ d.strip() }}">
+                    <span class="text-base text-gray-700">{{ d.strip() }}</span>
+                    <button type="button" class="closed-date-remove ml-2 text-red-500 hover:text-red-700 font-bold text-lg leading-none"
+                            aria-label="{{ d.strip() }} を削除">&times;</button>
+                </span>
+                {% endif %}{% endfor %}
+            </div>
+            <p id="closedDateEmpty" class="text-gray-400 text-sm {% if closed_dates and closed_dates|join('')|trim %}hidden{% endif %}">
+                登録された休業日はありません。
+            </p>
         </div>
 
         <!-- 調理スタッフ最低配置人数 -->
@@ -933,6 +1009,67 @@
 
 {% block scripts %}
 <script>
+// --- 休業日（日付指定）: チップの追加・削除 ---
+// 保存は設定フォームの通常POSTで行うため、チップは hidden input を持たせるだけ。
+(function initClosedDates() {
+    const input = document.getElementById('closedDateInput');
+    const addBtn = document.getElementById('closedDateAddBtn');
+    const list = document.getElementById('closedDateList');
+    const empty = document.getElementById('closedDateEmpty');
+    if (!input || !addBtn || !list) return;
+
+    function refreshEmpty() {
+        if (empty) empty.classList.toggle('hidden', list.children.length > 0);
+    }
+
+    function removeChip(e) {
+        e.target.closest('.closed-date-chip').remove();
+        refreshEmpty();
+    }
+
+    function addDate(value) {
+        if (!value) return;
+        const exists = Array.from(list.querySelectorAll('input[name="closed_dates"]'))
+            .some(i => i.value === value);
+        if (exists) {
+            alert(`${value} はすでに登録されています。`);
+            return;
+        }
+        const chip = document.createElement('span');
+        chip.className = 'closed-date-chip inline-flex items-center bg-white border border-red-300 rounded-lg pl-3 pr-2 py-2';
+        const hidden = document.createElement('input');
+        hidden.type = 'hidden';
+        hidden.name = 'closed_dates';
+        hidden.value = value;
+        const label = document.createElement('span');
+        label.className = 'text-base text-gray-700';
+        label.textContent = value;
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'closed-date-remove ml-2 text-red-500 hover:text-red-700 font-bold text-lg leading-none';
+        del.setAttribute('aria-label', `${value} を削除`);
+        del.innerHTML = '&times;';
+        del.addEventListener('click', removeChip);
+        chip.append(hidden, label, del);
+
+        // 日付順に差し込む（並べ替えの手間をなくす）
+        const after = Array.from(list.children)
+            .find(c => c.querySelector('input').value > value);
+        list.insertBefore(chip, after || null);
+        input.value = '';
+        refreshEmpty();
+    }
+
+    addBtn.addEventListener('click', () => addDate(input.value));
+    // date 入力で Enter を押してもフォーム全体が送信されないようにする
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); addDate(input.value); }
+    });
+    list.querySelectorAll('.closed-date-remove')
+        .forEach(btn => btn.addEventListener('click', removeChip));
+    refreshEmpty();
+})();
+
 function toggleRuleTypeFields() {
     const ruleType = document.getElementById('new-rule-type').value;
     const qualsWrap = document.getElementById('new-rule-quals');

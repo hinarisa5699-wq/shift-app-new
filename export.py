@@ -26,6 +26,7 @@ from openpyxl.styles import (
 )
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.page import PageMargins
+from openpyxl.worksheet.worksheet import Worksheet as WS   # PAPERSIZE_A3 / A4 定数用
 from openpyxl.worksheet.properties import PageSetupProperties
 
 # ---------------------------------------------------------------------------
@@ -83,24 +84,60 @@ ASSIGNMENT_FILL = {
 # 曜日名
 WEEKDAY_NAMES = ["月", "火", "水", "木", "金", "土", "日"]
 
-# 階ごとの デイ利用日／訪問日（曜日ルール）。d.weekday(): 0=月..6=日。
-#   3階: デイ=火金日 / 訪問=月木 ,  2階: デイ=月木土 / 訪問=火金 , 水=外部デイ。
-_FLOOR_DAY_SERVICE = {1: "3階", 4: "3階", 6: "3階", 0: "2階", 3: "2階", 5: "2階"}
-_FLOOR_VISIT = {0: "3階", 3: "3階", 1: "2階", 4: "2階"}
+# 階別のデイ利用日／訪問日（曜日ルール）。d.weekday(): 0=月..6=日。
+#   既定は従来の運用（3階 デイ=火金日/訪問=月木、2階 デイ=月木土/訪問=火金、外部デイ=水）。
+#   実際の値は設定画面の階別営業曜日を configure_operating_days() で流し込む
+#   （出力前に app.py が呼ぶ）。画面カレンダーと同じ内容が Excel/PDF にも出る。
+_FLOOR3_DAY_SERVICE = {1, 4, 6}
+_FLOOR3_VISIT = {0, 3}
+_FLOOR2_DAY_SERVICE = {0, 3, 5}
+_FLOOR2_VISIT = {1, 4}
+_EXTERNAL_DAY_SERVICE = {2}
+
+
+def configure_operating_days(
+    floor3_day_service_days=None,
+    floor3_visit_days=None,
+    floor2_day_service_days=None,
+    floor2_visit_days=None,
+    external_day_service_days=None,
+):
+    """設定画面の階別営業曜日を反映する（0=月〜6=日）。
+
+    None を渡した項目は既定値のまま据え置く。空リストは「その曜日は無し」として反映する。
+    """
+    global _FLOOR3_DAY_SERVICE, _FLOOR3_VISIT
+    global _FLOOR2_DAY_SERVICE, _FLOOR2_VISIT, _EXTERNAL_DAY_SERVICE
+
+    def _norm(days):
+        return {int(x) for x in days if 0 <= int(x) <= 6}
+
+    if floor3_day_service_days is not None:
+        _FLOOR3_DAY_SERVICE = _norm(floor3_day_service_days)
+    if floor3_visit_days is not None:
+        _FLOOR3_VISIT = _norm(floor3_visit_days)
+    if floor2_day_service_days is not None:
+        _FLOOR2_DAY_SERVICE = _norm(floor2_day_service_days)
+    if floor2_visit_days is not None:
+        _FLOOR2_VISIT = _norm(floor2_visit_days)
+    if external_day_service_days is not None:
+        _EXTERNAL_DAY_SERVICE = _norm(external_day_service_days)
 
 
 def _floor_annotation(d):
-    """日付 d の階別 デイ/訪問 注記（例 'デイ2階 訪3階'）。無ければ空文字。"""
+    """日付 d の階別 デイ/訪問 注記（例 'デイ3階 訪2階'）。無ければ空文字。"""
     wd = d.weekday()
     parts = []
-    ds = _FLOOR_DAY_SERVICE.get(wd)
-    if ds:
-        parts.append(f"デイ{ds}")
-    if wd == 2:
+    if wd in _FLOOR3_DAY_SERVICE:
+        parts.append("デイ3階")
+    if wd in _FLOOR2_DAY_SERVICE:
+        parts.append("デイ2階")
+    if wd in _EXTERNAL_DAY_SERVICE:
         parts.append("外部デイ")
-    vs = _FLOOR_VISIT.get(wd)
-    if vs:
-        parts.append(f"訪{vs}")
+    if wd in _FLOOR3_VISIT:
+        parts.append("訪3階")
+    if wd in _FLOOR2_VISIT:
+        parts.append("訪2階")
     return " ".join(parts)
 
 # サマリー列ヘッダー (ケア)
@@ -342,6 +379,104 @@ def _append_parking(text, parking_map, d_str, sid):
     return f"{text}\n{tag}" if text else tag
 
 
+# ---------------------------------------------------------------------------
+# 印刷レイアウト（用紙・文字サイズ・行高）
+#   介護=A3横 / 調理=A4横。どちらも「1ページに収めつつ枠いっぱいに大きく」。
+#
+#   Excel の「1ページに収める」は縮小しかしない（100%超に拡大はしない）ため、
+#   印刷される文字の大きさは  フォントpt × 縮小率  で決まる。
+#   縮小率は 内容の横幅 ÷ 印刷可能幅 で決まるので、用紙を大きくする(A3)か
+#   フォントを上げるかのどちらかでしか実際の文字は大きくならない。
+#   そこで縮小率を先に見積もり、印刷後に狙いのサイズになるようフォントを逆算する。
+# ---------------------------------------------------------------------------
+_MM_PER_PX = 25.4 / 96      # 列幅(px) → mm
+_MM_PER_PT = 25.4 / 72      # 行高(pt) → mm
+_PAPER_MM = {"A4": (297.0, 210.0), "A3": (420.0, 297.0)}   # いずれも横向き
+_PRINT_MARGIN_IN = 0.2      # 上下左右の余白（インチ）。狭めて印刷領域を稼ぐ。
+
+# 印刷後にこの pt 相当で出したい、という狙いの文字サイズ
+_TARGET_PRINTED_PT = {"data": 11.0, "header": 11.5, "title": 16.0}
+_FONT_PT_RANGE = (10.0, 26.0)   # 逆算したフォントサイズの下限・上限
+
+
+def _col_width_to_mm(width_units):
+    """Excel の列幅(文字数単位) を mm に換算する。"""
+    return (width_units * 7 + 5) * _MM_PER_PX
+
+
+def _plan_print_layout(is_cook, num_days, name_width, date_width, total_width,
+                       n_data_rows, n_summary_rows, fit_one_page):
+    """用紙・フォントサイズ・行高をまとめて決める。
+
+    戻り値: dict(paper, paper_code, data_pt, header_pt, title_pt,
+                 data_row_h, header_row_h, title_row_h, dow_row_h)
+    """
+    paper = "A4" if is_cook else "A3"
+    paper_w, paper_h = _PAPER_MM[paper]
+    margin_mm = _PRINT_MARGIN_IN * 25.4
+    usable_w = paper_w - margin_mm * 2
+    usable_h = paper_h - margin_mm * 2
+
+    # --- 横方向: 内容幅から縮小率を見積もる ---
+    content_w = (
+        _col_width_to_mm(name_width)
+        + _col_width_to_mm(date_width) * num_days
+        + _col_width_to_mm(total_width)
+    )
+    if fit_one_page and content_w > 0:
+        # 1ページに収める指定のときだけ縮小がかかる（拡大はされないので上限1.0）
+        scale = min(1.0, usable_w / content_w)
+    else:
+        scale = 1.0   # 横は複数ページに流すので等倍で印刷される
+
+    def _solve_pt(kind):
+        lo, hi = _FONT_PT_RANGE
+        return round(min(hi, max(lo, _TARGET_PRINTED_PT[kind] / scale)), 1)
+
+    data_pt = _solve_pt("data")
+    header_pt = _solve_pt("header")
+    title_pt = _solve_pt("title")
+
+    # サマリー行のラベル（「調理配置数」「オンコール」等・全角5文字＝10単位）は
+    # 折り返さずに職員名列へ収めたい。列幅で頭打ちにする（列幅の単位は既定フォント11pt基準）。
+    #   +0.5 は丸め・字間の安全代（ぴったりだと1文字だけ溢れることがある）。
+    _SUMMARY_LABEL_UNITS = 10
+    summary_label_pt = round(min(data_pt, name_width * 11.0 / (_SUMMARY_LABEL_UNITS + 0.5)), 1)
+
+    # --- 縦方向: 残り高さをデータ行に配って「枠いっぱい」にする ---
+    title_row_h = round(title_pt * 1.5, 1)
+    header_row_h = round(header_pt * 1.6, 1)
+    # 曜日行は「曜日／祝日名／デイ・訪問注記」で最大3行になる（例: 火・山の日・訪問）
+    dow_row_h = round(header_pt * 1.25 * 3 + 2, 1)
+    summary_row_h = round(data_pt * 1.6, 1)
+
+    fixed_h_pt = title_row_h + header_row_h + dow_row_h + summary_row_h * n_summary_rows
+    # 縮小率は横で決まるので、縦もその縮小率で刷られる前提で使える高さを逆算する。
+    # 0.95 は安全マージン: 縦がわずかでも溢れると fitToHeight が効いて更に縮小され、
+    # 狙ったフォントサイズより小さく印刷されてしまうため。
+    avail_pt = (usable_h / _MM_PER_PT) / scale * 0.95 - fixed_h_pt
+    min_row_h = round(data_pt * 1.9, 1)     # 2行ぶん折り返しても潰れない最低限
+    if n_data_rows > 0:
+        # 上限90pt: 職員が少ない月に1行が間延びしすぎないように抑える
+        data_row_h = max(min_row_h, min(90.0, avail_pt / n_data_rows))
+    else:
+        data_row_h = min_row_h
+
+    return {
+        "paper": paper,
+        "paper_code": WS.PAPERSIZE_A3 if paper == "A3" else WS.PAPERSIZE_A4,
+        "data_pt": data_pt,
+        "header_pt": header_pt,
+        "title_pt": title_pt,
+        "summary_label_pt": summary_label_pt,
+        "data_row_h": round(data_row_h, 1),
+        "header_row_h": header_row_h,
+        "title_row_h": title_row_h,
+        "dow_row_h": dow_row_h,
+        "summary_row_h": summary_row_h,
+    }
+
+
 def _write_group_sheet(
     ws,
     group_staff,
@@ -372,14 +507,31 @@ def _write_group_sheet(
     title_label = "調理スタッフ" if is_cook else "介護スタッフ"
     off_token = "cook_off" if is_cook else "off"
 
-    header_font_wrap = Font(name="メイリオ", bold=True, color="FFFFFF", size=11)
-    label_font = Font(name="メイリオ", bold=True, size=10)
+    # --- 印刷レイアウト（用紙・文字サイズ・行高）を先に決める ---
+    #   ここで決めたサイズをこのシート内の全セルに使う（モジュール定数のフォントは
+    #   他のシートでも使い回されるため、ここでは触らずローカルに作る）。
+    name_width = 18 if not is_cook else 12.875
+    date_width = 14 if is_cook else 13   # 調理は時間ラベルが長い
+    total_width = 7
+    n_summary_rows = 1 if is_cook else 6
+    layout = _plan_print_layout(
+        is_cook, num_days, name_width, date_width, total_width,
+        n_data_rows=len(group_staff), n_summary_rows=n_summary_rows,
+        fit_one_page=fit_one_page,
+    )
+
+    title_font = Font(name="メイリオ", bold=True, size=layout["title_pt"])
+    header_font_wrap = Font(name="メイリオ", bold=True, color="FFFFFF", size=layout["header_pt"])
+    label_font = Font(name="メイリオ", bold=True, size=layout["data_pt"])
+    body_font = Font(name="メイリオ", size=layout["data_pt"])
+    summary_label_font = Font(name="メイリオ", bold=True, size=layout["summary_label_pt"])
+    alert_body_font = Font(name="メイリオ", size=layout["data_pt"], color="CC0000")
 
     # --- タイトル行 ---
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_col)
     title_value = title_override or f"{year}年{month}月 シフト表（{title_label}）"
     title_cell = ws.cell(row=1, column=1, value=title_value)
-    title_cell.font = TITLE_FONT
+    title_cell.font = title_font
     title_cell.alignment = CENTER_ALIGN
 
     header_row1 = 2   # 日付（M/D）
@@ -425,7 +577,7 @@ def _write_group_sheet(
         if _floor:
             dow_value = f"{dow_value}\n{_floor}"
         c2 = ws.cell(row=header_row2, column=col, value=dow_value)
-        c2.font = NORMAL_FONT
+        c2.font = body_font
         c2.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         c2.border = THIN_BORDER
         if col_fill:
@@ -437,7 +589,7 @@ def _write_group_sheet(
         sid = s["id"]
 
         name_cell = ws.cell(row=row, column=name_col, value=_staff_name_label(s, is_cook))
-        name_cell.font = NORMAL_FONT
+        name_cell.font = body_font
         name_cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
         name_cell.border = THIN_BORDER
 
@@ -457,7 +609,7 @@ def _write_group_sheet(
             text = _append_parking(text, parking_map, d_str, sid)
 
             cell = ws.cell(row=row, column=col, value=text)
-            cell.font = NORMAL_FONT
+            cell.font = body_font
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             cell.border = THIN_BORDER
 
@@ -493,7 +645,7 @@ def _write_group_sheet(
     for r_off, (label, key, warn_type) in enumerate(summary_rows):
         row = summary_start_row + r_off
         label_cell = ws.cell(row=row, column=name_col, value=label)
-        label_cell.font = label_font
+        label_cell.font = summary_label_font
         label_cell.fill = SATURDAY_FILL
         label_cell.alignment = Alignment(horizontal="left", vertical="center")
         label_cell.border = THIN_BORDER
@@ -510,7 +662,7 @@ def _write_group_sheet(
                 val = summary.get(key, 0)
 
             cell = ws.cell(row=row, column=col, value=val)
-            cell.font = NORMAL_FONT
+            cell.font = body_font
             cell.alignment = CENTER_ALIGN
             cell.border = THIN_BORDER
 
@@ -529,27 +681,41 @@ def _write_group_sheet(
                         break
             if is_alert:
                 cell.fill = ALERT_FILL
-                cell.font = ALERT_FONT
+                cell.font = alert_body_font
 
         ws.cell(row=row, column=total_col, value="").border = THIN_BORDER
 
     # --- 列幅・行高・固定・印刷設定 ---
-    ws.column_dimensions[get_column_letter(name_col)].width = 18   # 職員名・資格
-    date_width = 14 if is_cook else 13   # 調理は時間ラベルが長い
+    #   列幅は _plan_print_layout の縮小率計算と同じ値を使う（ズレると狙いが外れる）。
+    ws.column_dimensions[get_column_letter(name_col)].width = name_width   # 職員名・資格
     for i in range(num_days):
         ws.column_dimensions[get_column_letter(first_date_col + i)].width = date_width
-    ws.column_dimensions[get_column_letter(total_col)].width = 7
+    ws.column_dimensions[get_column_letter(total_col)].width = total_width
 
-    ws.row_dimensions[header_row2].height = 30   # 祝日名の折り返し用
+    # 行高: 残った縦の余白をデータ行に配って枠いっぱいに使う
+    ws.row_dimensions[1].height = layout["title_row_h"]
+    ws.row_dimensions[header_row1].height = layout["header_row_h"]
+    ws.row_dimensions[header_row2].height = layout["dow_row_h"]   # 曜日＋祝日名＋注記
+    for r_off in range(len(group_staff)):
+        ws.row_dimensions[data_start_row + r_off].height = layout["data_row_h"]
+    for r_off in range(n_summary_rows):
+        ws.row_dimensions[summary_start_row + r_off].height = layout["summary_row_h"]
 
+    # 用紙: 介護=A3横 / 調理=A4横（どちらも枠いっぱい・1ページに収める）
+    ws.page_setup.paperSize = layout["paper_code"]
     ws.page_setup.orientation = "landscape"
-    # 依頼文25: 4分割（前半15日/後半16日）は横もA4横1ページに収める
+    # 依頼文25: 4分割（前半15日/後半16日）は横も1ページに収める
     ws.page_setup.fitToWidth = 1 if fit_one_page else 0   # 0=日付ぶん複数ページ
     ws.page_setup.fitToHeight = 1   # 縦（職員）は 1 ページに収める
     ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
     ws.page_margins = PageMargins(
-        left=0.3, right=0.3, top=0.5, bottom=0.5, header=0.2, footer=0.2
+        left=_PRINT_MARGIN_IN, right=_PRINT_MARGIN_IN,
+        top=_PRINT_MARGIN_IN, bottom=_PRINT_MARGIN_IN,
+        header=0.1, footer=0.1,
     )
+    # 余白ぶんだけ左右に寄らないよう中央に置く
+    ws.print_options.horizontalCentered = True
+    ws.print_options.verticalCentered = True
     ws.print_title_rows = "1:3"      # タイトル＋日付見出しを各ページ先頭に繰り返す
     ws.print_title_cols = "A:A"      # 職員名列を各ページ左端に繰り返す
     ws.freeze_panes = ws.cell(row=data_start_row, column=first_date_col).coordinate
@@ -864,8 +1030,9 @@ def _pick_body_fs(pdf, staff_rows, summary_rows, name_w, date_w, row_h,
     return fs_min
 
 
-def _render_pdf_table(title, sel_dates, staff_rows, summary_rows):
-    """共通PDF描画（A4横・1ページ）。データ元は DB でも Excel でもよい。
+def _render_pdf_table(title, sel_dates, staff_rows, summary_rows, paper="A4"):
+    """共通PDF描画（横・1ページ）。データ元は DB でも Excel でもよい。
+    paper:        "A3"（介護）/ "A4"（調理）。Excel出力と同じ用紙に揃える。
     title:        タイトル文字列
     sel_dates:    列に対応する date のリスト（曜日/祝日色・M/D見出し用）
     staff_rows:   [(name, [cell_text, ...], work_str), ...]
@@ -873,14 +1040,14 @@ def _render_pdf_table(title, sel_dates, staff_rows, summary_rows):
     """
     from fpdf import FPDF  # 遅延 import
 
-    # 依頼文25: A4横ちょうど1枚に収めつつ、ページいっぱいに最大の文字で描画する。
+    # 依頼文25: 指定用紙の横1枚ちょうどに収めつつ、ページいっぱいに最大の文字で描画する。
     # 余白を最小化し、行高は行数に応じて usable_h を等分（行数の少ない調理は行が高く＝文字が大きくなる）、
     # 文字サイズは「1枚に収まる範囲で最大」を自動選択する。
     MARGIN = 4.0          # 余白（mm）最小限
     TITLE_H = 7.0         # タイトル帯の高さ
     GAP = 1.5             # タイトルと表の隙間
 
-    pdf = FPDF(orientation="L", unit="mm", format="A4")
+    pdf = FPDF(orientation="L", unit="mm", format=paper if paper in ("A3", "A4") else "A4")
     pdf.set_auto_page_break(False)
     pdf.add_font(_PDF_FONT, "", _PDF_FONT_PATH)
     pdf.set_margins(MARGIN, MARGIN, MARGIN)
@@ -1076,7 +1243,9 @@ def export_pdf(
     first_d = sel[0].day if sel else 1
     last_d = sel[-1].day if sel else 1
     title = f"{year}年{month}月 シフト表（{group_label} {half_label}：{first_d}〜{last_d}日）"
-    return _render_pdf_table(title, sel, staff_rows, summary_rows)
+    # 介護=A3横 / 調理=A4横（Excel出力と同じ用紙）
+    return _render_pdf_table(title, sel, staff_rows, summary_rows,
+                             paper="A4" if group == "cooking" else "A3")
 
 
 # ---------------------------------------------------------------------------
@@ -1356,7 +1525,8 @@ def export_pdf_from_excel(file_bytes, group: str = "care", half: str = "first") 
     first_d = sel_cols[0][2]
     last_d = sel_cols[-1][2]
     title = f"{year}年{month}月 シフト表（{group_label} {half_label}：{first_d}〜{last_d}日）"
-    buf = _render_pdf_table(title, sel_dates, staff_rows, summary_rows)
+    buf = _render_pdf_table(title, sel_dates, staff_rows, summary_rows,
+                            paper="A4" if group == "cooking" else "A3")
     # 依頼文26: ファイル名に対象月を入れるため year/month も返す
     return buf, year, month
 

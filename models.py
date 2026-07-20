@@ -321,13 +321,40 @@ class ShiftSettings(db.Model):
     closed_days = db.Column(
         db.String(50), default=""
     )  # 休業曜日 (0=月〜6=日, カンマ区切り)
+    closed_dates = db.Column(
+        db.Text, default="", nullable=False
+    )  # 休業日（日付指定・YYYY-MM-DD のカンマ区切り）。主に年末年始用。
+    # closed_days（曜日）と同じ扱いで、その日は介護・調理とも全員 off になる。
+
+    # --- 階別の営業曜日 (0=月〜6=日, カンマ区切り) ---
+    #   これが設定の「正」。下の day_service_operating_days / visit_operating_days /
+    #   no_day_service_days は保存時にここから自動算出される派生値。
+    floor3_day_service_days = db.Column(
+        db.String(50), default="1,4,6", nullable=False
+    )  # 3階のデイ曜日（既定: 火・金・日）
+    floor3_visit_days = db.Column(
+        db.String(50), default="0,3", nullable=False
+    )  # 3階の訪問曜日（既定: 月・木）
+    floor2_day_service_days = db.Column(
+        db.String(50), default="0,3,5", nullable=False
+    )  # 2階のデイ曜日（既定: 月・木・土）
+    floor2_visit_days = db.Column(
+        db.String(50), default="1,4", nullable=False
+    )  # 2階の訪問曜日（既定: 火・金）
+    external_day_service_days = db.Column(
+        db.String(50), default="2", nullable=False
+    )  # 外部デイの曜日（既定: 水）。内部人員は不要。
 
     visit_operating_days = db.Column(
         db.String(50), default="0,1,3,4"
-    )  # 訪問介護の営業曜日
+    )  # 訪問介護の営業曜日（派生値: 2階∪3階の訪問曜日）
+    day_service_operating_days = db.Column(
+        db.String(50), default="0,1,3,4,5,6", nullable=False
+    )  # デイの営業曜日（派生値: 2階∪3階のデイ曜日）
     no_day_service_days = db.Column(
-        db.String(50), default="", nullable=False
-    )  # デイ利用者がいない曜日 (0=月〜6=日, カンマ区切り)。この曜日はデイ人員を1名に緩和。
+        db.String(50), default="2", nullable=False
+    )  # デイ利用者がいない曜日。day_service_operating_days の裏返しとして自動保存される
+    # この曜日はデイ人員を1名に緩和。外部デイのみの日もここに入る。
     min_cooking_staff = db.Column(
         db.Integer, default=1
     )  # 調理スタッフ最低配置人数/日
@@ -374,8 +401,12 @@ class ShiftSettings(db.Model):
     late_as_mid_mode = db.Column(db.String(10), default="hard", nullable=False)
     # 依頼文41-(1): 遅番×オンコール禁止モード "off"/"soft"/"hard"（既定 off）
     late_oncall_mode = db.Column(db.String(10), default="off", nullable=False)
+    # 看護師・PT を早番/遅番に入れないか "off"/"hard"（既定 hard＝入れない＝介護職ローテ）
+    nurse_early_late_mode = db.Column(db.String(10), default="hard", nullable=False)
     # 依頼文41-(2): 訪問回数の平等化モード "off"/"soft"/"hard"（既定 soft）
     visit_fairness_mode = db.Column(db.String(10), default="soft", nullable=False)
+    # 訪問回数の平等化を hard にしたときの spread 上限（max−min ≤ この値）。既定 1。
+    visit_fairness_max = db.Column(db.Integer, default=1, nullable=False)
     # 遅番の連日回避モード "off"/"soft"/"hard"（既定 soft＝同一職員が遅番を連日入らない）
     late_consecutive_mode = db.Column(db.String(10), default="soft", nullable=False)
     # 遅番日数の介護スタッフ間平等化モード "off"/"soft"/"hard"（既定 soft）
@@ -411,7 +442,14 @@ class ShiftSettings(db.Model):
             "min_early_staff": self.min_early_staff if self.min_early_staff is not None else 1,
             "min_late_staff": self.min_late_staff if self.min_late_staff is not None else 1,
             "closed_days": self.closed_days,
+            "closed_dates": self.closed_dates or "",
+            "floor3_day_service_days": self.floor3_day_service_days or "",
+            "floor3_visit_days": self.floor3_visit_days or "",
+            "floor2_day_service_days": self.floor2_day_service_days or "",
+            "floor2_visit_days": self.floor2_visit_days or "",
+            "external_day_service_days": self.external_day_service_days or "",
             "visit_operating_days": self.visit_operating_days,
+            "day_service_operating_days": self.day_service_operating_days or "",
             "no_day_service_days": self.no_day_service_days or "",
             "min_cooking_staff": self.min_cooking_staff,
             "min_cooking_overlap": self.min_cooking_overlap,
@@ -431,7 +469,9 @@ class ShiftSettings(db.Model):
             "bath_role_alt_mode": self.bath_role_alt_mode or "off",
             "late_as_mid_mode": self.late_as_mid_mode or "hard",
             "late_oncall_mode": self.late_oncall_mode or "off",
+            "nurse_early_late_mode": self.nurse_early_late_mode or "hard",
             "visit_fairness_mode": self.visit_fairness_mode or "soft",
+            "visit_fairness_max": self.visit_fairness_max if self.visit_fairness_max is not None else 1,
             "late_consecutive_mode": self.late_consecutive_mode or "soft",
             "late_fairness_mode": self.late_fairness_mode or "soft",
             "early_consecutive_mode": self.early_consecutive_mode or "soft",

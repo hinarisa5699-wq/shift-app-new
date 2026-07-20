@@ -362,34 +362,38 @@ function renderCalendar(data, year, month) {
 
     const daysInMonth = new Date(year, month, 0).getDate();
 
-    // --- デイ利用日／訪問日（曜日ルール）---
-    //   2階も3階もデイサービスのため階別表記は廃止し、全階まとめて「デイ」と表示する。
-    //   曜日は設定画面（デイ／訪問の営業曜日）が正。API の operating_days から受け取る。
-    //   API が未対応の場合は従来どおりの曜日（デイ=水曜以外／訪問=月火木金）にフォールバック。
+    // --- 階別の デイ利用日／訪問日（曜日ルール）---
+    //   2階・3階・外部デイそれぞれの曜日は設定画面が正。API の operating_days から受け取る。
+    //   API が未対応の場合は従来どおりの曜日にフォールバックする。
     //   設定側は 0=月〜6=日、JS の getDay() は 0=日〜6=土 なので添字を揃えて保持する。
     const _opDays = data.operating_days || {};
     function toGetDaySet(list, fallback) {
-        const src = Array.isArray(list) && list.length ? list : fallback;
+        // 未設定(undefined)なら既定値。空配列は「その曜日は無し」の明示指定として尊重する。
+        const src = Array.isArray(list) ? list : fallback;
         // 0=月..6=日 → getDay() の 0=日..6=土 へ変換
         return new Set(src.map(d => (d + 1) % 7));
     }
-    const DAY_SERVICE_DOW = toGetDaySet(_opDays.day_service, [0, 1, 3, 4, 5, 6]); // 既定 水曜以外
-    const VISIT_DOW = toGetDaySet(_opDays.visit, [0, 1, 3, 4]);                   // 既定 月火木金
+    const F3_DAY = toGetDaySet(_opDays.floor3_day_service, [1, 4, 6]); // 既定 火金日
+    const F3_VISIT = toGetDaySet(_opDays.floor3_visit, [0, 3]);        // 既定 月木
+    const F2_DAY = toGetDaySet(_opDays.floor2_day_service, [0, 3, 5]); // 既定 月木土
+    const F2_VISIT = toGetDaySet(_opDays.floor2_visit, [1, 4]);        // 既定 火金
+    const EXT_DAY = toGetDaySet(_opDays.external_day_service, [2]);    // 既定 水
+    // 3階=黄・2階=橙・外部デイ=灰、訪問は青文字
+    function badge(text, bg) {
+        return `<span style="display:inline-block;background:${bg};color:#333;`
+             + `font-size:8px;line-height:1.3;padding:0 2px;border-radius:2px">${text}</span>`;
+    }
+    function visitBadge(text) {
+        return `<span style="display:inline-block;color:#1d4ed8;font-weight:700;`
+             + `font-size:8px;line-height:1.3;margin-left:1px">${text}</span>`;
+    }
     function floorAnnotHtml(dow) {
         let s = '';
-        if (DAY_SERVICE_DOW.has(dow)) {
-            s += `<span style="display:inline-block;background:#FDE047;color:#333;`
-               + `font-size:8px;line-height:1.3;padding:0 2px;border-radius:2px">デイ</span>`;
-        }
-        if (dow === 3 && !DAY_SERVICE_DOW.has(dow)) {
-            // 水曜がデイ営業日でない＝外部デイ（内部人員不要）
-            s += `<span style="display:inline-block;background:#CBD5E1;color:#334155;`
-               + `font-size:8px;line-height:1.3;padding:0 2px;border-radius:2px">外部デイ</span>`;
-        }
-        if (VISIT_DOW.has(dow)) {
-            s += `<span style="display:inline-block;color:#1d4ed8;font-weight:700;`
-               + `font-size:8px;line-height:1.3;margin-left:1px">訪問</span>`;
-        }
+        if (F3_DAY.has(dow)) s += badge('デイ3階', '#FDE047');
+        if (F2_DAY.has(dow)) s += badge('デイ2階', '#FDBA74');
+        if (EXT_DAY.has(dow)) s += badge('外部デイ', '#CBD5E1');
+        if (F3_VISIT.has(dow)) s += visitBadge('訪3階');
+        if (F2_VISIT.has(dow)) s += visitBadge('訪2階');
         return s ? `<br>${s}` : '';
     }
 

@@ -484,10 +484,12 @@
         <!-- 休業曜日 -->
         <div class="mb-8 p-6 bg-gray-50 rounded-lg border border-gray-200">
             <label class="block text-lg font-semibold text-gray-800 mb-2">
-                休業曜日
+                休業曜日（介護・看護）
             </label>
             <p class="text-gray-600 text-sm mb-3">
-                事業所が休みの曜日を選択してください。
+                <strong>介護・看護</strong>（デイ・訪問・早番遅番・相談員など）が休みの曜日を選択してください。<br>
+                <strong class="text-amber-700">調理はこの曜日設定の影響を受けず、毎日稼働します。</strong>
+                調理を休みにするには、下の「休業日（日付で指定）」に登録するか、調理スタッフ個人の休みで調整してください。
             </p>
             {% set closed = settings.closed_days.split(',') if settings and settings.closed_days else [] %}
             <div class="flex flex-wrap gap-3">
@@ -512,7 +514,8 @@
             </label>
             <p class="text-gray-600 text-sm mb-3">
                 年末年始など、日付を決めて休業する日を登録してください。
-                登録した日は<strong>介護・調理とも全員お休み</strong>になります（休業曜日と同じ扱い）。
+                登録した日は<strong>介護・調理とも全員お休み</strong>になります。<br>
+                <strong class="text-amber-700">調理を休みにできるのは、この日付指定のみです</strong>（上の「休業曜日」では調理は休みになりません）。
             </p>
             <div class="flex flex-wrap items-center gap-2 mb-3">
                 <input type="date" id="closedDateInput"

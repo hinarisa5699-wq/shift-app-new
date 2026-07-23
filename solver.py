@@ -3404,7 +3404,13 @@ def _solve_cooking_with_fallback(
         }
 
     staff_ids = list(staff_by_id.keys())
-    closed_days_set = set(settings.get("closed_days", [5, 6]))
+    # 調理は「休業曜日(closed_days)」に従わない＝毎日稼働（介護・看護とは独立）。
+    #   施設の休業曜日（例: 日曜）で介護デイ・看護を止めても、入所者の食事のため
+    #   調理は動かす必要がある（介護スタッフ不在日は調理が昼夜の配膳下膳を担う）。
+    #   ※日付指定の休業日(closed_dates・年末年始等)は介護・調理とも全員休みにする。
+    #   ※調理を実際に日曜に配置するには、調理スタッフが日曜出勤可(休み設定でない)で
+    #     あることが前提（曜日休・希望休・出勤可能曜日は従来どおり尊重）。
+    closed_days_set = set()
     closed_dates_set = _parse_closed_dates(settings.get("closed_dates"))
     cooking_combo_rules = settings.get("cooking_combo_rules", [])
     cooking_types = settings.get("cooking_types", [])  # 調理シフト種類マスタ

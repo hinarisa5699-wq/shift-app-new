@@ -3547,6 +3547,18 @@ def _solve_cooking(
                 model.add(x[s, d_idx, "cook_off"] == 1)
 
     # ==================================================================
+    # 日曜(=6): 介護スタッフ不在のため調理が配膳下膳を担う（ユーザー依頼）
+    #   恒久ルール = 昼12:00・夜17:30 の配膳下膳を「必須」にする（下の専用制約で
+    #   17:30の実在席を保証。③12-19 は12:00も含むので昼も同時に満たす）。
+    #   朝食の有無は日曜固有ではなく【条件設定の朝食なし期間(breakfast_off)】に従う
+    #   （「今だけ朝食なし」は一時的なため。ハードコードしない）。休業日(年末年始)は除外。
+    # ==================================================================
+    sunday_indices = {
+        d_idx for d_idx, dt in enumerate(all_dates)
+        if dt.weekday() == 6 and d_idx not in closed_day_indices
+    }
+
+    # ==================================================================
     # 固定職員のピン留め（依頼文28）
     #   既存シフトを温存し生成対象外にする。各日 x を既存アサインメント or cook_off に
     #   固定。人数制約には固定分を算入し、個人制約は free_staff_ids のみ対象とする。
@@ -3822,6 +3834,34 @@ def _solve_cooking(
                 cc.only_enforce_if(fb_by_day[d_idx].Not())
 
     # ==================================================================
+    # 制約: 日曜の夜17:30 配膳下膳（介護スタッフ不在・ユーザー依頼）
+    #   17:30に実在席する記号（=勤務時間が17:30を含む＝既定③12:00-19:00）を
+    #   最低1名。区間[12-19)の「2時間重なりで充足」判定だけでは9-16等が17:30前に
+    #   退勤し夜の配膳下膳に間に合わないため、実在席を保証する専用制約を課す。
+    #   ③は12:00も含むため、昼12:00の配膳下膳（在席）も同時に満たす。
+    #   use_slack 時はスラックで警告に降格（担当者を組めない日を全休にしない）。
+    # ==================================================================
+    _DINNER_MIN = 17 * 60 + 30  # 17:30
+    dinner_codes = [
+        a for a in cook_working
+        if cook_time_ranges[a][0] <= _DINNER_MIN <= cook_time_ranges[a][1]
+    ]
+    sunday_dinner_slack = {}
+    if dinner_codes:
+        for d_idx in sunday_indices:
+            dinner_cnt = sum(
+                x[s, d_idx, a] for s in staff_ids for a in dinner_codes
+            )
+            if use_slack:
+                sd = model.new_int_var(
+                    0, len(staff_ids), f"cook_sun_dinner_slack_d{d_idx}"
+                )
+                model.add(dinner_cnt + sd >= 1)
+                sunday_dinner_slack[d_idx] = sd
+            else:
+                model.add(dinner_cnt >= 1)
+
+    # ==================================================================
     # ソフト目標: 新人×ベテランのペア成立回数（依頼文28）
     #   各営業日について「新人>=1名 かつ ベテラン>=1名 勤務」をペア成立
     #   (pair_day[d]=1) とみなす。当月の成立日数が pair_target に近づくよう、
@@ -4018,6 +4058,12 @@ def _solve_cooking(
     fb_penalty = (
         sum(fb_by_day.values()) * (num_days + 1) * 40 if fb_by_day else 0
     )
+    # 日曜の夜17:30配膳下膳を担当できない日は最優先で避ける（none と同格 ×50）。
+    #   （use_slack 時のみ slack が立つ。ハード phase では制約が直接効く。）
+    sun_dinner_penalty = (
+        sum(sunday_dinner_slack.values()) * (num_days + 1) * 50
+        if sunday_dinner_slack else 0
+    )
 
     if use_slack:
         total_slack = model.new_int_var(
@@ -4039,7 +4085,7 @@ def _solve_cooking(
         # 新人オンボーディング 同伴ミス（依頼文36→38・同一記号）。extra より強くして
         # 「同記号同伴のための2名化」が割に合うようにする（onboarding 5w > extra 2w）。
         onboarding_penalty = sum(onboarding_penalties) * (num_days + 1) * 5 if onboarding_penalties else 0
-        model.minimize(total_slack * penalty_weight + fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty + fb_penalty)
+        model.minimize(total_slack * penalty_weight + fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty + fb_penalty + sun_dinner_penalty)
     else:
         cook_pw_penalty = sum(cook_min_pw_penalties) * (num_days + 1) * 10 if cook_min_pw_penalties else 0
         none_penalty = sum(none_by_day.values()) * (num_days + 1) * 50 if none_by_day else 0
@@ -4106,6 +4152,16 @@ def _solve_cooking(
                 "date": dt.strftime("%Y-%m-%d"),
                 "warning_type": "cook_combo_unassigned",
                 "message": "調理スタッフが足りず4通りの組み合わせを組めないため、この日の調理は未配置です。",
+            })
+
+    # 日曜の夜17:30配膳下膳を担当できなかった日の警告（介護不在日）。
+    for d_idx in sorted(sunday_dinner_slack):
+        if solver.value(sunday_dinner_slack[d_idx]) > 0:
+            warnings_data.append({
+                "date": all_dates[d_idx].strftime("%Y-%m-%d"),
+                "warning_type": "cook_sunday_dinner_unassigned",
+                "message": "日曜の夜17:30の配膳下膳を担当できる調理スタッフ"
+                           "（12:00-19:00勤務）を配置できません。",
             })
 
     # 公休日数: 目標とずれた調理職員を警告（実公休＝num_days−実勤務日数）

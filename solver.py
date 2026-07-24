@@ -2620,6 +2620,10 @@ def _solve_care(
     # ==================================================================
     if nurse_ids:
         for d_idx in non_closed_days:
+            # デイ非営業日（訪問のみ・無サービス日）は看護師の配置を要求しない
+            #   （ユーザー依頼: 看護師はデイ営業日のみ出勤でよい）。警告も出さない。
+            if d_idx in no_service_day_indices:
+                continue
             nurse_minutes = sum(
                 x[s, d_idx, a] * ASSIGNMENT_MINUTES.get(a, 0)
                 for s in nurse_ids for a in CARE_WORKING_ASSIGNMENTS
@@ -3111,7 +3115,9 @@ def _solve_care(
                     })
 
             # 看護師配置不足（その日の看護師勤務が合計2時間未満）の警告
-            if nurse_ids and d_idx not in closed_day_indices and d_idx in slack_nurse:
+            #   デイ非営業日は看護師不要なので警告しない（ユーザー依頼）。
+            if (nurse_ids and d_idx not in closed_day_indices
+                    and d_idx not in no_service_day_indices and d_idx in slack_nurse):
                 if solver.value(slack_nurse[d_idx]) > 0:
                     warnings_data.append({
                         "date": date_str,

@@ -3748,11 +3748,16 @@ def _solve_cooking(
             pat_norm = [a for a in pat if a in cook_working]
             if pat_norm and pat_norm not in combo_patterns:
                 combo_patterns.append(pat_norm)
-    # 調理フォールバック（依頼）: 通常の4通りが組めない日は全休(0)ではなく
-    #   「1人・9:00-16:00」で昼夜をまかなう特別編成を、不足時のみ発動で追加する。
-    #   9-16のカバレッジは(朝0/昼1/夜1)。この編成の日は朝[6-8)の下限を課さない。
+    # 調理フォールバック（依頼）: 通常の組み合わせが組めない日は全休(0)ではなく
+    #   「1人」で昼をまかなう特別編成を、不足時のみ発動で追加する（誰も揃わない日用）。
+    #   ユーザー依頼: この1人編成は 7:00-15:00（朝の仕込み〜昼）。種類マスタに
+    #   7:00-15:00 のパターンがあればそれを使い、無ければ従来の 9:00-16:00 を使う。
+    #   カバレッジはどちらも(朝0/昼1/夜1)。この編成の日は朝[6-8)の下限を課さない。
     fb_code = next((c for c in cook_working
-                    if cook_time_ranges.get(c) == (9 * 60, 16 * 60)), None)
+                    if cook_time_ranges.get(c) == (7 * 60, 15 * 60)), None)
+    if fb_code is None:  # 7-15 が無ければ従来の 9-16 にフォールバック
+        fb_code = next((c for c in cook_working
+                        if cook_time_ranges.get(c) == (9 * 60, 16 * 60)), None)
     fb_combo_idx = None
     if fb_code is not None and combo_patterns:
         combo_patterns.append([fb_code])

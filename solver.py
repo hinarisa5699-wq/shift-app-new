@@ -333,14 +333,22 @@ def _care_allowable_working_assignments(staff: dict, allowed_set: set) -> set:
     return allow
 
 
-def _cook_allowable_working_assignments(staff: dict, allowed_set: set) -> set:
-    """調理職員が静的に割り当て可能な勤務アサインメント集合。"""
-    allow = set(COOK_ASSIGNMENT_TIME_RANGES.keys())
+def _cook_allowable_working_assignments(
+    staff: dict, allowed_set: set, cook_time_ranges: dict = None
+) -> set:
+    """調理職員が静的に割り当て可能な勤務アサインメント集合。
+
+    cook_time_ranges: 調理シフト種類マスタから構築した {code:(start,end)}。
+        省略時は既定①〜⑤。⑥⑦⑧など追加種類を含む本番では必ず渡すこと
+        （既定だけだと「⑥⑦⑧のみ許可」の職員を誤って出勤不能と判定するため）。
+    """
+    ranges = cook_time_ranges or COOK_ASSIGNMENT_TIME_RANGES
+    allow = set(ranges.keys())
     ws = _hhmm_to_min(staff.get("work_start_time"))
     we = _hhmm_to_min(staff.get("work_end_time"))
     if ws is not None or we is not None:
         for a in list(allow):
-            rng = COOK_ASSIGNMENT_TIME_RANGES.get(a)
+            rng = ranges.get(a)
             if rng and ((ws is not None and rng[0] < ws) or (we is not None and rng[1] > we)):
                 allow.discard(a)
     if allowed_set:
@@ -374,9 +382,15 @@ def _stranded_reason(staff: dict, dept: str) -> str:
             f"割り当て可能なシフトパターンがありません。出勤不能になるため設定を見直してください。")
 
 
-def _detect_unassignable_staff(care_staff, cook_staff, allowed_patterns, first_date):
-    """勤務時間・許可パターン等の積集合で割り当て可能パターンが消える職員を検出。"""
+def _detect_unassignable_staff(care_staff, cook_staff, allowed_patterns, first_date,
+                               cooking_types=None):
+    """勤務時間・許可パターン等の積集合で割り当て可能パターンが消える職員を検出。
+
+    cooking_types: 調理シフト種類マスタ（⑥⑦⑧など追加種類を含む）。渡さないと
+        既定①〜⑤しか見ず、⑥⑦⑧のみ許可の調理職員を誤って出勤不能と判定する。
+    """
     warnings = []
+    _, cook_time_ranges, _ = _build_cooking_maps(cooking_types)
     for s in care_staff or []:
         if not _has_any_available_day(s):
             continue
@@ -391,7 +405,7 @@ def _detect_unassignable_staff(care_staff, cook_staff, allowed_patterns, first_d
         if not _has_any_available_day(s):
             continue
         allowed_set = set(allowed_patterns.get(s["id"]) or [])
-        if not _cook_allowable_working_assignments(s, allowed_set):
+        if not _cook_allowable_working_assignments(s, allowed_set, cook_time_ranges):
             warnings.append({
                 "date": first_date.isoformat(),
                 "warning_type": "staff_no_assignable_pattern",
@@ -449,7 +463,8 @@ def generate_shift(
     # --- 出勤不能チェック: 制約の積集合で割り当て可能パターンが無い職員を検出 ---
     #   矛盾を握りつぶさず警告として表面化する（解は通常どおり続行）。
     unassignable_warnings = _detect_unassignable_staff(
-        care_staff, cook_staff, allowed_patterns, all_dates[0]
+        care_staff, cook_staff, allowed_patterns, all_dates[0],
+        cooking_types=settings.get("cooking_types"),
     )
 
     # --- 介護ソルバー ---

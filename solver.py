@@ -150,14 +150,24 @@ COOK_ASSIGNMENT_TIME_RANGES = {
 # 調理カバレッジの固定3区間（分）: [6:00-8:00) / [8:00-12:00) / [12:00-19:00)
 _COOK_INTERVALS = [(6 * 60, 8 * 60), (8 * 60, 12 * 60), (12 * 60, 19 * 60)]
 
+# 各区間の「充足」に必要な重なり分数。既定は2時間(120)。
+#   朝[6-8)のみ60分に緩和＝7:00開始(7-15等)でも朝食を賄えるとみなす（ユーザー依頼:
+#   「朝食は6時か7時から来れば間に合う」「7-15の1人で立てられる」）。
+#   既存パターン(①6-8/④6-13/⑦6-12は120以上、②⑤⑥は0)の朝判定は不変で、
+#   7:00開始(7-8=60分)のみ新たに朝food充足になる。
+_COOK_INTERVAL_MIN_OVERLAP = [60, 120, 120]
+
 
 def _cook_coverage_from_ranges(time_ranges):
-    """各種類の勤務時間と各区間の重なりが2時間(120分)以上なら、その区間を充足(1)。
-    依頼文21 決定1の導出ルール（既存5種類の COOK_COVERAGE を完全再現）。"""
+    """各種類の勤務時間と各区間の重なりが所定分数以上なら、その区間を充足(1)。
+    朝[6-8)は60分（7:00開始でも可）、昼・夜は120分。"""
     def overlap(a, b):
         return max(0, min(a[1], b[1]) - max(a[0], b[0]))
     return {
-        code: tuple(1 if overlap(rng, iv) >= 120 else 0 for iv in _COOK_INTERVALS)
+        code: tuple(
+            1 if overlap(rng, iv) >= _COOK_INTERVAL_MIN_OVERLAP[i] else 0
+            for i, iv in enumerate(_COOK_INTERVALS)
+        )
         for code, rng in time_ranges.items()
     }
 

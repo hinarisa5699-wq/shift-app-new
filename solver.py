@@ -3749,19 +3749,24 @@ def _solve_cooking(
             if pat_norm and pat_norm not in combo_patterns:
                 combo_patterns.append(pat_norm)
     # 調理フォールバック（依頼）: 通常の組み合わせが組めない日は全休(0)ではなく
-    #   「1人」で昼をまかなう特別編成を、不足時のみ発動で追加する（誰も揃わない日用）。
-    #   ユーザー依頼: この1人編成は 7:00-15:00（朝の仕込み〜昼）。種類マスタに
-    #   7:00-15:00 のパターンがあればそれを使い、無ければ従来の 9:00-16:00 を使う。
+    #   「1人」で回す特別編成を、不足時のみ発動で追加する（誰も揃わない日用）。
+    #   ユーザー依頼: 1人編成の時間は【朝食状態で切替】。
+    #     朝食あり日   → 7:00-15:00（朝の仕込みで7時開始）
+    #     朝食なし日   → 9:00-16:00（朝が無いので9時開始。朝食なし期間"以外"では9-16を使わない）
     #   カバレッジはどちらも(朝0/昼1/夜1)。この編成の日は朝[6-8)の下限を課さない。
-    fb_code = next((c for c in cook_working
-                    if cook_time_ranges.get(c) == (7 * 60, 15 * 60)), None)
-    if fb_code is None:  # 7-15 が無ければ従来の 9-16 にフォールバック
-        fb_code = next((c for c in cook_working
+    #   各日にはその日の朝食状態に合う片方だけを使用可にする（下の per-day ループで制御）。
+    fb_code_715 = next((c for c in cook_working
+                        if cook_time_ranges.get(c) == (7 * 60, 15 * 60)), None)
+    fb_code_915 = next((c for c in cook_working
                         if cook_time_ranges.get(c) == (9 * 60, 16 * 60)), None)
-    fb_combo_idx = None
-    if fb_code is not None and combo_patterns:
-        combo_patterns.append([fb_code])
-        fb_combo_idx = len(combo_patterns) - 1
+    fb_combo_kind = {}  # combo_idx -> 'bf_on'(7-15・朝食あり日用) / 'bf_off'(9-16・朝食なし日用)
+    if combo_patterns:
+        if fb_code_715 is not None:
+            combo_patterns.append([fb_code_715])
+            fb_combo_kind[len(combo_patterns) - 1] = 'bf_on'
+        if fb_code_915 is not None:
+            combo_patterns.append([fb_code_915])
+            fb_combo_kind[len(combo_patterns) - 1] = 'bf_off'
     combo_active = bool(combo_patterns)
 
     # ==================================================================
@@ -3788,17 +3793,24 @@ def _solve_cooking(
     #   どの4通りも組めない日は none になり、警告を出す（無言で③だけ等にしない）。
     # ==================================================================
     none_by_day = {}
-    fb_by_day = {}  # 調理フォールバック(1人9-16)が選択された日 → その選択変数
+    fb_by_day = {}  # 調理フォールバック(1人編成)が選択された日 → その日有効な選択変数
     if combo_active:
         for d_idx in range(num_days):
             if d_idx in closed_day_indices:
                 continue
+            _bf_off_day = d_idx in no_breakfast_day_indices
             sel_vars = []
             for p_idx, pattern in enumerate(combo_patterns):
                 pv = model.new_bool_var(f"cook_pat_d{d_idx}_p{p_idx}")
                 sel_vars.append(pv)
-                if p_idx == fb_combo_idx:
-                    fb_by_day[d_idx] = pv
+                kind = fb_combo_kind.get(p_idx)
+                if kind is not None:
+                    # その日の朝食状態に合わない1人編成は使用不可
+                    #   朝食なし日 → 7-15(bf_on)不可 / 朝食あり日 → 9-16(bf_off)不可
+                    if (kind == 'bf_on' and _bf_off_day) or (kind == 'bf_off' and not _bf_off_day):
+                        model.add(pv == 0)
+                    else:
+                        fb_by_day[d_idx] = pv  # 当日有効なフォールバック選択変数
                 pset = set(pattern)
                 for a in cook_working:
                     cnt = sum(x[s, d_idx, a] for s in staff_ids)

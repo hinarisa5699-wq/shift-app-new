@@ -550,6 +550,9 @@ class ShiftPattern(db.Model):
     period = db.Column(db.String(10), default="full")  # "full" / "am" / "pm"
     covers_am = db.Column(db.Boolean, default=True)
     covers_pm = db.Column(db.Boolean, default=True)
+    # 調理種類のみ: 調理の充足人数（時間帯カバレッジ）に数えるか。
+    #   事務など「調理シフト表には載るが調理はしない」種類は False にする。
+    counts_as_cooking = db.Column(db.Boolean, default=True)
 
     def to_dict(self):
         """辞書形式に変換"""
@@ -566,6 +569,9 @@ class ShiftPattern(db.Model):
             "period": self.period or "full",
             "covers_am": self.covers_am if self.covers_am is not None else True,
             "covers_pm": self.covers_pm if self.covers_pm is not None else True,
+            "counts_as_cooking": (
+                self.counts_as_cooking if self.counts_as_cooking is not None else True
+            ),
         }
 
 

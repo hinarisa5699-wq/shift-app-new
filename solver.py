@@ -230,12 +230,17 @@ def _build_cooking_maps(cooking_types):
     """調理シフト種類マスタ [{code, start_time, end_time}, ...] から
     (working_codes, time_ranges{code:(start_min,end_min)}, coverage{code:tuple}) を構築。
     cooking_types が空なら既定(①〜⑤)を返す。
+
+    counts_as_cooking=False の種類（事務など「調理シフト表には載るが調理はしない」）は
+    カバレッジを (0,0,0) にし、調理の充足人数に数えない。出勤枠（組み合わせへの参加）は
+    従来どおりなので、その職員のシフトは変わらず組まれる。
     """
     if not cooking_types:
         return (list(COOK_WORKING_ASSIGNMENTS),
                 dict(COOK_ASSIGNMENT_TIME_RANGES),
                 dict(COOK_COVERAGE))
     codes, ranges = [], {}
+    non_cooking_codes = set()
     for t in cooking_types:
         code = t.get("code")
         s = _hhmm_to_min(t.get("start_time") or t.get("start"))
@@ -244,7 +249,12 @@ def _build_cooking_maps(cooking_types):
             continue
         codes.append(code)
         ranges[code] = (s, e)
-    return codes, ranges, _cook_coverage_from_ranges(ranges)
+        if not t.get("counts_as_cooking", True):
+            non_cooking_codes.add(code)
+    coverage = _cook_coverage_from_ranges(ranges)
+    for code in non_cooking_codes:
+        coverage[code] = tuple(0 for _ in _COOK_INTERVALS)
+    return codes, ranges, coverage
 
 
 def _staff_has_any_qualification(
@@ -3778,10 +3788,13 @@ def _solve_cooking(
     #     朝食なし日   → 9:00-16:00（朝が無いので9時開始。朝食なし期間"以外"では9-16を使わない）
     #   カバレッジはどちらも(朝0/昼1/夜1)。この編成の日は朝[6-8)の下限を課さない。
     #   各日にはその日の朝食状態に合う片方だけを使用可にする（下の per-day ループで制御）。
+    #   ※事務など調理に数えない種類(カバレッジ全0)は1人編成の担い手にならない。
     fb_code_715 = next((c for c in cook_working
-                        if cook_time_ranges.get(c) == (7 * 60, 15 * 60)), None)
+                        if cook_time_ranges.get(c) == (7 * 60, 15 * 60)
+                        and any(cook_coverage.get(c, (0, 0, 0)))), None)
     fb_code_915 = next((c for c in cook_working
-                        if cook_time_ranges.get(c) == (9 * 60, 16 * 60)), None)
+                        if cook_time_ranges.get(c) == (9 * 60, 16 * 60)
+                        and any(cook_coverage.get(c, (0, 0, 0)))), None)
 
     # 朝食あり日に「朝[6-8)を誰も賄えない編成」を選ばせない（依頼: 6-8不足の解消）。
     #   (1) 朝を賄える記号が1つも無い編成は【全て】朝食あり日ペナルティの対象にする。
@@ -3937,6 +3950,7 @@ def _solve_cooking(
     dinner_codes = [
         a for a in cook_working
         if cook_time_ranges[a][0] <= _DINNER_MIN <= cook_time_ranges[a][1]
+        and any(cook_coverage.get(a, (0, 0, 0)))  # 事務等（調理に数えない）は除く
     ]
     sunday_dinner_slack = {}
     if dinner_codes:

@@ -1242,9 +1242,13 @@ function addCookingType() {
     const start = document.getElementById('new-cooking-type-start').value;
     const end = document.getElementById('new-cooking-type-end').value;
     if (!label) { alert('種類の名前を入力してください。'); return; }
+    const countsEl = document.getElementById('new-cooking-type-counts');
+    const counts = countsEl ? countsEl.checked : true;
     fetchWithCsrf('/api/cooking_types', {
         method: 'POST',
-        body: JSON.stringify({ label: label, start_time: start, end_time: end }),
+        body: JSON.stringify({
+            label: label, start_time: start, end_time: end, counts_as_cooking: counts,
+        }),
     })
         .then(r => { if (!r.ok) return r.json().then(j => { throw new Error(j.error || '追加失敗'); }); location.reload(); })
         .catch(e => alert('調理種類の追加に失敗しました: ' + e.message));

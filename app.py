@@ -461,6 +461,18 @@ def _run_migrations(app):
             cursor.execute("ALTER TABLE shift_pattern ADD COLUMN covers_am BOOLEAN DEFAULT 1")
         if "covers_pm" not in columns:
             cursor.execute("ALTER TABLE shift_pattern ADD COLUMN covers_pm BOOLEAN DEFAULT 1")
+        if "counts_as_cooking" not in columns:
+            # 調理の充足人数（時間帯カバレッジ）に数えるか。既定は数える。
+            cursor.execute(
+                "ALTER TABLE shift_pattern ADD COLUMN counts_as_cooking BOOLEAN DEFAULT 1"
+            )
+            # 「事務」を含む調理種類は初期値を「数えない」にする（例: ⑤9-15 事務）。
+            #   調理シフト表には載るが調理はしないため、昼夜の充足に数えると
+            #   実際は調理0人の日を「足りている」と誤判定する。
+            cursor.execute(
+                "UPDATE shift_pattern SET counts_as_cooking=0 "
+                "WHERE staff_group='cooking' AND label LIKE '%事務%'"
+            )
         # 調理フォールバック用: 9:00-16:00 の調理パターンを保証（1人で昼夜をまかなう）
         cursor.execute(
             "SELECT COUNT(*) FROM shift_pattern "
@@ -2178,6 +2190,7 @@ def create_app():
             code=code, staff_group="cooking", label=label,
             start_time=start, end_time=end, has_break=False, break_minutes=0,
             display_order=max_order + 1, period="full", covers_am=True, covers_pm=True,
+            counts_as_cooking=bool(data.get("counts_as_cooking", True)),
         )
         db.session.add(p)
         db.session.commit()
@@ -2196,6 +2209,8 @@ def create_app():
             p.start_time = (data["start_time"] or "").strip()
         if data.get("end_time") is not None:
             p.end_time = (data["end_time"] or "").strip()
+        if data.get("counts_as_cooking") is not None:
+            p.counts_as_cooking = bool(data["counts_as_cooking"])
         db.session.commit()
         return jsonify(p.to_dict())
 
@@ -2291,7 +2306,10 @@ def create_app():
         # 依頼文21: 調理シフト種類マスタ（ShiftPattern cooking）を solver へ渡す
         cooking_types_data = [
             {"code": p.code, "label": p.label,
-             "start_time": p.start_time, "end_time": p.end_time}
+             "start_time": p.start_time, "end_time": p.end_time,
+             "counts_as_cooking": (
+                 p.counts_as_cooking if p.counts_as_cooking is not None else True
+             )}
             for p in ShiftPattern.query.filter_by(staff_group="cooking")
             .order_by(ShiftPattern.display_order).all()
         ]

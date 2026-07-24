@@ -840,7 +840,12 @@
      ================================================================ -->
 <div class="bg-white rounded-xl shadow-md p-8 max-w-3xl mt-8">
     <h2 class="text-2xl font-bold text-primary-800 mb-4">調理シフト種類</h2>
-    <p class="text-gray-600 mb-6">調理のシフト種類（名前＋出勤〜退勤時刻）を自由に追加・編集できます。</p>
+    <p class="text-gray-600 mb-2">調理のシフト種類（名前＋出勤〜退勤時刻）を自由に追加・編集できます。</p>
+    <p class="text-gray-500 text-sm mb-6">
+        「調理として数える」のチェックを外すと、その種類はシフト表には出るが
+        <strong>調理の必要人数（朝6-8／昼8-12／夜12-19）には数えません</strong>。
+        事務など、調理をしない勤務に使います。
+    </p>
     <div class="space-y-2 mb-4">
         {% for t in cooking_types %}
         <div class="flex items-center gap-2 bg-amber-50 rounded-lg px-3 py-2 border border-amber-200">
@@ -854,6 +859,13 @@
             <input type="time" value="{{ t.end_time }}"
                    onchange="updateCookingType({{ t.id }}, 'end_time', this.value)"
                    class="px-2 py-1 border border-gray-300 rounded text-sm">
+            <label class="flex items-center cursor-pointer whitespace-nowrap"
+                   title="外すと調理の必要人数に数えません（事務など）">
+                <input type="checkbox" {% if t.counts_as_cooking %}checked{% endif %}
+                       onchange="updateCookingType({{ t.id }}, 'counts_as_cooking', this.checked)"
+                       class="w-4 h-4 text-amber-600 border-gray-300 rounded">
+                <span class="ml-1 text-sm text-gray-700">調理として数える</span>
+            </label>
             <button onclick="deleteCookingType({{ t.id }})"
                     class="bg-red-100 hover:bg-red-200 text-red-700 text-sm py-1 px-3 rounded">削除</button>
         </div>
@@ -867,6 +879,11 @@
         <span class="text-gray-400">〜</span>
         <input type="time" id="new-cooking-type-end" value="08:00"
                class="px-2 py-2 border border-gray-300 rounded text-sm">
+        <label class="flex items-center cursor-pointer whitespace-nowrap">
+            <input type="checkbox" id="new-cooking-type-counts" checked
+                   class="w-4 h-4 text-amber-600 border-gray-300 rounded">
+            <span class="ml-1 text-sm text-gray-700">調理として数える</span>
+        </label>
         <button onclick="addCookingType()"
                 class="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-4 rounded text-sm">追加</button>
     </div>

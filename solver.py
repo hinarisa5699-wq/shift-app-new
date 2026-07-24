@@ -3775,12 +3775,34 @@ def _solve_cooking(
                         if cook_time_ranges.get(c) == (7 * 60, 15 * 60)), None)
     fb_code_915 = next((c for c in cook_working
                         if cook_time_ranges.get(c) == (9 * 60, 16 * 60)), None)
+
+    # 朝食あり日の代替編成（依頼）: 「朝[6-8)を誰も賄えない」組み合わせに 9:00-16:00 が
+    #   含まれる場合、その 9-16 を 7:00-15:00 に置き換えた編成を追加する。
+    #   9-16 は朝食なし用の時間帯で、朝食あり日は7:00開始でないと朝食に間に合わない
+    #   （「9-16単独で入って6-8不足になる」の解消）。
+    #   元の編成も残す（7-15を組める職員が居ない日は従来どおり＝新たな未配置を作らない）が、
+    #   朝食あり日に元の編成を選ぶとペナルティを課し、置換版を優先させる。
+    bf_on_variant_idx = set()  # 置換版（朝食あり日のみ選択可）
+    bf_on_avoid_idx = set()    # 置換版がある元編成（朝食あり日に選ぶとペナルティ）
+    if fb_code_715 is not None and fb_code_915 is not None:
+        for p_idx, pat in enumerate(list(combo_patterns)):
+            if fb_code_915 not in pat:
+                continue
+            if any(cook_coverage.get(a, (0, 0, 0))[0] for a in pat):
+                continue  # 既に朝[6-8)を賄える記号がある編成はそのまま
+            alt = [fb_code_715 if a == fb_code_915 else a for a in pat]
+            if alt in combo_patterns:
+                continue
+            combo_patterns.append(alt)
+            bf_on_variant_idx.add(len(combo_patterns) - 1)
+            bf_on_avoid_idx.add(p_idx)
+
     fb_combo_kind = {}  # combo_idx -> 'bf_on'(7-15・朝食あり日用) / 'bf_off'(9-16・朝食なし日用)
     if combo_patterns:
-        if fb_code_715 is not None:
+        if fb_code_715 is not None and [fb_code_715] not in combo_patterns:
             combo_patterns.append([fb_code_715])
             fb_combo_kind[len(combo_patterns) - 1] = 'bf_on'
-        if fb_code_915 is not None:
+        if fb_code_915 is not None and [fb_code_915] not in combo_patterns:
             combo_patterns.append([fb_code_915])
             fb_combo_kind[len(combo_patterns) - 1] = 'bf_off'
     combo_active = bool(combo_patterns)
@@ -3810,6 +3832,7 @@ def _solve_cooking(
     # ==================================================================
     none_by_day = {}
     fb_by_day = {}  # 調理フォールバック(1人編成)が選択された日 → その日有効な選択変数
+    bf_avoid_vars = []  # 朝食あり日に「朝[6-8)を賄えない9-16編成」を選んだ選択変数
     if combo_active:
         for d_idx in range(num_days):
             if d_idx in closed_day_indices:
@@ -3827,6 +3850,13 @@ def _solve_cooking(
                         model.add(pv == 0)
                     else:
                         fb_by_day[d_idx] = pv  # 当日有効なフォールバック選択変数
+                elif p_idx in bf_on_variant_idx:
+                    # 9-16→7-15 置換版は朝食あり日のみ使用可
+                    if _bf_off_day:
+                        model.add(pv == 0)
+                elif p_idx in bf_on_avoid_idx and not _bf_off_day:
+                    # 朝食あり日に朝を賄えない元編成(9-16)を選んだらペナルティ
+                    bf_avoid_vars.append(pv)
                 pset = set(pattern)
                 for a in cook_working:
                     cnt = sum(x[s, d_idx, a] for s in staff_ids)
@@ -4112,6 +4142,12 @@ def _solve_cooking(
     fb_penalty = (
         sum(fb_by_day.values()) * (num_days + 1) * 40 if fb_by_day else 0
     )
+    # 朝食あり日に「朝[6-8)を賄えない9-16編成」を選ぶペナルティ。
+    #   置換版(7-15)が組める日は必ずそちらを選ばせる。組めない日だけ元編成に落ちる。
+    #   通常編成(0) < 9-16のまま(20w) < フォールバック(40w) < 未配置(50w)。
+    bf_avoid_penalty = (
+        sum(bf_avoid_vars) * (num_days + 1) * 20 if bf_avoid_vars else 0
+    )
     # 日曜の夜17:30配膳下膳を担当できない日は最優先で避ける（none と同格 ×50）。
     #   （use_slack 時のみ slack が立つ。ハード phase では制約が直接効く。）
     sun_dinner_penalty = (
@@ -4139,14 +4175,14 @@ def _solve_cooking(
         # 新人オンボーディング 同伴ミス（依頼文36→38・同一記号）。extra より強くして
         # 「同記号同伴のための2名化」が割に合うようにする（onboarding 5w > extra 2w）。
         onboarding_penalty = sum(onboarding_penalties) * (num_days + 1) * 5 if onboarding_penalties else 0
-        model.minimize(total_slack * penalty_weight + fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty + fb_penalty + sun_dinner_penalty)
+        model.minimize(total_slack * penalty_weight + fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty + fb_penalty + sun_dinner_penalty + bf_avoid_penalty)
     else:
         cook_pw_penalty = sum(cook_min_pw_penalties) * (num_days + 1) * 10 if cook_min_pw_penalties else 0
         none_penalty = sum(none_by_day.values()) * (num_days + 1) * 50 if none_by_day else 0
         pair_penalty = pair_deficit * (num_days + 1) if pair_deficit is not None else 0
         extra_penalty = sum(extra_penalties) * (num_days + 1) * 2 if extra_penalties else 0
         onboarding_penalty = sum(onboarding_penalties) * (num_days + 1) * 5 if onboarding_penalties else 0
-        model.minimize(fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty + fb_penalty)
+        model.minimize(fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty + fb_penalty + bf_avoid_penalty)
 
     # ==================================================================
     # ソルバー実行

@@ -151,8 +151,11 @@ def _solver_staff(staff_id, can_visit=True):
 
 
 def test_visit_is_always_dual_and_exactly_one(month=7):
-    """変更5: 訪問営業日は visit_am_day_p4 と day_p3_visit_pm がちょうど1名ずつ、
-    純粋訪問(visit_am/visit_pm)は出現しない。"""
+    """変更5: 訪問営業日は訪問午前・午後がちょうど1名ずつ、純粋訪問は出現しない。
+
+    訪問午前の1名は「早番(7:30-16:30 = AM訪問＋PMデイ)」か「兼務B(visit_am_day_p4)」
+    のいずれか（2026-07・ユーザー確認）。早番が置かれた日は兼務Bは0になる。
+    """
     care = [_solver_staff(i, can_visit=True) for i in range(1, 9)]
     settings = {
         "min_day_service": 3, "min_visit_am": 1, "min_visit_pm": 1,
@@ -175,9 +178,11 @@ def test_visit_is_always_dual_and_exactly_one(month=7):
             f"純粋訪問が出現: {d}"
         am = sum(1 for it in items if it["assignment"] == "visit_am_day_p4")
         pm = sum(1 for it in items if it["assignment"] == "day_p3_visit_pm")
+        early = sum(1 for it in items if it["assignment"] == "early")
         if wd in visit_op:
             checked += 1
-            assert am == 1, f"{d}: AM訪問兼務は1名のはず (={am})"
+            assert am + early == 1, \
+                f"{d}: 訪問午前は早番か兼務Bで合計1名のはず (兼務B={am}/早番={early})"
             assert pm == 1, f"{d}: PM訪問兼務は1名のはず (={pm})"
             for it in items:
                 # visit_am_day_p4(午前訪問→午後デイ)は従来どおり休憩12:30。

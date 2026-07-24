@@ -501,6 +501,27 @@ def _run_migrations(app):
                     "VALUES (?,'cooking',?,?,?,0,0,?,'full',1,1)",
                     (_code, _label, _st, _et, _co2),
                 )
+        # 朝食あり日の1人フォールバック用: 7:00-15:00 を保証。
+        #   solver は「朝食あり日=7-15 / 朝食なし日=9-16」で1人編成を切り替えるため、
+        #   7-15 がマスタに無いと朝食あり日はフォールバック不成立＝その日の調理が
+        #   全員off（未配置）になる。時刻で判定するので手動追加済みなら重複しない。
+        cursor.execute(
+            "SELECT COUNT(*) FROM shift_pattern "
+            "WHERE staff_group='cooking' AND start_time='07:00' AND end_time='15:00'"
+        )
+        if cursor.fetchone()[0] == 0:
+            cursor.execute(
+                "SELECT COALESCE(MAX(display_order), 0) + 1 FROM shift_pattern "
+                "WHERE staff_group='cooking'"
+            )
+            _co3 = cursor.fetchone()[0]
+            cursor.execute(
+                "INSERT INTO shift_pattern "
+                "(code, staff_group, label, start_time, end_time, has_break, "
+                " break_minutes, display_order, period, covers_am, covers_pm) "
+                "VALUES ('cooking_9','cooking','(9) 7:00-15:00','07:00','15:00',0,0,?,'full',1,1)",
+                (_co3,),
+            )
 
     # 池田さん向け組み合わせ（⑦6-12＋③12-19 / ④6-13＋⑧13-19）を保証。無ければ追加。
     if "cooking_combo_rule" in tables:

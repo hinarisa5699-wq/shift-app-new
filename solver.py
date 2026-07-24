@@ -2331,6 +2331,11 @@ def _solve_care(
 
     # ==================================================================
     # 制約: 訪問介護午前はちょうど指定人数（休業日・訪問非営業日・祝日はスキップ）
+    #   早番(7:30-16:30)は訪問営業日は「AM訪問＋PMデイ」なので、その午前は
+    #   訪問介護午前の担い手として数える（ユーザー確認済み・2026-07）。
+    #   従来は早番のAMをデイ午前にも訪問午前にも数えていなかったため、訪問可の
+    #   職員が同じ日に「早番」と「兼務B」で2名必要になり、月曜の訪問午前不足と
+    #   金曜の早番未配置が交互に出ていた。
     # ==================================================================
     for d_idx, dt in enumerate(all_dates):
         if d_idx in closed_day_indices:
@@ -2339,7 +2344,7 @@ def _solve_care(
             continue
         visit_am_count = sum(
             x[s, d_idx, a] for s in staff_ids for a in VISIT_AM_ASSIGNMENTS
-        )
+        ) + sum(x[s, d_idx, "early"] for s in staff_ids)
         if use_slack:
             model.add(visit_am_count + slack_visit_am[d_idx] >= min_visit_am)
         else:
@@ -2826,8 +2831,10 @@ def _solve_care(
     #     hard: 差を強ペナルティで最小化（事実上ほぼ揃える。infeasible にはしない）
     #     off : 制約なし
     #   ※純粋訪問(visit_am/visit_pm)は別制約で全日禁止のため、実質は兼務2種
-    #     (day_p3_visit_pm / visit_am_day_p4) の日数を数える。早番(early)の
-    #     AM訪問は必須ロール扱いのため対象に含めない。
+    #     (day_p3_visit_pm / visit_am_day_p4) の日数を数える。加えて、訪問営業日の
+    #     早番(early)は「AM訪問＋PMデイ」で実際に訪問へ出るため、その日数も算入する
+    #     （ユーザー確認済み・2026-07。除外していた頃は早番の多い職員の訪問日数が
+    #     0に見え、差(最大−最小)が実態より大きく出ていた）。
     # ==================================================================
     visit_fairness_mode = (visit_fairness_mode or "soft").lower()
     visit_fair_diff = 0
@@ -2860,7 +2867,7 @@ def _solve_care(
                 x[s, d_idx, a]
                 for d_idx in range(num_days)
                 for a in VISIT_ASSIGNMENTS
-            )
+            ) + sum(x[s, d_idx, "early"] for d_idx in visit_day_indices)
         max_visit = model.new_int_var(0, num_days, "care_max_visit")
         min_visit = model.new_int_var(0, num_days, "care_min_visit")
         for s in visit_capable_ids:
@@ -3776,26 +3783,27 @@ def _solve_cooking(
     fb_code_915 = next((c for c in cook_working
                         if cook_time_ranges.get(c) == (9 * 60, 16 * 60)), None)
 
-    # 朝食あり日の代替編成（依頼）: 「朝[6-8)を誰も賄えない」組み合わせに 9:00-16:00 が
-    #   含まれる場合、その 9-16 を 7:00-15:00 に置き換えた編成を追加する。
-    #   9-16 は朝食なし用の時間帯で、朝食あり日は7:00開始でないと朝食に間に合わない
-    #   （「9-16単独で入って6-8不足になる」の解消）。
-    #   元の編成も残す（7-15を組める職員が居ない日は従来どおり＝新たな未配置を作らない）が、
-    #   朝食あり日に元の編成を選ぶとペナルティを課し、置換版を優先させる。
+    # 朝食あり日に「朝[6-8)を誰も賄えない編成」を選ばせない（依頼: 6-8不足の解消）。
+    #   (1) 朝を賄える記号が1つも無い編成は【全て】朝食あり日ペナルティの対象にする。
+    #       ＝9-16 を含む編成だけでなく、⑤9-15+⑧13-19 のような編成も対象。
+    #       朝を組める職員が居る日は「朝あり編成」に寄り、居ない日だけ従来どおり落ちる。
+    #   (2) そのうち 9:00-16:00 を含む編成には、9-16 を 7:00-15:00 に置き換えた
+    #       代替編成を追加して優先させる（9-16は朝食なし用の時間帯で、朝食あり日は
+    #       7:00開始でないと朝食に間に合わない）。元の編成も残すので、7-15 を組める
+    #       職員が居ない日に新たな未配置を作ることはない。
     bf_on_variant_idx = set()  # 置換版（朝食あり日のみ選択可）
-    bf_on_avoid_idx = set()    # 置換版がある元編成（朝食あり日に選ぶとペナルティ）
-    if fb_code_715 is not None and fb_code_915 is not None:
-        for p_idx, pat in enumerate(list(combo_patterns)):
-            if fb_code_915 not in pat:
-                continue
-            if any(cook_coverage.get(a, (0, 0, 0))[0] for a in pat):
-                continue  # 既に朝[6-8)を賄える記号がある編成はそのまま
-            alt = [fb_code_715 if a == fb_code_915 else a for a in pat]
-            if alt in combo_patterns:
-                continue
-            combo_patterns.append(alt)
-            bf_on_variant_idx.add(len(combo_patterns) - 1)
-            bf_on_avoid_idx.add(p_idx)
+    bf_on_avoid_idx = set()    # 朝[6-8)を賄えない編成（朝食あり日に選ぶとペナルティ）
+    for p_idx, pat in enumerate(list(combo_patterns)):
+        if any(cook_coverage.get(a, (0, 0, 0))[0] for a in pat):
+            continue  # 既に朝[6-8)を賄える記号がある編成はそのまま
+        bf_on_avoid_idx.add(p_idx)
+        if fb_code_715 is None or fb_code_915 is None or fb_code_915 not in pat:
+            continue  # 置換先が無い編成はペナルティのみ（代替は作れない）
+        alt = [fb_code_715 if a == fb_code_915 else a for a in pat]
+        if alt in combo_patterns:
+            continue
+        combo_patterns.append(alt)
+        bf_on_variant_idx.add(len(combo_patterns) - 1)
 
     fb_combo_kind = {}  # combo_idx -> 'bf_on'(7-15・朝食あり日用) / 'bf_off'(9-16・朝食なし日用)
     if combo_patterns:
@@ -3855,7 +3863,7 @@ def _solve_cooking(
                     if _bf_off_day:
                         model.add(pv == 0)
                 elif p_idx in bf_on_avoid_idx and not _bf_off_day:
-                    # 朝食あり日に朝を賄えない元編成(9-16)を選んだらペナルティ
+                    # 朝食あり日に「朝[6-8)を賄えない編成」を選んだらペナルティ
                     bf_avoid_vars.append(pv)
                 pset = set(pattern)
                 for a in cook_working:
@@ -4142,9 +4150,10 @@ def _solve_cooking(
     fb_penalty = (
         sum(fb_by_day.values()) * (num_days + 1) * 40 if fb_by_day else 0
     )
-    # 朝食あり日に「朝[6-8)を賄えない9-16編成」を選ぶペナルティ。
-    #   置換版(7-15)が組める日は必ずそちらを選ばせる。組めない日だけ元編成に落ちる。
-    #   通常編成(0) < 9-16のまま(20w) < フォールバック(40w) < 未配置(50w)。
+    # 朝食あり日に「朝[6-8)を賄えない編成」を選ぶペナルティ。
+    #   朝を組める編成が可能な日は必ずそちらを選ばせる（公休ズレ5w×4件ぶんまで許容）。
+    #   置換版(7-15)が組める日はそちらへ。どうしても朝を組めない日だけ元編成に落ちる。
+    #   通常編成(0) < 朝なし編成のまま(20w) < フォールバック(40w) < 未配置(50w)。
     bf_avoid_penalty = (
         sum(bf_avoid_vars) * (num_days + 1) * 20 if bf_avoid_vars else 0
     )

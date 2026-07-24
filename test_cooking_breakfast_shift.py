@@ -99,6 +99,75 @@ def test_breakfast_day_uses_7_15_instead_of_9_16():
     assert morning_short == [], morning_short
 
 
+def test_breakfast_day_avoids_morning_less_combo_without_9_16():
+    """9-16 を含まない「朝を賄えない編成」(⑤+⑧)も朝食あり日は避けること。
+
+    置換版(7-15)を作れるのは9-16を含む編成だけなので、それ以外の朝なし編成が
+    無罰のままだと ⑤9-15+⑧13-19 に逃げて 6-8 不足が出続ける。
+    """
+    settings = _base_settings()
+    settings["cooking_combo_rules"] = [
+        {"id": 1, "name": "朝あり", "allowed_patterns": ["cooking_4", "cooking_8"],
+         "is_active": True},
+        {"id": 2, "name": "朝なし", "allowed_patterns": ["cooking_5", "cooking_8"],
+         "is_active": True},
+    ]
+    shifts, warnings = _run(settings)
+
+    # ④6-13 を組める職員が居る日に ⑤9-15 の朝なし編成へ逃げていないこと
+    assert not [s for s in shifts if s["assignment"] == "cooking_5"], "朝なし編成が選ばれた"
+    morning_short = [
+        w for w in warnings
+        if w["warning_type"] == "understaffed_cook_interval_0" and w["date"] != EMPTY_DAY
+    ]
+    assert morning_short == [], morning_short
+
+
+def test_breakfast_day_avoids_9_16_even_without_7_15_in_master():
+    """種類マスタに 7:00-15:00 が無くても、朝食あり日は 9-16 の朝なし編成を避ける。
+
+    本番8月で「調理 6:00-8:00 1名不足」が8日出ていた状況＝マスタに 7-15 が
+    無いケース。旧実装は 7-15 が無いと朝なし編成のペナルティ自体を作らないため、
+    朝あり編成を組める日でも公休合わせを優先して ⑥9-16 に居座っていた。
+    """
+    types = [t for t in COOKING_TYPES if t["code"] != "cooking_9"]
+    combos = [
+        ["cooking_4", "cooking_8"],  # 朝あり（④6-13 + ⑧13-19）
+        ["cooking_6"],               # 朝なし（⑥9-16 のみ）
+    ]
+    # X は朝担当(④)を組めるが公休目標が多く、休ませた方が公休ペナルティは軽い。
+    # 旧実装ではこの日が ⑥ 単独＝朝不足になっていた。
+    staff = [
+        {"id": 1, "name": "X", "employment_type": "パート", "available_days": ALL_DAYS,
+         "max_days_per_week": 7, "max_consecutive_days": 31, "public_holiday_count": 20},
+        {"id": 2, "name": "Y", "employment_type": "常勤", "available_days": ALL_DAYS,
+         "max_days_per_week": 7, "max_consecutive_days": 31, "public_holiday_count": 0},
+    ]
+    settings = _base_settings()
+    settings["cooking_types"] = types
+    settings["cooking_combo_rules"] = [
+        {"id": i, "name": f"組{i}", "allowed_patterns": c, "is_active": True}
+        for i, c in enumerate(combos, 1)
+    ]
+    days = calendar.monthrange(YEAR, MONTH)[1]
+    all_dates = [datetime.date(YEAR, MONTH, d) for d in range(1, days + 1)]
+    # 全員休みの日を1日入れてスラック付きフェーズ（＝実データで不足警告が出た
+    # フェーズ）で解かせる。ハードフェーズだけだと不足自体が起きない。
+    day_off = [{"staff_id": s["id"], "date": EMPTY_DAY} for s in staff]
+    shifts, warnings = _solve_cooking_with_fallback(
+        YEAR, MONTH, all_dates, staff, day_off, settings,
+        allowed_patterns={1: {"cooking_4", "cooking_6"}, 2: {"cooking_8", "cooking_6"}},
+        locked_assignments={},
+    )
+
+    morning_short = [
+        w for w in warnings
+        if w["warning_type"] == "understaffed_cook_interval_0" and w["date"] != EMPTY_DAY
+    ]
+    assert morning_short == [], morning_short
+    assert not [s for s in shifts if s["assignment"] == "cooking_6"], "朝なし編成が選ばれた"
+
+
 def test_no_breakfast_period_still_uses_9_16():
     settings = _base_settings()
     settings["breakfast_off_start"] = "2026-08-01"

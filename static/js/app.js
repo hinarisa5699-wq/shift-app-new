@@ -20,6 +20,23 @@ function getCsrfToken() {
     return meta ? meta.getAttribute('content') : '';
 }
 
+/**
+ * 更新系APIの応答を検証する。失敗時はサーバーのメッセージをそのまま投げる。
+ * CSRFトークン切れ（ページを開きっぱなしにすると起きる）は原因が分かるよう
+ * 案内したうえでページを再読み込みし、次の操作が通る状態に戻す。
+ */
+function ensureUpdateOk(response) {
+    if (response.ok) return null;
+    return response.json().catch(() => ({})).then(j => {
+        if (j.csrf_error) {
+            alert(j.error || 'セキュリティトークンの有効期限が切れました。ページを再読み込みします。');
+            location.reload();
+            return null;
+        }
+        throw new Error(j.error || '更新失敗');
+    });
+}
+
 function fetchWithCsrf(url, options = {}) {
     const headers = options.headers || {};
     if (!headers['Content-Type']) {
@@ -1257,7 +1274,7 @@ function addCookingType() {
 function updateCookingType(typeId, field, value) {
     const body = {}; body[field] = value;
     fetchWithCsrf(`/api/cooking_types/${typeId}`, { method: 'PUT', body: JSON.stringify(body) })
-        .then(r => { if (!r.ok) throw new Error('更新失敗'); })
+        .then(r => ensureUpdateOk(r))
         .catch(e => alert('調理種類の更新に失敗しました: ' + e.message));
 }
 
@@ -1271,7 +1288,7 @@ function deleteCookingType(typeId) {
 /* ---- 調理組み合わせマスタ（依頼文21）---- */
 function updateCookingComboName(ruleId, name) {
     fetchWithCsrf(`/api/cooking_combo_rules/${ruleId}`, { method: 'PUT', body: JSON.stringify({ name: name }) })
-        .then(r => { if (!r.ok) throw new Error('更新失敗'); })
+        .then(r => ensureUpdateOk(r))
         .catch(e => alert('名前の更新に失敗しました: ' + e.message));
 }
 
@@ -1279,7 +1296,7 @@ function updateCookingComboPatterns(ruleId) {
     const row = document.querySelector(`[data-combo-row="${ruleId}"]`);
     const patterns = Array.from(row.querySelectorAll('input[type="checkbox"]:checked')).map(el => el.value);
     fetchWithCsrf(`/api/cooking_combo_rules/${ruleId}`, { method: 'PUT', body: JSON.stringify({ allowed_patterns: patterns }) })
-        .then(r => { if (!r.ok) throw new Error('更新失敗'); })
+        .then(r => ensureUpdateOk(r))
         .catch(e => alert('組み合わせの更新に失敗しました: ' + e.message));
 }
 

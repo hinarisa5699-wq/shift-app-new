@@ -1,8 +1,8 @@
-"""朝食あり日に 9:00-16:00 ではなく 7:00-15:00 を使う（朝[6-8)不足を出さない）。
+"""朝食あり日に 9:00-16:00 ではなく 6:30-14:30 を使う（朝[6-8)不足を出さない）。
 
-依頼: 「7:00-15:00 を追加して職員にも✓しているのに、朝食アリの期間なのに
+依頼: 「朝食あり日の1人勤務を追加して職員にも✓しているのに、朝食アリの期間なのに
 9-16 単独で入って 6-8 エラーになる」。
-9-16 は朝食なし用の時間帯なので、朝食あり日は 7:00-15:00 に置き換わること、
+9-16 は朝食なし用の時間帯なので、朝食あり日は 6:30-14:30 に置き換わること、
 朝食なし期間では従来どおり 9-16 が使われることを確認する。
 """
 import calendar
@@ -19,7 +19,7 @@ COOKING_TYPES = [
     {"code": "cooking_6", "label": "⑥ 9:00-16:00", "start_time": "09:00", "end_time": "16:00"},
     {"code": "cooking_7", "label": "⑦ 6:00-12:00", "start_time": "06:00", "end_time": "12:00"},
     {"code": "cooking_8", "label": "⑧ 13:00-19:00", "start_time": "13:00", "end_time": "19:00"},
-    {"code": "cooking_9", "label": "⑨ 7:00-15:00", "start_time": "07:00", "end_time": "15:00"},
+    {"code": "cooking_9", "label": "⑨ 6:30-14:30", "start_time": "06:30", "end_time": "14:30"},
 ]
 
 # 朝を賄えない編成（⑥単独・⑥+⑤）を含む組み合わせルール
@@ -82,11 +82,11 @@ def _run(settings):
     return shifts, warnings
 
 
-def test_breakfast_day_uses_7_15_instead_of_9_16():
+def test_breakfast_day_uses_morning_shift_instead_of_9_16():
     shifts, warnings = _run(_base_settings())
 
     thin = [s["assignment"] for s in shifts if s["date"] == THIN_DAY]
-    assert thin == ["cooking_9"], f"朝食あり日は7:00-15:00で組むこと: {thin}"
+    assert thin == ["cooking_9"], f"朝食あり日は6:30-14:30で組むこと: {thin}"
 
     # 9:00-16:00 は朝食あり期間では使わない
     assert not [s for s in shifts if s["assignment"] == "cooking_6"]
@@ -102,7 +102,7 @@ def test_breakfast_day_uses_7_15_instead_of_9_16():
 def test_breakfast_day_avoids_morning_less_combo_without_9_16():
     """9-16 を含まない「朝を賄えない編成」(⑤+⑧)も朝食あり日は避けること。
 
-    置換版(7-15)を作れるのは9-16を含む編成だけなので、それ以外の朝なし編成が
+    置換版(6:30-14:30)を作れるのは9-16を含む編成だけなので、それ以外の朝なし編成が
     無罰のままだと ⑤9-15+⑧13-19 に逃げて 6-8 不足が出続ける。
     """
     settings = _base_settings()
@@ -123,11 +123,11 @@ def test_breakfast_day_avoids_morning_less_combo_without_9_16():
     assert morning_short == [], morning_short
 
 
-def test_breakfast_day_avoids_9_16_even_without_7_15_in_master():
-    """種類マスタに 7:00-15:00 が無くても、朝食あり日は 9-16 の朝なし編成を避ける。
+def test_breakfast_day_avoids_9_16_even_without_morning_shift_in_master():
+    """種類マスタに 6:30-14:30 が無くても、朝食あり日は 9-16 の朝なし編成を避ける。
 
-    本番8月で「調理 6:00-8:00 1名不足」が8日出ていた状況＝マスタに 7-15 が
-    無いケース。旧実装は 7-15 が無いと朝なし編成のペナルティ自体を作らないため、
+    本番8月で「調理 6:00-8:00 1名不足」が8日出ていた状況＝マスタに朝の1人勤務が
+    無いケース。旧実装はそれが無いと朝なし編成のペナルティ自体を作らないため、
     朝あり編成を組める日でも公休合わせを優先して ⑥9-16 に居座っていた。
     """
     types = [t for t in COOKING_TYPES if t["code"] != "cooking_9"]

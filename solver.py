@@ -151,10 +151,10 @@ COOK_ASSIGNMENT_TIME_RANGES = {
 _COOK_INTERVALS = [(6 * 60, 8 * 60), (8 * 60, 12 * 60), (12 * 60, 19 * 60)]
 
 # 各区間の「充足」に必要な重なり分数。既定は2時間(120)。
-#   朝[6-8)のみ60分に緩和＝7:00開始(7-15等)でも朝食を賄えるとみなす（ユーザー依頼:
-#   「朝食は6時か7時から来れば間に合う」「7-15の1人で立てられる」）。
+#   朝[6-8)のみ60分に緩和＝6時半/7時開始でも朝食を賄えるとみなす（ユーザー依頼:
+#   「朝食は6時か7時から来れば間に合う」「1人で立てられる」）。
 #   既存パターン(①6-8/④6-13/⑦6-12は120以上、②⑤⑥は0)の朝判定は不変で、
-#   7:00開始(7-8=60分)のみ新たに朝food充足になる。
+#   6:30開始(6:30-8=90分)・7:00開始(60分)が新たに朝食充足になる。
 _COOK_INTERVAL_MIN_OVERLAP = [60, 120, 120]
 
 
@@ -3784,13 +3784,13 @@ def _solve_cooking(
     # 調理フォールバック（依頼）: 通常の組み合わせが組めない日は全休(0)ではなく
     #   「1人」で回す特別編成を、不足時のみ発動で追加する（誰も揃わない日用）。
     #   ユーザー依頼: 1人編成の時間は【朝食状態で切替】。
-    #     朝食あり日   → 7:00-15:00（朝の仕込みで7時開始）
+    #     朝食あり日   → 6:30-14:30（朝の仕込みで6時半開始）
     #     朝食なし日   → 9:00-16:00（朝が無いので9時開始。朝食なし期間"以外"では9-16を使わない）
     #   カバレッジはどちらも(朝0/昼1/夜1)。この編成の日は朝[6-8)の下限を課さない。
     #   各日にはその日の朝食状態に合う片方だけを使用可にする（下の per-day ループで制御）。
     #   ※事務など調理に数えない種類(カバレッジ全0)は1人編成の担い手にならない。
-    fb_code_715 = next((c for c in cook_working
-                        if cook_time_ranges.get(c) == (7 * 60, 15 * 60)
+    fb_code_bf = next((c for c in cook_working
+                        if cook_time_ranges.get(c) == (6 * 60 + 30, 14 * 60 + 30)
                         and any(cook_coverage.get(c, (0, 0, 0)))), None)
     fb_code_915 = next((c for c in cook_working
                         if cook_time_ranges.get(c) == (9 * 60, 16 * 60)
@@ -3800,28 +3800,28 @@ def _solve_cooking(
     #   (1) 朝を賄える記号が1つも無い編成は【全て】朝食あり日ペナルティの対象にする。
     #       ＝9-16 を含む編成だけでなく、⑤9-15+⑧13-19 のような編成も対象。
     #       朝を組める職員が居る日は「朝あり編成」に寄り、居ない日だけ従来どおり落ちる。
-    #   (2) そのうち 9:00-16:00 を含む編成には、9-16 を 7:00-15:00 に置き換えた
+    #   (2) そのうち 9:00-16:00 を含む編成には、9-16 を 6:30-14:30 に置き換えた
     #       代替編成を追加して優先させる（9-16は朝食なし用の時間帯で、朝食あり日は
-    #       7:00開始でないと朝食に間に合わない）。元の編成も残すので、7-15 を組める
-    #       職員が居ない日に新たな未配置を作ることはない。
+    #       朝から入らないと朝食に間に合わない）。元の編成も残すので、6:30-14:30 を
+    #       組める職員が居ない日に新たな未配置を作ることはない。
     bf_on_variant_idx = set()  # 置換版（朝食あり日のみ選択可）
     bf_on_avoid_idx = set()    # 朝[6-8)を賄えない編成（朝食あり日に選ぶとペナルティ）
     for p_idx, pat in enumerate(list(combo_patterns)):
         if any(cook_coverage.get(a, (0, 0, 0))[0] for a in pat):
             continue  # 既に朝[6-8)を賄える記号がある編成はそのまま
         bf_on_avoid_idx.add(p_idx)
-        if fb_code_715 is None or fb_code_915 is None or fb_code_915 not in pat:
+        if fb_code_bf is None or fb_code_915 is None or fb_code_915 not in pat:
             continue  # 置換先が無い編成はペナルティのみ（代替は作れない）
-        alt = [fb_code_715 if a == fb_code_915 else a for a in pat]
+        alt = [fb_code_bf if a == fb_code_915 else a for a in pat]
         if alt in combo_patterns:
             continue
         combo_patterns.append(alt)
         bf_on_variant_idx.add(len(combo_patterns) - 1)
 
-    fb_combo_kind = {}  # combo_idx -> 'bf_on'(7-15・朝食あり日用) / 'bf_off'(9-16・朝食なし日用)
+    fb_combo_kind = {}  # combo_idx -> 'bf_on'(6:30-14:30・朝食あり日用) / 'bf_off'(9-16・朝食なし日用)
     if combo_patterns:
-        if fb_code_715 is not None and [fb_code_715] not in combo_patterns:
-            combo_patterns.append([fb_code_715])
+        if fb_code_bf is not None and [fb_code_bf] not in combo_patterns:
+            combo_patterns.append([fb_code_bf])
             fb_combo_kind[len(combo_patterns) - 1] = 'bf_on'
         if fb_code_915 is not None and [fb_code_915] not in combo_patterns:
             combo_patterns.append([fb_code_915])
@@ -3866,13 +3866,13 @@ def _solve_cooking(
                 kind = fb_combo_kind.get(p_idx)
                 if kind is not None:
                     # その日の朝食状態に合わない1人編成は使用不可
-                    #   朝食なし日 → 7-15(bf_on)不可 / 朝食あり日 → 9-16(bf_off)不可
+                    #   朝食なし日 → 6:30-14:30(bf_on)不可 / 朝食あり日 → 9-16(bf_off)不可
                     if (kind == 'bf_on' and _bf_off_day) or (kind == 'bf_off' and not _bf_off_day):
                         model.add(pv == 0)
                     else:
                         fb_by_day[d_idx] = pv  # 当日有効なフォールバック選択変数
                 elif p_idx in bf_on_variant_idx:
-                    # 9-16→7-15 置換版は朝食あり日のみ使用可
+                    # 9-16→6:30-14:30 置換版は朝食あり日のみ使用可
                     if _bf_off_day:
                         model.add(pv == 0)
                 elif p_idx in bf_on_avoid_idx and not _bf_off_day:
@@ -4166,7 +4166,7 @@ def _solve_cooking(
     )
     # 朝食あり日に「朝[6-8)を賄えない編成」を選ぶペナルティ。
     #   朝を組める編成が可能な日は必ずそちらを選ばせる（公休ズレ5w×4件ぶんまで許容）。
-    #   置換版(7-15)が組める日はそちらへ。どうしても朝を組めない日だけ元編成に落ちる。
+    #   置換版(6:30-14:30)が組める日はそちらへ。どうしても朝を組めない日だけ元編成に落ちる。
     #   通常編成(0) < 朝なし編成のまま(20w) < フォールバック(40w) < 未配置(50w)。
     bf_avoid_penalty = (
         sum(bf_avoid_vars) * (num_days + 1) * 20 if bf_avoid_vars else 0

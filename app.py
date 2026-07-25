@@ -814,12 +814,22 @@ def _sync_cooking_patterns():
             ))
             changed = True
 
-    # 朝食あり日の1人勤務用 7:00-15:00 を保証。
-    #   solver は「朝食あり日=7-15 / 朝食なし日=9-16」で1人編成を切り替えるため、
-    #   7-15 がマスタに無いと朝食あり日はフォールバック不成立＝その日の調理が
+    # 朝食あり日の1人勤務用 6:30-14:30 を保証（旧 7:00-15:00 から時刻のみ変更）。
+    #   solver は「朝食あり日=6:30-14:30 / 朝食なし日=9-16」で1人編成を切り替えるため、
+    #   これがマスタに無いと朝食あり日はフォールバック不成立＝その日の調理が
     #   全員off（未配置）になる。時刻で判定するので手動追加済みなら重複しない。
-    if ShiftPattern.query.filter_by(
+    #   既に 7:00-15:00 で登録済みなら、その行の時刻を 6:30-14:30 へ寄せる
+    #   （職員の許可シフトのチェックを付け直さずに済ませるため、行は作り直さない）。
+    for _p in ShiftPattern.query.filter_by(
         staff_group="cooking", start_time="07:00", end_time="15:00"
+    ).all():
+        _p.start_time, _p.end_time = "06:30", "14:30"
+        if "7:00-15:00" in (_p.label or ""):
+            _p.label = _p.label.replace("7:00-15:00", "6:30-14:30")
+        changed = True
+
+    if ShiftPattern.query.filter_by(
+        staff_group="cooking", start_time="06:30", end_time="14:30"
     ).first() is None:
         max_n, max_order = 0, 0
         for p in ShiftPattern.query.filter_by(staff_group="cooking").all():
@@ -829,7 +839,7 @@ def _sync_cooking_patterns():
             max_order = max(max_order, p.display_order or 0)
         db.session.add(ShiftPattern(
             code=f"cooking_{max_n + 1}", staff_group="cooking",
-            label="(9) 7:00-15:00", start_time="07:00", end_time="15:00",
+            label="(9) 6:30-14:30", start_time="06:30", end_time="14:30",
             has_break=False, break_minutes=0, display_order=max_order + 1,
             period="full", covers_am=True, covers_pm=True,
         ))

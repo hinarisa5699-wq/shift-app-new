@@ -3881,6 +3881,10 @@ def _solve_cooking(
     #     依頼文38: 新人オンボーディングの「同一シフト記号でのベテラン同伴」を
     #     可能にするため、1記号に最大2名（新人＋ベテラン）まで許可する。通常は
     #     extra ペナルティ（下記）で1名に保たれ、同伴が必要な日のみ2名化する。
+    #     2026-07-25: 同伴相手は同一記号でなくてよい（依頼: ⑦6:00-12:00 と ④6-13 で
+    #     新人×ベテランを組めるように）。編成に含まれない記号でも【同じ食事帯】なら
+    #     1名だけ追加を許す。ただし新人がその帯で勤務している日に限る＝通常日の
+    #     「編成＝パターンと完全一致」は崩さない。
     #   - none 選択時: その日の調理は全員 off（部分編成を一切作らない）
     #   どの4通りも組めない日は none になり、警告を出す（無言で③だけ等にしない）。
     # ==================================================================
@@ -3888,6 +3892,12 @@ def _solve_cooking(
     fb_by_day = {}  # 調理フォールバック(1人編成)が選択された日 → その日有効な選択変数
     bf_avoid_vars = []  # 朝食あり日に「朝[6-8)を賄えない9-16編成」を選んだ選択変数
     no_dinner_vars = []  # 夜17:30を賄えない編成を選んだ選択変数（6-19編成を優先）
+    band_sub_penalties = []  # 新人同行のため同帯の別記号を追加した分（不要な追加を抑制）
+    # 食事帯（=時間帯カバレッジ）。④6-13 と ⑦6-12 はどちらも(朝1/昼1/夜0)で同じ帯。
+    _cook_band = {a: cook_coverage.get(a, (0, 0, 0)) for a in cook_working}
+    _onboard_new_ids = [
+        s for s in staff_ids if staff_by_id[s].get("experience") == "new"
+    ]
     if combo_active:
         for d_idx in range(num_days):
             if d_idx in closed_day_indices:
@@ -3916,11 +3926,25 @@ def _solve_cooking(
                     # 夜17:30を賄えない編成（＝6-19を回せない）は避ける
                     no_dinner_vars.append(pv)
                 pset = set(pattern)
+                pattern_bands = {_cook_band[a] for a in pattern}
                 for a in cook_working:
                     cnt = sum(x[s, d_idx, a] for s in staff_ids)
                     if a in pset:
                         model.add(cnt >= 1).only_enforce_if(pv)
                         model.add(cnt <= 2).only_enforce_if(pv)
+                    elif _onboard_new_ids and _cook_band[a] in pattern_bands:
+                        # 同じ食事帯の記号は、新人同行の相方として1名だけ追加を許す
+                        #   （例: 編成の⑦6-12 に対して新人が④6-13）。
+                        #   新人がその帯で勤務している日に限る＝通常日は完全一致のまま。
+                        sub = model.new_bool_var(f"cook_band_sub_d{d_idx}_p{p_idx}_{a}")
+                        model.add(cnt <= 1).only_enforce_if(pv)
+                        model.add(cnt == 0).only_enforce_if([pv, sub.Not()])
+                        model.add(
+                            sum(x[n, d_idx, b] for n in _onboard_new_ids
+                                for b in cook_working if _cook_band[b] == _cook_band[a])
+                            >= 1
+                        ).only_enforce_if([pv, sub])
+                        band_sub_penalties.append(sub)
                     else:
                         model.add(cnt == 0).only_enforce_if(pv)
             # none: 全調理アサインメントを0に
@@ -4011,7 +4035,7 @@ def _solve_cooking(
     #   不足分(pair_deficit)を目的関数で最小化する（ソフト・未達でも止めない）。
     #   target<=0、または新人/ベテランのどちらかが居ない場合は目標を課さない。
     # ==================================================================
-    new_ids = [s for s in staff_ids if staff_by_id[s].get("experience") == "new"]
+    new_ids = _onboard_new_ids
     vet_ids = [s for s in staff_ids if staff_by_id[s].get("experience") == "veteran"]
 
     # ハード制約（依頼）: 新人を1人にしない。新人がやる「時間帯」に、必ずベテランも
@@ -4238,6 +4262,10 @@ def _solve_cooking(
         pair_penalty = pair_deficit * (num_days + 1) if pair_deficit is not None else 0
         # 1記号2名化(依頼文38)の抑制ペナルティ。通常日を実質1名に保つ。
         extra_penalty = sum(extra_penalties) * (num_days + 1) * 2 if extra_penalties else 0
+        # 新人同行のための同帯追加も、不要な増員を抑えるため同じ重みで抑制する
+        extra_penalty = extra_penalty + (
+            sum(band_sub_penalties) * (num_days + 1) * 2 if band_sub_penalties else 0
+        )
         # 新人オンボーディング 同伴ミス（依頼文36→38・同一記号）。extra より強くして
         # 「同記号同伴のための2名化」が割に合うようにする（onboarding 5w > extra 2w）。
         onboarding_penalty = sum(onboarding_penalties) * (num_days + 1) * 5 if onboarding_penalties else 0
@@ -4247,6 +4275,10 @@ def _solve_cooking(
         none_penalty = sum(none_by_day.values()) * (num_days + 1) * 50 if none_by_day else 0
         pair_penalty = pair_deficit * (num_days + 1) if pair_deficit is not None else 0
         extra_penalty = sum(extra_penalties) * (num_days + 1) * 2 if extra_penalties else 0
+        # 新人同行のための同帯追加も、不要な増員を抑えるため同じ重みで抑制する
+        extra_penalty = extra_penalty + (
+            sum(band_sub_penalties) * (num_days + 1) * 2 if band_sub_penalties else 0
+        )
         onboarding_penalty = sum(onboarding_penalties) * (num_days + 1) * 5 if onboarding_penalties else 0
         model.minimize(fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty + fb_penalty + bf_avoid_penalty + no_dinner_penalty)
 

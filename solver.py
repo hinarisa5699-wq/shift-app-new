@@ -3601,15 +3601,17 @@ def _solve_cooking(
                 model.add(x[s, d_idx, "cook_off"] == 1)
 
     # ==================================================================
-    # 日曜(=6): 介護スタッフ不在のため調理が配膳下膳を担う（ユーザー依頼）
+    # 土日(=5,6): 介護スタッフ不在のため調理が配膳下膳を担う（ユーザー依頼）
     #   恒久ルール = 昼12:00・夜17:30 の配膳下膳を「必須」にする（下の専用制約で
     #   17:30の実在席を保証。③12-19 は12:00も含むので昼も同時に満たす）。
-    #   朝食の有無は日曜固有ではなく【条件設定の朝食なし期間(breakfast_off)】に従う
+    #   2026-07-25: 「土日は③12-19 のシフトが優先」の依頼により、日曜のみだった
+    #   この要求を土曜にも広げた（土曜も介護は休みで配膳下膳の担い手が居ないため）。
+    #   朝食の有無は曜日固有ではなく【条件設定の朝食なし期間(breakfast_off)】に従う
     #   （「今だけ朝食なし」は一時的なため。ハードコードしない）。休業日(年末年始)は除外。
     # ==================================================================
-    sunday_indices = {
+    dinner_required_indices = {
         d_idx for d_idx, dt in enumerate(all_dates)
-        if dt.weekday() == 6 and d_idx not in closed_day_indices
+        if dt.weekday() in (5, 6) and d_idx not in closed_day_indices
     }
 
     # ==================================================================
@@ -3806,6 +3808,7 @@ def _solve_cooking(
     #       組める職員が居ない日に新たな未配置を作ることはない。
     bf_on_variant_idx = set()  # 置換版（朝食あり日のみ選択可）
     bf_on_avoid_idx = set()    # 朝[6-8)を賄えない編成（朝食あり日に選ぶとペナルティ）
+    fb_combo_kind = {}  # combo_idx -> 'bf_on'(6:30-14:30・朝食あり日用) / 'bf_off'(9-16・朝食なし日用)
     for p_idx, pat in enumerate(list(combo_patterns)):
         if any(cook_coverage.get(a, (0, 0, 0))[0] for a in pat):
             continue  # 既に朝[6-8)を賄える記号がある編成はそのまま
@@ -3816,17 +3819,47 @@ def _solve_cooking(
         if alt in combo_patterns:
             continue
         combo_patterns.append(alt)
-        bf_on_variant_idx.add(len(combo_patterns) - 1)
-
-    fb_combo_kind = {}  # combo_idx -> 'bf_on'(6:30-14:30・朝食あり日用) / 'bf_off'(9-16・朝食なし日用)
-    if combo_patterns:
-        if fb_code_bf is not None and [fb_code_bf] not in combo_patterns:
-            combo_patterns.append([fb_code_bf])
+        if alt == [fb_code_bf]:
+            # 置換の結果が「6:30-14:30 の1人だけ」なら、それは通常編成ではなく
+            # 1人編成フォールバックそのもの。通常編成と同じ 0 ペナルティで置くと
+            # 「2人で6-19を回す編成」より安くなり、1人勤務だらけになる（実データで発生）。
             fb_combo_kind[len(combo_patterns) - 1] = 'bf_on'
-        if fb_code_915 is not None and [fb_code_915] not in combo_patterns:
-            combo_patterns.append([fb_code_915])
-            fb_combo_kind[len(combo_patterns) - 1] = 'bf_off'
+        else:
+            bf_on_variant_idx.add(len(combo_patterns) - 1)
+
+    #   「その記号だけの1人編成」は、ユーザーが組み合わせマスタに登録していても
+    #   1人編成フォールバックとして扱う（＝発動ペナルティを課し、その日の朝食状態に
+    #   合う方だけ使う）。登録済みだからと 0 ペナルティにすると、2人で6-19を回す
+    #   編成より安くなって1人勤務だらけになる。
+    if combo_patterns:
+        for _code, _kind in ((fb_code_bf, 'bf_on'), (fb_code_915, 'bf_off')):
+            if _code is None:
+                continue
+            _single = [_code]
+            if _single in combo_patterns:
+                _idx = combo_patterns.index(_single)
+            else:
+                combo_patterns.append(_single)
+                _idx = len(combo_patterns) - 1
+            fb_combo_kind[_idx] = _kind
+            bf_on_variant_idx.discard(_idx)
     combo_active = bool(combo_patterns)
+
+    # 「6:00-19:00 を賄う編成を優先」（ユーザー依頼）。
+    #   夜17:30に在席する記号（既定 ③12-19 / ⑧13-19）を含まない編成は、
+    #   日中しか回せない＝夕食の配膳下膳に間に合わない。組める日は必ず
+    #   朝担当＋夜担当の編成を選ばせるため、夜を賄えない編成にペナルティを課す。
+    #   組めない日（夜担当が全員休み等）は従来どおり選べる＝新たな未配置は作らない。
+    _dinner_min_for_combo = 17 * 60 + 30
+    no_dinner_combo_idx = {
+        p_idx for p_idx, pat in enumerate(combo_patterns)
+        if not any(
+            cook_time_ranges.get(a, (0, 0))[0] <= _dinner_min_for_combo
+            <= cook_time_ranges.get(a, (0, 0))[1]
+            and any(cook_coverage.get(a, (0, 0, 0)))
+            for a in pat
+        )
+    }
 
     # ==================================================================
     # スラック変数（use_slack=True のとき）
@@ -3854,6 +3887,7 @@ def _solve_cooking(
     none_by_day = {}
     fb_by_day = {}  # 調理フォールバック(1人編成)が選択された日 → その日有効な選択変数
     bf_avoid_vars = []  # 朝食あり日に「朝[6-8)を賄えない9-16編成」を選んだ選択変数
+    no_dinner_vars = []  # 夜17:30を賄えない編成を選んだ選択変数（6-19編成を優先）
     if combo_active:
         for d_idx in range(num_days):
             if d_idx in closed_day_indices:
@@ -3878,6 +3912,9 @@ def _solve_cooking(
                 elif p_idx in bf_on_avoid_idx and not _bf_off_day:
                     # 朝食あり日に「朝[6-8)を賄えない編成」を選んだらペナルティ
                     bf_avoid_vars.append(pv)
+                if p_idx in no_dinner_combo_idx:
+                    # 夜17:30を賄えない編成（＝6-19を回せない）は避ける
+                    no_dinner_vars.append(pv)
                 pset = set(pattern)
                 for a in cook_working:
                     cnt = sum(x[s, d_idx, a] for s in staff_ids)
@@ -3939,7 +3976,7 @@ def _solve_cooking(
                 cc.only_enforce_if(fb_by_day[d_idx].Not())
 
     # ==================================================================
-    # 制約: 日曜の夜17:30 配膳下膳（介護スタッフ不在・ユーザー依頼）
+    # 制約: 土日の夜17:30 配膳下膳（介護スタッフ不在・ユーザー依頼）
     #   17:30に実在席する記号（=勤務時間が17:30を含む＝既定③12:00-19:00）を
     #   最低1名。区間[12-19)の「2時間重なりで充足」判定だけでは9-16等が17:30前に
     #   退勤し夜の配膳下膳に間に合わないため、実在席を保証する専用制約を課す。
@@ -3954,7 +3991,7 @@ def _solve_cooking(
     ]
     sunday_dinner_slack = {}
     if dinner_codes:
-        for d_idx in sunday_indices:
+        for d_idx in dinner_required_indices:
             dinner_cnt = sum(
                 x[s, d_idx, a] for s in staff_ids for a in dinner_codes
             )
@@ -4171,11 +4208,17 @@ def _solve_cooking(
     bf_avoid_penalty = (
         sum(bf_avoid_vars) * (num_days + 1) * 20 if bf_avoid_vars else 0
     )
-    # 日曜の夜17:30配膳下膳を担当できない日は最優先で避ける（none と同格 ×50）。
+    # 土日の夜17:30配膳下膳を担当できない日は最優先で避ける（none と同格 ×50）。
     #   （use_slack 時のみ slack が立つ。ハード phase では制約が直接効く。）
     sun_dinner_penalty = (
         sum(sunday_dinner_slack.values()) * (num_days + 1) * 50
         if sunday_dinner_slack else 0
+    )
+    # 「6:00-19:00 を賄う編成を優先」（ユーザー依頼）。夜17:30を賄えない編成を
+    #   選んだ日にペナルティ。組める日は朝担当＋夜担当の2人編成に寄せる。
+    #   通常編成(0) < 夜なし編成(15w) < 朝なし編成(20w) < フォールバック(40w) < 未配置(50w)。
+    no_dinner_penalty = (
+        sum(no_dinner_vars) * (num_days + 1) * 15 if no_dinner_vars else 0
     )
 
     if use_slack:
@@ -4198,14 +4241,14 @@ def _solve_cooking(
         # 新人オンボーディング 同伴ミス（依頼文36→38・同一記号）。extra より強くして
         # 「同記号同伴のための2名化」が割に合うようにする（onboarding 5w > extra 2w）。
         onboarding_penalty = sum(onboarding_penalties) * (num_days + 1) * 5 if onboarding_penalties else 0
-        model.minimize(total_slack * penalty_weight + fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty + fb_penalty + sun_dinner_penalty + bf_avoid_penalty)
+        model.minimize(total_slack * penalty_weight + fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty + fb_penalty + sun_dinner_penalty + bf_avoid_penalty + no_dinner_penalty)
     else:
         cook_pw_penalty = sum(cook_min_pw_penalties) * (num_days + 1) * 10 if cook_min_pw_penalties else 0
         none_penalty = sum(none_by_day.values()) * (num_days + 1) * 50 if none_by_day else 0
         pair_penalty = pair_deficit * (num_days + 1) if pair_deficit is not None else 0
         extra_penalty = sum(extra_penalties) * (num_days + 1) * 2 if extra_penalties else 0
         onboarding_penalty = sum(onboarding_penalties) * (num_days + 1) * 5 if onboarding_penalties else 0
-        model.minimize(fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty + fb_penalty + bf_avoid_penalty)
+        model.minimize(fairness_diff + cook_pw_penalty + none_penalty + pair_penalty + extra_penalty + onboarding_penalty + public_holiday_penalty + fb_penalty + bf_avoid_penalty + no_dinner_penalty)
 
     # ==================================================================
     # ソルバー実行
@@ -4273,7 +4316,7 @@ def _solve_cooking(
             warnings_data.append({
                 "date": all_dates[d_idx].strftime("%Y-%m-%d"),
                 "warning_type": "cook_sunday_dinner_unassigned",
-                "message": "日曜の夜17:30の配膳下膳を担当できる調理スタッフ"
+                "message": "土日の夜17:30の配膳下膳を担当できる調理スタッフ"
                            "（12:00-19:00勤務）を配置できません。",
             })
 

@@ -90,8 +90,8 @@ _PATTERN_CODE_TO_ASSIGNMENT = {
 
 _VALID_ALLOWED_BY_GROUP = {
     "care": set(CARE_ASSIGNMENTS) - {"off"},
-    # cooking_6/7/8 は COOK_ASSIGNMENTS(静的①〜⑤)に無いため明示的に許可対象へ追加
-    # （無いとチェックしても保存時に捨てられる）。6=9-16, 7=6-12, 8=13-19。
+    # 調理は「調理シフト種類マスタ」が可変なので、静的セットは DB を読めない場合の
+    # フォールバックにとどめる（実際の判定は _valid_allowed_codes を参照）。
     "cooking": (set(COOK_ASSIGNMENTS) | {"cooking_6", "cooking_7", "cooking_8"}) - {"cook_off"},
 }
 
@@ -249,9 +249,30 @@ def _set_counselor(staff_id, enabled: bool) -> None:
         db.session.delete(exists)
 
 
+def _valid_allowed_codes(staff_group):
+    """許可シフトパターンとして保存してよいコード集合。
+
+    調理は種類マスタ(ShiftPattern staff_group='cooking')をユーザーが自由に追加できる。
+    静的セットで判定すると、後から追加した種類（7:00-15:00 等）はチェックしても
+    保存時に捨てられ、solver へ渡らない＝そのシフトが一生割り当たらない。
+    そのためマスタの現在のコードを毎回読み直す。
+    """
+    base = _VALID_ALLOWED_BY_GROUP.get(staff_group, set())
+    if staff_group != "cooking":
+        return base
+    try:
+        codes = {
+            p.code for p in ShiftPattern.query.filter_by(staff_group="cooking").all()
+            if p.code
+        }
+    except Exception:  # アプリコンテキスト外・DB未作成時は静的セットで判定
+        return base
+    return (base | codes) - {"cook_off"}
+
+
 def normalize_allowed_pattern_codes(raw_codes, staff_group):
     """フォーム入力の allowed_patterns を solver が扱うコードへ正規化する。"""
-    valid_codes = _VALID_ALLOWED_BY_GROUP.get(staff_group, set())
+    valid_codes = _valid_allowed_codes(staff_group)
     normalized = []
     seen = set()
 
@@ -513,27 +534,8 @@ def _run_migrations(app):
                     "VALUES (?,'cooking',?,?,?,0,0,?,'full',1,1)",
                     (_code, _label, _st, _et, _co2),
                 )
-        # 朝食あり日の1人フォールバック用: 7:00-15:00 を保証。
-        #   solver は「朝食あり日=7-15 / 朝食なし日=9-16」で1人編成を切り替えるため、
-        #   7-15 がマスタに無いと朝食あり日はフォールバック不成立＝その日の調理が
-        #   全員off（未配置）になる。時刻で判定するので手動追加済みなら重複しない。
-        cursor.execute(
-            "SELECT COUNT(*) FROM shift_pattern "
-            "WHERE staff_group='cooking' AND start_time='07:00' AND end_time='15:00'"
-        )
-        if cursor.fetchone()[0] == 0:
-            cursor.execute(
-                "SELECT COALESCE(MAX(display_order), 0) + 1 FROM shift_pattern "
-                "WHERE staff_group='cooking'"
-            )
-            _co3 = cursor.fetchone()[0]
-            cursor.execute(
-                "INSERT INTO shift_pattern "
-                "(code, staff_group, label, start_time, end_time, has_break, "
-                " break_minutes, display_order, period, covers_am, covers_pm) "
-                "VALUES ('cooking_9','cooking','(9) 7:00-15:00','07:00','15:00',0,0,?,'full',1,1)",
-                (_co3,),
-            )
+        # ※ 7:00-15:00（朝食あり日の1人勤務用）は _sync_cooking_patterns() で保証する
+        #   （新規DB・既存DBの双方に効かせるため）。
 
     # 池田さん向け組み合わせ（⑦6-12＋③12-19 / ④6-13＋⑧13-19）を保証。無ければ追加。
     if "cooking_combo_rule" in tables:
@@ -811,6 +813,27 @@ def _sync_cooking_patterns():
                 display_order=order, period="full", covers_am=True, covers_pm=True,
             ))
             changed = True
+
+    # 朝食あり日の1人勤務用 7:00-15:00 を保証。
+    #   solver は「朝食あり日=7-15 / 朝食なし日=9-16」で1人編成を切り替えるため、
+    #   7-15 がマスタに無いと朝食あり日はフォールバック不成立＝その日の調理が
+    #   全員off（未配置）になる。時刻で判定するので手動追加済みなら重複しない。
+    if ShiftPattern.query.filter_by(
+        staff_group="cooking", start_time="07:00", end_time="15:00"
+    ).first() is None:
+        max_n, max_order = 0, 0
+        for p in ShiftPattern.query.filter_by(staff_group="cooking").all():
+            m = re.match(r"^cooking_(\d+)$", p.code or "")
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+            max_order = max(max_order, p.display_order or 0)
+        db.session.add(ShiftPattern(
+            code=f"cooking_{max_n + 1}", staff_group="cooking",
+            label="(9) 7:00-15:00", start_time="07:00", end_time="15:00",
+            has_break=False, break_minutes=0, display_order=max_order + 1,
+            period="full", covers_am=True, covers_pm=True,
+        ))
+        changed = True
 
     # GeneratedShift の旧調理コードを移行
     for old, new in _COOK_CODE_MIGRATE.items():

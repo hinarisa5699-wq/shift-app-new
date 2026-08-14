@@ -457,6 +457,14 @@ function renderCalendar(data, year, month) {
         return `<tr><td colspan="${totalCols}" style="background:#1f2937;color:#fff;font-weight:700;text-align:left;padding:6px 10px">${title}</td></tr>`;
     }
 
+    // その日付が訪問の営業日か（2階・3階いずれかが訪問の曜日）
+    function isVisitDate(dateStr) {
+        const parts = String(dateStr).split('-').map(Number);
+        if (parts.length !== 3) return false;
+        const dow = new Date(parts[0], parts[1] - 1, parts[2]).getDay();
+        return F3_VISIT.has(dow) || F2_VISIT.has(dow);
+    }
+
     // 休みのセル。本人が休み希望を出していた日は「希望休」と分かるようにする。
     function offCellHtml(dateStr, s) {
         const ids = dayOffMap[dateStr] || [];
@@ -493,7 +501,11 @@ function renderCalendar(data, year, month) {
         const badge = info
             ? `<span class="badge ${info.badgeClass}">${info.label}</span>`
             : `<span class="badge badge-off">${escapeHtml(assignment)}</span>`;
-        return `${badge}${bathDisplay}${phoneBadge}${parkingBadge(dateStr, s.id)}${deskLabel}`;
+        // 訪問営業日の早番(7:30-16:30)は午前が訪問。訪問と分かる表記を付ける
+        const visitNote = (assignment === 'early' && isVisitDate(dateStr))
+            ? '<br><span class="badge" style="background:#dbeafe;color:#1d4ed8">訪問（午前）</span>'
+            : '';
+        return `${badge}${bathDisplay}${phoneBadge}${parkingBadge(dateStr, s.id)}${visitNote}${deskLabel}`;
     }
 
     // 職員名セル（資格併記＋シフト固定トグル）

@@ -155,3 +155,25 @@ def test_export_marks_requested_day_off(tmp_path, monkeypatch):
 
     # 休み希望を出していない職員の休みは「休」のまま
     assert "\n介護A" in text or "介護A" in text
+
+
+def test_export_marks_visit_on_early_shift(tmp_path, monkeypatch):
+    """訪問営業日の早番セルに「訪問」の文字が出る（CSV出力で確認）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    from models import db, ShiftSettings
+
+    with flask_app.app_context():
+        s = ShiftSettings.query.first()
+        s.min_visit_am = 1          # 訪問営業日(月・金)は早番が午前訪問へ出る
+        db.session.commit()
+
+    client = flask_app.test_client()
+    client.post("/login", data={"username": "admin", "password": "testpass"},
+                follow_redirects=True)
+    gen = client.post("/api/generate", json={"year": 2026, "month": 9}).get_json()
+
+    res = client.get(f"/api/export/{gen['generation_id']}/csv")
+    assert res.status_code == 200
+    text = res.get_data(as_text=True)
+    assert "訪問（午前）" in text, "訪問日の早番に『訪問』表記が出ていない"

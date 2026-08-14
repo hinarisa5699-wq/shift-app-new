@@ -374,10 +374,27 @@ def _off_cell_text(d_str, sid) -> str:
     return "希望休" if _is_day_off_request(d_str, sid) else "休"
 
 
+def _visit_suffix(d_str, asgn) -> str:
+    """訪問へ出る勤務に付ける「訪問」表記。
+
+    ユーザー依頼（2026-08）:「訪問の日は訪問スタッフに訪問の文字を表示させて」。
+    訪問営業日の早番(7:30-16:30)は午前が訪問なので、セルにも訪問と分かる表記を付ける。
+    兼務(デイ→訪問 / 訪問→デイ)や単独訪問はラベル自体に「訪問」が入っている。
+    """
+    if asgn != "early":
+        return ""
+    try:
+        d = date.fromisoformat(d_str)
+    except (TypeError, ValueError):
+        return ""
+    return "\n訪問（午前）" if _is_visit_weekday(d) else ""
+
+
 def _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map):
     """ケアスタッフ 1 セルの (assignment, 表示テキスト) を組み立てる。"""
     asgn = assignment_map.get(d_str, {}).get(sid, "")
     text = ASSIGNMENT_LABELS.get(asgn, "")
+    text += _visit_suffix(d_str, asgn)
 
     # お風呂当番（中/外）
     bath_role = bath_map.get(d_str, {}).get(sid)
@@ -919,6 +936,9 @@ def export_csv(
         asgn = assignment_map.get(d_str, {}).get(sid, "")
         label = ASSIGNMENT_LABELS.get(asgn, "")
         parts = [label] if label else []
+        visit_note = _visit_suffix(d_str, asgn).strip()
+        if visit_note:
+            parts.append(visit_note)
         bath_role = bath_map.get(d_str, {}).get(sid)
         if bath_role:
             parts.append(f"{bath_role}介助")

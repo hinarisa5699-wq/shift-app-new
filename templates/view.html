@@ -43,6 +43,15 @@
         </div>
     </div>
 
+    <div id="week-bar" class="hidden bg-white rounded-xl shadow p-2 mb-3">
+        <div class="flex items-center gap-2">
+            <button id="week-prev" class="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 font-bold">◀</button>
+            <div id="week-label" class="flex-1 text-center font-bold text-gray-800"></div>
+            <button id="week-next" class="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 font-bold">▶</button>
+            <button id="week-toggle" class="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 text-sm font-bold whitespace-nowrap">月全体</button>
+        </div>
+    </div>
+
     <div id="empty" class="hidden bg-white rounded-xl shadow p-8 text-center text-gray-500">
         この月のシフトはまだ作成されていません。
     </div>
@@ -77,7 +86,11 @@ const LABELS = {
     visit_am_day_pm: '兼務（訪問→デイ）',
 };
 const DOW = ['月', '火', '水', '木', '金', '土', '日'];
-let state = { year: {{ default_year }}, month: {{ default_month }}, mode: 'person', personId: null, data: null };
+let state = {
+    year: {{ default_year }}, month: {{ default_month }},
+    mode: 'person', personId: null, data: null,
+    weekIndex: 0, range: 'week',   // range: 'week' = 1画面1週間 / 'month' = 月全体
+};
 
 function el(id) { return document.getElementById(id); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -92,14 +105,49 @@ function initSelectors() {
         m.insertAdjacentHTML('beforeend', `<option value="${mm}">${mm}月</option>`);
     }
     y.value = state.year; m.value = state.month;
-    y.onchange = () => { state.year = +y.value; load(); };
-    m.onchange = () => { state.month = +m.value; load(); };
+    y.onchange = () => { state.year = +y.value; state.weekPinned = false; load(); };
+    m.onchange = () => { state.month = +m.value; state.weekPinned = false; load(); };
     el('prev').onclick = () => shiftMonth(-1);
     el('next').onclick = () => shiftMonth(1);
     el('reload').onclick = () => load();
     el('tab-person').onclick = () => setMode('person');
     el('tab-all').onclick = () => setMode('all');
     el('person').onchange = () => { state.personId = +el('person').value; render(); };
+    el('week-prev').onclick = () => { state.weekIndex = Math.max(0, state.weekIndex - 1); state.weekPinned = true; render(); };
+    el('week-next').onclick = () => { state.weekIndex = state.weekIndex + 1; state.weekPinned = true; render(); };
+    el('week-toggle').onclick = () => {
+        state.range = state.range === 'week' ? 'month' : 'week';
+        el('week-toggle').textContent = state.range === 'week' ? '月全体' : '1週間ずつ';
+        render();
+    };
+}
+
+// 今日を含む週を初期表示に（別の月を見ているときは先頭の週）
+function defaultWeekIndex() {
+    const now = new Date();
+    if (now.getFullYear() !== state.year || (now.getMonth() + 1) !== state.month) return 0;
+    const nDays = daysInMonth(state.year, state.month);
+    const dates = [];
+    for (let d = 1; d <= nDays; d++) {
+        const jsDow = new Date(state.year, state.month - 1, d).getDay();
+        dates.push({ d, dow: (jsDow + 6) % 7 });
+    }
+    const weeks = splitWeeks(dates);
+    const today = now.getDate();
+    const idx = weeks.findIndex(w => w.some(x => x.d === today));
+    return idx >= 0 ? idx : 0;
+}
+
+// 月の日付を週（月曜はじまり）ごとに分ける
+function splitWeeks(dates) {
+    const weeks = [];
+    let cur = [];
+    dates.forEach(d => {
+        if (d.dow === 0 && cur.length) { weeks.push(cur); cur = []; }
+        cur.push(d);
+    });
+    if (cur.length) weeks.push(cur);
+    return weeks;
 }
 
 function shiftMonth(delta) {
@@ -107,6 +155,7 @@ function shiftMonth(delta) {
     if (m < 1) { m = 12; y--; } else if (m > 12) { m = 1; y++; }
     state.year = y; state.month = m;
     el('year').value = y; el('month').value = m;
+    state.weekPinned = false;
     load();
 }
 
@@ -123,6 +172,10 @@ async function load() {
     if (!res.ok) { el('status').textContent = '読み込みに失敗しました'; return; }
     state.data = await res.json();
     el('updated').textContent = '更新 ' + new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+    if (!state.weekPinned) {
+        state.weekIndex = defaultWeekIndex();
+        state.weekPinned = true;
+    }
     render();
 }
 
@@ -196,8 +249,27 @@ function render() {
         dates.push({ d, dateStr, dow: (jsDow + 6) % 7 });   // 0=月
     }
 
-    if (state.mode === 'person') renderPerson(data, map, dates, visitSet);
-    else renderAll(data, map, dates, visitSet);
+    // 1画面1週間（月曜はじまり）。今日を含む週から開始する。
+    const weeks = splitWeeks(dates);
+    if (state.weekIndex >= weeks.length) state.weekIndex = weeks.length - 1;
+    if (state.weekIndex < 0) state.weekIndex = 0;
+    const useWeek = state.range === 'week' && weeks.length > 0;
+    el('week-bar').classList.toggle('hidden', !hasShifts);
+    if (useWeek) {
+        const w = weeks[state.weekIndex];
+        const first = w[0], last = w[w.length - 1];
+        el('week-label').textContent =
+            `${state.month}/${first.d}(${DOW[first.dow]}) 〜 ${state.month}/${last.d}(${DOW[last.dow]})`
+            + `　第${state.weekIndex + 1}週 / 全${weeks.length}週`;
+    } else {
+        el('week-label').textContent = `${state.year}年${state.month}月（月全体）`;
+    }
+    el('week-prev').style.visibility = useWeek && state.weekIndex > 0 ? '' : 'hidden';
+    el('week-next').style.visibility = useWeek && state.weekIndex < weeks.length - 1 ? '' : 'hidden';
+
+    const shown = useWeek ? weeks[state.weekIndex] : dates;
+    if (state.mode === 'person') renderPerson(data, map, shown, visitSet);
+    else renderAll(data, map, shown, visitSet);
 }
 
 function renderPerson(data, map, dates, visitSet) {
@@ -211,21 +283,22 @@ function renderPerson(data, map, dates, visitSet) {
         const oncall = (data.oncall || {})[dateStr] === staff.name;
         const hol = (data.holidays || {})[dateStr];
         return `<tr class="${dayClass(data, dateStr, dow)} border-b border-gray-100">
-            <td class="px-3 py-2 whitespace-nowrap w-24">
+            <td class="px-3 py-3 whitespace-nowrap w-24">
                 <span class="font-bold">${state.month}/${d}</span>
                 <span class="text-gray-500">(${DOW[dow]})</span>
                 ${hol ? `<div class="text-[10px] text-amber-700">${esc(hol)}</div>` : ''}
             </td>
-            <td class="px-3 py-2">${cellHtml(data, sid, dateStr, a, visitSet, dow)}</td>
+            <td class="px-3 py-3">${cellHtml(data, sid, dateStr, a, visitSet, dow)}</td>
             <td class="px-2 py-2 text-right">${oncall ? '<span class="text-[10px] bg-red-100 text-red-700 rounded px-2 py-1 font-bold">オンコール</span>' : ''}</td>
         </tr>`;
     }).join('');
+    const scope = state.range === 'week' ? 'この週' : 'この月';
     el('person-view').innerHTML = `
         <div class="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
             <div class="font-bold text-lg">${esc(staff.name)}</div>
-            <div class="text-sm text-gray-600">出勤 ${work} 日</div>
+            <div class="text-sm text-gray-600">${scope}の出勤 ${work} 日</div>
         </div>
-        <table class="w-full text-sm">${rows}</table>`;
+        <table class="w-full text-base">${rows}</table>`;
 }
 
 function renderAll(data, map, dates, visitSet) {
@@ -237,8 +310,9 @@ function renderAll(data, map, dates, visitSet) {
     const body = staffList.map(s => {
         const tds = dates.map(({ dateStr, dow }) => {
             const a = (map[dateStr] || {})[s.id];
+            const w = state.range === 'week' ? 'min-width:96px' : 'min-width:74px';
             return `<td class="px-1 py-1 border border-gray-200 cell text-center ${dayClass(data, dateStr, dow)}"
-                        style="min-width:74px">${cellHtml(data, s.id, dateStr, a, visitSet, dow)}</td>`;
+                        style="${w}">${cellHtml(data, s.id, dateStr, a, visitSet, dow)}</td>`;
         }).join('');
         return `<tr><th class="px-2 py-1 border border-gray-200 sticky-name text-left cell whitespace-nowrap">${esc(s.name)}</th>${tds}</tr>`;
     }).join('');

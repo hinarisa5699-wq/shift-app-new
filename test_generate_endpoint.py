@@ -177,3 +177,48 @@ def test_export_marks_visit_on_early_shift(tmp_path, monkeypatch):
     assert res.status_code == 200
     text = res.get_data(as_text=True)
     assert "訪問（午前）" in text, "訪問日の早番に『訪問』表記が出ていない"
+
+
+def _login(client, user, pw):
+    return client.post("/login", data={"username": user, "password": pw},
+                       follow_redirects=False)
+
+
+def test_viewer_account_can_only_view(tmp_path, monkeypatch):
+    """閲覧専用アカウントは /view と読み取りAPIだけ。編集・生成・設定は不可。"""
+    monkeypatch.setenv("SHIFT_STAFF_PASSWORD", "viewpass")
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+
+    res = _login(client, "staff", "viewpass")
+    assert res.status_code in (301, 302)
+    assert "/view" in res.headers.get("Location", "")
+
+    # 閲覧ページと読み取りAPIは見られる
+    assert client.get("/view").status_code == 200
+    assert client.get("/api/shifts/2026/9").status_code == 200
+
+    # 管理系の画面は閲覧ページへ戻される
+    for path in ("/staff", "/settings", "/calendar", "/"):
+        r = client.get(path)
+        assert r.status_code in (301, 302), path
+        assert "/view" in r.headers.get("Location", ""), path
+
+    # 生成・更新系のAPIは 403
+    assert client.post("/api/generate", json={"year": 2026, "month": 9}).status_code == 403
+    assert client.post("/api/staff/1", data={"name": "x"}).status_code == 403
+
+
+def test_admin_can_still_use_everything(tmp_path, monkeypatch):
+    """管理者アカウントは従来どおり全機能にアクセスできる。"""
+    monkeypatch.setenv("SHIFT_STAFF_PASSWORD", "viewpass")
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+
+    assert client.get("/").status_code == 200
+    assert client.get("/staff").status_code == 200
+    assert client.get("/view").status_code == 200
+    assert client.post("/api/generate", json={"year": 2026, "month": 9}).status_code == 200

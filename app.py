@@ -980,18 +980,23 @@ def _load_users():
       - SHIFT_ADMIN_PASSWORD  … 管理者のパスワード
       - SHIFT_SASEKI_PASSWORD … サ責のパスワード
       - SHIFT_YAKUIN_PASSWORD … 役員のパスワード（権限は管理者と同等＝全機能）
-    未設定の場合はローカル開発用に admin/saseki/yakuin を仮設定（要・本番では必ず環境変数を設定）。
+      - SHIFT_STAFF_PASSWORD  … 閲覧専用のパスワード（職員がシフトを見るだけ）
+    未設定の場合はローカル開発用に admin/saseki/yakuin/staff を仮設定
+    （要・本番では必ず環境変数を設定）。
     戻り値: {username: {"hash": ..., "role": 表示名}}
     """
     admin_pw = os.environ.get("SHIFT_ADMIN_PASSWORD", "").strip()
     saseki_pw = os.environ.get("SHIFT_SASEKI_PASSWORD", "").strip()
     yakuin_pw = os.environ.get("SHIFT_YAKUIN_PASSWORD", "").strip()
+    staff_pw = os.environ.get("SHIFT_STAFF_PASSWORD", "").strip()
     dev_default = not admin_pw and not saseki_pw and not yakuin_pw
     if dev_default:
         # ローカル開発フォールバック（本番では環境変数を必ず設定すること）
         admin_pw = "admin"
         saseki_pw = "saseki"
         yakuin_pw = "yakuin"
+    if not staff_pw and dev_default:
+        staff_pw = "staff"
     users = {}
     if admin_pw:
         users["admin"] = {"hash": generate_password_hash(admin_pw), "role": "管理者"}
@@ -1000,7 +1005,21 @@ def _load_users():
     if yakuin_pw:
         # 役員は管理者と同じ権限（ログイン済みなら全機能アクセス可）
         users["yakuin"] = {"hash": generate_password_hash(yakuin_pw), "role": "役員"}
+    if staff_pw:
+        # 閲覧専用（できるのはシフトを見ることだけ。生成・編集・設定は不可）
+        users["staff"] = {"hash": generate_password_hash(staff_pw), "role": VIEWER_ROLE}
     return users, dev_default
+
+
+# 閲覧専用ロール（このロールは下のエンドポイントだけアクセスできる）
+VIEWER_ROLE = "閲覧"
+_VIEWER_ENDPOINTS = {
+    "view_shift",        # 閲覧専用ページ
+    "api_shifts_get",    # 月のシフト取得（読み取り）
+    "logout",
+    "login",
+    "static",
+}
 
 
 # ログイン不要でアクセスできるエンドポイント
@@ -1095,6 +1114,12 @@ def create_app():
             if request.path.startswith("/api/"):
                 return jsonify({"error": "ログインが必要です", "login_required": True}), 401
             return redirect(url_for("login", next=request.path))
+        # 閲覧専用ロールは閲覧ページと読み取りAPIのみ（編集・生成・設定は一切不可）
+        if session.get("role") == VIEWER_ROLE:
+            if endpoint not in _VIEWER_ENDPOINTS or request.method != "GET":
+                if request.path.startswith("/api/"):
+                    return jsonify({"error": "閲覧専用アカウントでは実行できません"}), 403
+                return redirect(url_for("view_shift"))
         return None
 
     @app.route("/login", methods=["GET", "POST"])
@@ -1108,10 +1133,16 @@ def create_app():
             if user and check_password_hash(user["hash"], password):
                 session["user"] = username
                 session["role"] = user["role"]
-                nxt = request.args.get("next") or url_for("index")
+                default_next = (
+                    url_for("view_shift") if user["role"] == VIEWER_ROLE
+                    else url_for("index")
+                )
+                nxt = request.args.get("next") or default_next
+                if user["role"] == VIEWER_ROLE:
+                    nxt = default_next
                 # オープンリダイレクト防止: 内部パスのみ許可
                 if not nxt.startswith("/"):
-                    nxt = url_for("index")
+                    nxt = default_next
                 return redirect(nxt)
             flash("IDまたはパスワードが正しくありません。", "error")
         return render_template("login.html")
@@ -1358,6 +1389,22 @@ def create_app():
     def calendar_page():
         """シフトカレンダーページ"""
         return render_template("calendar.html")
+
+    @app.route("/view")
+    def view_shift():
+        """閲覧専用ページ（職員がシフトを見るだけの画面）。
+
+        ユーザー依頼（2026-08）:「出来上がったシフトを即時反映して閲覧するだけの
+        別アプリを作ってほしい」。同じデータベースを直接読むので常に最新が出る。
+        生成・編集・設定への導線は一切置かない。
+        """
+        today = date.today()
+        return render_template(
+            "view.html",
+            default_year=today.year,
+            default_month=today.month,
+            is_viewer=(session.get("role") == VIEWER_ROLE),
+        )
 
     # -----------------------------------------------------------------
     # API ルート — 職員 CRUD

@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>シフト閲覧</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .cell { font-size: 11px; line-height: 1.35; }
+        .sticky-name { position: sticky; left: 0; background: #fff; z-index: 5; }
+        .sat { background: #eff6ff; }
+        .sun { background: #fef2f2; }
+        .hol { background: #fef3c7; }
+    </style>
+</head>
+<body class="bg-gray-50">
+<header class="bg-primary-700 text-white shadow" style="background:#1d4ed8">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+        <div class="text-lg font-bold">シフト表</div>
+        <div class="flex items-center gap-2">
+            <span id="updated" class="text-xs opacity-90"></span>
+            <a href="{{ url_for('logout') }}" class="text-sm underline">ログアウト</a>
+        </div>
+    </div>
+</header>
+
+<main class="max-w-6xl mx-auto px-3 py-4">
+    <div class="bg-white rounded-xl shadow p-3 mb-3">
+        <div class="flex flex-wrap items-center gap-2">
+            <button id="prev" class="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 font-bold">◀</button>
+            <select id="year" class="px-3 py-2 border border-gray-300 rounded-lg text-base"></select>
+            <select id="month" class="px-3 py-2 border border-gray-300 rounded-lg text-base"></select>
+            <button id="next" class="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 font-bold">▶</button>
+            <button id="reload" class="px-3 py-2 rounded-lg bg-blue-600 text-white font-bold">最新に更新</button>
+            <span id="status" class="text-sm px-2 py-1 rounded-full"></span>
+        </div>
+        <div class="mt-3 flex flex-wrap items-center gap-2">
+            <div class="inline-flex rounded-lg overflow-hidden border border-gray-300">
+                <button id="tab-person" class="px-4 py-2 text-sm font-bold bg-blue-600 text-white">個人</button>
+                <button id="tab-all" class="px-4 py-2 text-sm font-bold bg-white text-gray-700">全体</button>
+            </div>
+            <select id="person" class="px-3 py-2 border border-gray-300 rounded-lg text-base flex-1 min-w-[10rem]"></select>
+        </div>
+    </div>
+
+    <div id="empty" class="hidden bg-white rounded-xl shadow p-8 text-center text-gray-500">
+        この月のシフトはまだ作成されていません。
+    </div>
+
+    <!-- 個人ビュー -->
+    <div id="person-view" class="bg-white rounded-xl shadow overflow-hidden"></div>
+
+    <!-- 全体ビュー -->
+    <div id="all-view" class="hidden bg-white rounded-xl shadow overflow-auto"></div>
+
+    <p class="text-xs text-gray-400 mt-4">
+        この画面は閲覧専用です。内容は自動作成システムと同じデータをそのまま表示しています（1分ごとに自動更新）。
+    </p>
+</main>
+
+<script>
+const LABELS = {
+    day_pattern1: 'デイ 8:30-17:30',
+    day_pattern2: 'デイ 9:00-16:00',
+    day_pattern3: 'デイ 午前のみ',
+    day_pattern4: 'デイ 午後のみ',
+    early: '早番 7:30-16:30',
+    late: '遅番 9:30-18:30',
+    nurse_short: '看護 9:30-13:30',
+    visit_am: '訪問 午前',
+    visit_pm: '訪問 午後',
+    day_p3_visit_pm: '兼務（デイ→訪問）',
+    visit_am_day_p4: '兼務（訪問→デイ）',
+    day_am: 'デイ 午前のみ',
+    day_pm: 'デイ 午後のみ',
+    day_am_visit_pm: '兼務（デイ→訪問）',
+    visit_am_day_pm: '兼務（訪問→デイ）',
+};
+const DOW = ['月', '火', '水', '木', '金', '土', '日'];
+let state = { year: {{ default_year }}, month: {{ default_month }}, mode: 'person', personId: null, data: null };
+
+function el(id) { return document.getElementById(id); }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function initSelectors() {
+    const y = el('year'), m = el('month');
+    const now = new Date();
+    for (let yy = now.getFullYear() - 1; yy <= now.getFullYear() + 2; yy++) {
+        y.insertAdjacentHTML('beforeend', `<option value="${yy}">${yy}年</option>`);
+    }
+    for (let mm = 1; mm <= 12; mm++) {
+        m.insertAdjacentHTML('beforeend', `<option value="${mm}">${mm}月</option>`);
+    }
+    y.value = state.year; m.value = state.month;
+    y.onchange = () => { state.year = +y.value; load(); };
+    m.onchange = () => { state.month = +m.value; load(); };
+    el('prev').onclick = () => shiftMonth(-1);
+    el('next').onclick = () => shiftMonth(1);
+    el('reload').onclick = () => load();
+    el('tab-person').onclick = () => setMode('person');
+    el('tab-all').onclick = () => setMode('all');
+    el('person').onchange = () => { state.personId = +el('person').value; render(); };
+}
+
+function shiftMonth(delta) {
+    let m = state.month + delta, y = state.year;
+    if (m < 1) { m = 12; y--; } else if (m > 12) { m = 1; y++; }
+    state.year = y; state.month = m;
+    el('year').value = y; el('month').value = m;
+    load();
+}
+
+function setMode(mode) {
+    state.mode = mode;
+    el('tab-person').className = 'px-4 py-2 text-sm font-bold ' + (mode === 'person' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700');
+    el('tab-all').className = 'px-4 py-2 text-sm font-bold ' + (mode === 'all' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700');
+    el('person').style.display = mode === 'person' ? '' : 'none';
+    render();
+}
+
+async function load() {
+    const res = await fetch(`/api/shifts/${state.year}/${state.month}`, { cache: 'no-store' });
+    if (!res.ok) { el('status').textContent = '読み込みに失敗しました'; return; }
+    state.data = await res.json();
+    el('updated').textContent = '更新 ' + new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+    render();
+}
+
+function daysInMonth(y, m) { return new Date(y, m, 0).getDate(); }
+
+function visitDays(data) {
+    const od = data.operating_days || {};
+    const set = new Set();
+    (od.floor3_visit || []).concat(od.floor2_visit || []).forEach(d => set.add(d));
+    return set;
+}
+
+function cellHtml(data, sid, dateStr, assignment, visitSet, dow) {
+    const off = !assignment || assignment === 'off' || assignment === 'cook_off';
+    if (off) {
+        const ids = (data.day_off_requests || {})[dateStr] || [];
+        return ids.indexOf(sid) !== -1
+            ? '<span class="text-amber-700 font-bold">希望休</span>'
+            : '<span class="text-gray-400">休</span>';
+    }
+    const cookLabels = data.cook_labels || {};
+    let label = LABELS[assignment] || cookLabels[assignment] || assignment;
+    let extra = '';
+    if (assignment === 'early' && visitSet.has(dow)) {
+        extra += '<br><span class="text-blue-700 font-bold">訪問（午前）</span>';
+    }
+    return `<span class="font-medium text-gray-800">${esc(label)}</span>${extra}`;
+}
+
+function dayClass(data, dateStr, dow) {
+    if ((data.holidays || {})[dateStr]) return 'hol';
+    if (dow === 5) return 'sat';
+    if (dow === 6) return 'sun';
+    return '';
+}
+
+function render() {
+    const data = state.data;
+    if (!data) return;
+    const conf = data.confirmation;
+    el('status').textContent = conf ? '確定済み' : '作成中（未確定）';
+    el('status').className = 'text-sm px-2 py-1 rounded-full ' +
+        (conf ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800');
+
+    const staffList = data.staff_list || [];
+    const sel = el('person');
+    if (sel.dataset.filled !== String(staffList.length) + ':' + staffList.map(s => s.id).join(',')) {
+        sel.innerHTML = staffList.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+        sel.dataset.filled = String(staffList.length) + ':' + staffList.map(s => s.id).join(',');
+        if (!state.personId && staffList.length) state.personId = staffList[0].id;
+        sel.value = state.personId;
+    }
+
+    const hasShifts = (data.shifts || []).length > 0;
+    el('empty').classList.toggle('hidden', hasShifts);
+    el('person-view').classList.toggle('hidden', !hasShifts || state.mode !== 'person');
+    el('all-view').classList.toggle('hidden', !hasShifts || state.mode !== 'all');
+    if (!hasShifts) { el('person-view').innerHTML = ''; el('all-view').innerHTML = ''; return; }
+
+    // date -> staff_id -> assignment
+    const map = {};
+    (data.shifts || []).forEach(s => {
+        (map[s.date] = map[s.date] || {})[s.staff_id] = s.assignment;
+    });
+    const visitSet = visitDays(data);
+    const nDays = daysInMonth(state.year, state.month);
+    const dates = [];
+    for (let d = 1; d <= nDays; d++) {
+        const dateStr = `${state.year}-${String(state.month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        const jsDow = new Date(state.year, state.month - 1, d).getDay();
+        dates.push({ d, dateStr, dow: (jsDow + 6) % 7 });   // 0=月
+    }
+
+    if (state.mode === 'person') renderPerson(data, map, dates, visitSet);
+    else renderAll(data, map, dates, visitSet);
+}
+
+function renderPerson(data, map, dates, visitSet) {
+    const sid = state.personId;
+    const staff = (data.staff_list || []).find(s => s.id === sid);
+    if (!staff) { el('person-view').innerHTML = ''; return; }
+    let work = 0;
+    const rows = dates.map(({ d, dateStr, dow }) => {
+        const a = (map[dateStr] || {})[sid];
+        if (a && a !== 'off' && a !== 'cook_off') work++;
+        const oncall = (data.oncall || {})[dateStr] === staff.name;
+        const hol = (data.holidays || {})[dateStr];
+        return `<tr class="${dayClass(data, dateStr, dow)} border-b border-gray-100">
+            <td class="px-3 py-2 whitespace-nowrap w-24">
+                <span class="font-bold">${state.month}/${d}</span>
+                <span class="text-gray-500">(${DOW[dow]})</span>
+                ${hol ? `<div class="text-[10px] text-amber-700">${esc(hol)}</div>` : ''}
+            </td>
+            <td class="px-3 py-2">${cellHtml(data, sid, dateStr, a, visitSet, dow)}</td>
+            <td class="px-2 py-2 text-right">${oncall ? '<span class="text-[10px] bg-red-100 text-red-700 rounded px-2 py-1 font-bold">オンコール</span>' : ''}</td>
+        </tr>`;
+    }).join('');
+    el('person-view').innerHTML = `
+        <div class="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
+            <div class="font-bold text-lg">${esc(staff.name)}</div>
+            <div class="text-sm text-gray-600">出勤 ${work} 日</div>
+        </div>
+        <table class="w-full text-sm">${rows}</table>`;
+}
+
+function renderAll(data, map, dates, visitSet) {
+    const staffList = data.staff_list || [];
+    const head = dates.map(({ d, dateStr, dow }) =>
+        `<th class="px-1 py-1 border border-gray-200 ${dayClass(data, dateStr, dow)} cell whitespace-nowrap">
+            ${state.month}/${d}<br>${DOW[dow]}
+        </th>`).join('');
+    const body = staffList.map(s => {
+        const tds = dates.map(({ dateStr, dow }) => {
+            const a = (map[dateStr] || {})[s.id];
+            return `<td class="px-1 py-1 border border-gray-200 cell text-center ${dayClass(data, dateStr, dow)}"
+                        style="min-width:74px">${cellHtml(data, s.id, dateStr, a, visitSet, dow)}</td>`;
+        }).join('');
+        return `<tr><th class="px-2 py-1 border border-gray-200 sticky-name text-left cell whitespace-nowrap">${esc(s.name)}</th>${tds}</tr>`;
+    }).join('');
+    const oncallRow = `<tr><th class="px-2 py-1 border border-gray-200 sticky-name text-left cell">オンコール</th>` +
+        dates.map(({ dateStr, dow }) => {
+            const n = (data.oncall || {})[dateStr] || '';
+            return `<td class="px-1 py-1 border border-gray-200 cell text-center ${dayClass(data, dateStr, dow)}">${esc(n)}</td>`;
+        }).join('') + '</tr>';
+    el('all-view').innerHTML = `
+        <table class="border-collapse">
+            <thead><tr><th class="px-2 py-1 border border-gray-200 sticky-name cell">職員名</th>${head}</tr></thead>
+            <tbody>${body}${oncallRow}</tbody>
+        </table>`;
+}
+
+initSelectors();
+setMode('person');
+load();
+setInterval(load, 60000);   // 1分ごとに最新を取り込む
+</script>
+</body>
+</html>

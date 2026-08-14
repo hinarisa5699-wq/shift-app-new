@@ -268,7 +268,7 @@ COOK_ASSIGNMENTS = ["cook_off"] + COOK_WORKING_ASSIGNMENTS
 COOK_COVERAGE = _cook_coverage_from_ranges(COOK_ASSIGNMENT_TIME_RANGES)
 
 
-def _bf_off_replacement_map(cook_working, cook_time_ranges):
+def _bf_off_replacement_map(cook_working, cook_time_ranges, cook_coverage=None):
     """朝食なし日の読み替えマップ {元の記号: 8時開始の記号}。
 
     ユーザー依頼（2026-08）:「朝ごはんがない日は 6-13 の部分が 8-13 に変換される
@@ -280,12 +280,16 @@ def _bf_off_replacement_map(cook_working, cook_time_ranges):
     それ以外（例 ⑨6:30-14:30）は該当する 8時開始の種類が無いためそのまま。
     """
     ranges = cook_time_ranges or {}
+    coverage = cook_coverage or {}
     eight = 8 * 60
     # 8時以降に始まる種類。終了時刻ごとに「最も早く始まる種類」を代表にする。
+    #   事務など「調理として数えない」種類は読み替え先にしない。
     late_start = {}         # 終了時刻 -> 記号
     for c in cook_working:
         r = ranges.get(c)
         if not r or r[0] < eight:
+            continue
+        if coverage and sum(coverage.get(c, (1,))) == 0:
             continue
         cur = late_start.get(r[1])
         if cur is None or ranges[cur][0] > r[0]:
@@ -301,20 +305,29 @@ def _bf_off_replacement_map(cook_working, cook_time_ranges):
         if not r or r[0] >= eight or r[1] <= eight:
             continue        # 8時以降開始／8時までに終わる(朝専用)はそのまま
         if r[1] in late_start:
-            # 終了時刻が同じ種類（④6:00-13:00 → ②8:00-13:00 / ⑨6:30-14:30 → 8:30-14:30）
+            # 終了時刻が同じ種類（④6:00-13:00 → ②8:00-13:00）
             out[c] = late_start[r[1]]
-        elif r[1] <= 13 * 60 and by_start8:
-            # 昼までの勤務は 8時開始の種類（終了が最も近いもの）へ寄せる
-            best_end = min(by_start8, key=lambda e: abs(e - r[1]))
-            out[c] = by_start8[best_end]
+        else:
+            # 終了時刻が同じ種類が無ければ、終了時刻が最も近い種類へ寄せる
+            #   （⑨6:30-14:30 → 8:00-15:00 / ⑦6:00-12:00 → ②8:00-13:00）
+            best_end = min(late_start, key=lambda e: (abs(e - r[1]), e))
+            out[c] = late_start[best_end]
     return out
 
 
-def _cook_overlap_map(cook_working, cook_time_ranges):
-    """各調理記号に対し「勤務時間が実際に重なる記号」の一覧を返す。
+# 新人×ベテランの同行に必要な「勤務時間の重なり」の下限（分）。
+#   ユーザー指摘（2026-08）:「大平さんは新人なのに26日は佐藤さんと1時間しか
+#   重ならないので指導できない」。1時間程度の重なりは同行とみなさない。
+_ONBOARD_MIN_OVERLAP_MIN = 180
 
-    重なり0分（例 6:00-8:00 と 8:00-13:00 のように接するだけ）は重なりとみなさない。
-    新人×ベテランの同行判定に使う（同じ記号・同じ食事帯でなくてよい）。
+
+def _cook_overlap_map(cook_working, cook_time_ranges,
+                      min_overlap=_ONBOARD_MIN_OVERLAP_MIN):
+    """各調理記号に対し「勤務時間が十分に重なる記号」の一覧を返す。
+
+    重なりが min_overlap 分未満（接するだけの 6:00-8:00 と 8:00-13:00 や、
+    1時間しか重ならない 8:00-13:00 と 12:00-19:00 など）は同行とみなさない。
+    新人×ベテランの同行判定に使う（同じ記号・同じ食事帯である必要はない）。
     """
     ranges = cook_time_ranges or {}
     out = {}
@@ -328,7 +341,9 @@ def _cook_overlap_map(cook_working, cook_time_ranges):
             b_rng = ranges.get(b)
             if not b_rng:
                 continue
-            if min(a_rng[1], b_rng[1]) - max(a_rng[0], b_rng[0]) > 0:
+            overlap = min(a_rng[1], b_rng[1]) - max(a_rng[0], b_rng[0])
+            # 自分自身（同一記号）は常に同行成立とみなす
+            if b == a or overlap >= min_overlap:
                 same.append(b)
         out[a] = same or [a]
     return out
@@ -4773,7 +4788,7 @@ def _solve_cooking(
     shifts_data = []
     warnings_data = []
 
-    _bf_off_map = _bf_off_replacement_map(cook_working, cook_time_ranges)
+    _bf_off_map = _bf_off_replacement_map(cook_working, cook_time_ranges, cook_coverage)
     for d_idx, dt in enumerate(all_dates):
         date_str = dt.strftime("%Y-%m-%d")
         _bf_off = d_idx in no_breakfast_day_indices

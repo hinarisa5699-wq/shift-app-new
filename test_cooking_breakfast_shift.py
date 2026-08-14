@@ -203,12 +203,14 @@ def test_breakfast_off_converts_six_start_to_eight_start():
     # 8時以降開始・朝専用・該当する8時開始の種類が無いものは変換しない
     assert "cooking_3" not in m
     assert "cooking_1" not in m
-    assert "cooking_9" not in m, "8時以降開始で14:30終わりの種類が無いのでそのまま"
+    # ⑨6:30-14:30 は終了時刻が同じ種類が無いので、終了が最も近い種類へ寄せる
+    assert m["cooking_9"] == "cooking_2"
 
-    # 8:30-14:30 の種類を用意すれば ⑨6:30-14:30 もそこへ変換される
-    ranges2 = dict(ranges, cooking_10=(8 * 60 + 30, 14 * 60 + 30))
+    # 8:00-15:00 の種類を用意すれば ⑨6:30-14:30 はそこへ変換される（ユーザー依頼）
+    ranges2 = dict(ranges, cooking_10=(8 * 60, 15 * 60))
     m2 = _bf_off_replacement_map(list(ranges2), ranges2)
     assert m2["cooking_9"] == "cooking_10"
+    assert m2["cooking_4"] == "cooking_2", "終了時刻が一致する種類が最優先" 
 
 
 def test_breakfast_off_day_has_no_six_oclock_start():

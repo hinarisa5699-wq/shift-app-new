@@ -89,3 +89,41 @@ def test_new_staff_not_alone_when_hours_do_not_overlap():
     assert not [s for s in shifts if s["staff_id"] == 2], (
         "勤務時間が重ならないのに新人が配置された"
     )
+
+
+def test_one_hour_overlap_is_not_enough():
+    """1時間しか重ならない組み合わせは同行とみなさない。
+
+    ユーザー指摘（2026-08）:「大平さんは新人なのに26日は佐藤さんと1時間しか
+    重ならないので佐藤さんが指導できない」（②8:00-13:00 × ③12:00-19:00）。
+    """
+    ranges = {
+        "cooking_2": (8 * 60, 13 * 60),
+        "cooking_3": (12 * 60, 19 * 60),
+        "cooking_4": (6 * 60, 13 * 60),
+        "cooking_5": (9 * 60, 15 * 60),
+    }
+    m = _cook_overlap_map(list(ranges), ranges)
+    assert "cooking_3" not in m["cooking_2"], "1時間の重なりは同行にしない"
+    assert "cooking_5" in m["cooking_2"], "4時間重なるので同行に使える"
+    assert "cooking_2" in m["cooking_2"], "同じ記号は常に同行"
+
+
+def test_new_staff_not_scheduled_with_only_one_hour_overlap():
+    """新人と1時間しか重ならないベテランしか居ない日は、新人を入れない。"""
+    types = [
+        {"code": "cooking_2", "label": "② 8:00-13:00", "start_time": "08:00", "end_time": "13:00"},
+        {"code": "cooking_3", "label": "③ 12:00-19:00", "start_time": "12:00", "end_time": "19:00"},
+    ]
+    staff = [dict(s) for s in STAFF]
+    settings_types = TYPES
+    try:
+        globals()['TYPES'] = types
+        shifts, _ = _run(staff, [["cooking_2", "cooking_3"]],
+                         {1: {"cooking_3"}, 2: {"cooking_2"}})
+    finally:
+        globals()['TYPES'] = settings_types
+
+    assert not [s for s in shifts if s["staff_id"] == 2], (
+        "重なりが1時間しかないのに新人が配置された"
+    )

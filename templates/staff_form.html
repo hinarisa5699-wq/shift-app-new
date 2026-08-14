@@ -146,6 +146,17 @@
                 <p class="text-gray-500 text-sm mt-1 ml-8">チェックを入れると、オンコール（電話当番）の自動割り当て対象になります。出勤の有無に関係なく当番に入ります。</p>
             </div>
 
+            <!-- オンコールのみ当番 -->
+            <div class="mb-6">
+                <label class="flex items-center cursor-pointer">
+                    <input type="checkbox" name="oncall_only" value="1"
+                           {% if staff and staff.oncall_only %}checked{% endif %}
+                           class="w-5 h-5 text-red-500 border-gray-300 rounded focus:ring-red-400">
+                    <span class="ml-3 text-lg font-semibold text-gray-700">オンコールのみ当番</span>
+                </label>
+                <p class="text-gray-500 text-sm mt-1 ml-8">チェックを入れると、シフト（出勤）は一切割り当てず、オンコール（電話当番）だけを担当します。</p>
+            </div>
+
             <!-- 相談員可 -->
             <div class="mb-6">
                 <label class="flex items-center cursor-pointer">

@@ -136,6 +136,12 @@ ASSIGNMENT_TIME_RANGES = {
 # 各アサインメントの勤務分数（end - start）。看護師の「合計勤務時間」判定に使用。
 ASSIGNMENT_MINUTES = {a: (e - s) for a, (s, e) in ASSIGNMENT_TIME_RANGES.items()}
 
+# デイ利用者がいない曜日（no_day_service_days）の介護人員下限。
+#   ユーザー依頼（2026-08）:「デイサービス以外の曜日は介護人数2人いればいい」。
+#   デイ午前/午後の人数下限にも、9:30/11/13/14 の在籍下限にも同じ値を使う。
+#   settings["no_day_service_min_staff"] で上書き可。
+_NO_DAY_SERVICE_MIN_STAFF = 2
+
 # 調理アサインメントの勤務時間帯（分単位）— 既定（①〜⑤）。
 # 依頼文21: 実運用ではこれを「調理シフト種類マスタ(ShiftPattern cooking)」から
 # 動的に構築する（_build_cooking_maps）。本定数は既定値／後方互換用。
@@ -1515,6 +1521,13 @@ def _solve_care_with_fallback(
         d_idx for d_idx, _dt in enumerate(all_dates)
         if _dt.weekday() in no_day_service_weekdays
     }
+    # デイ利用者がいない曜日の介護人員下限（既定2名。デイ人数・在籍人数の両方に適用）
+    try:
+        no_service_min_staff = max(
+            0, int(settings.get("no_day_service_min_staff", _NO_DAY_SERVICE_MIN_STAFF))
+        )
+    except (TypeError, ValueError):
+        no_service_min_staff = _NO_DAY_SERVICE_MIN_STAFF
     am_preferred_gender = settings.get("am_preferred_gender", "")
     phone_duty_enabled = settings.get("phone_duty_enabled", False)
     phone_duty_max_consecutive = settings.get("phone_duty_max_consecutive", 1)
@@ -1623,6 +1636,7 @@ def _solve_care_with_fallback(
         allowed_patterns=allowed_patterns or {},
         max_day_service=max_day_service,
         no_service_day_indices=no_service_day_indices,
+        no_service_min_staff=no_service_min_staff,
         oncall_forced_off=oncall_forced_off,
         oncall_work_days=oncall_work_days,
         require_early_late=True,
@@ -1667,6 +1681,7 @@ def _solve_care_with_fallback(
         allowed_patterns=allowed_patterns or {},
         max_day_service=max_day_service,
         no_service_day_indices=no_service_day_indices,
+        no_service_min_staff=no_service_min_staff,
         oncall_forced_off=oncall_forced_off,
         oncall_work_days=oncall_work_days,
         require_early_late=True,
@@ -1721,6 +1736,7 @@ def _solve_care_with_fallback(
         allowed_patterns=allowed_patterns or {},
         max_day_service=max_day_service,
         no_service_day_indices=no_service_day_indices,
+        no_service_min_staff=no_service_min_staff,
         oncall_forced_off=oncall_forced_off,
         oncall_work_days=oncall_work_days,
         require_early_late=True,
@@ -1790,6 +1806,7 @@ def _solve_care(
     allowed_patterns: dict = None,
     max_day_service: int = 0,
     no_service_day_indices: set = None,
+    no_service_min_staff: int = _NO_DAY_SERVICE_MIN_STAFF,
     oncall_forced_off: list = None,
     oncall_work_days: list = None,
     require_early_late: bool = False,
@@ -2276,6 +2293,8 @@ def _solve_care(
     slack_early = {}
     slack_late = {}
     slack_nurse = {}   # 看護師0名（配置不能）の日を許容するスラック
+    slack_no_ds_over = {}   # 非デイ曜日の介護人数が上限(既定2名)を超えた分
+    slack_no_ds_short = {}  # 非デイ曜日の介護人数が下限(既定2名)に満たない分
 
     if use_slack:
         for d_idx in range(num_days):
@@ -2308,6 +2327,13 @@ def _solve_care(
             slack_staff_15[d_idx] = model.new_int_var(
                 0, len(staff_ids), f"slack_staff_15_{d_idx}"
             )
+            if d_idx in no_service_day_indices:
+                slack_no_ds_over[d_idx] = model.new_int_var(
+                    0, len(staff_ids), f"slack_no_ds_over_{d_idx}"
+                )
+                slack_no_ds_short[d_idx] = model.new_int_var(
+                    0, len(staff_ids), f"slack_no_ds_short_{d_idx}"
+                )
 
     # ==================================================================
     # 制約: デイサービス午前・午後の最低/最大人数（休業日はスキップ）
@@ -2327,7 +2353,8 @@ def _solve_care(
         day_pm_count = sum(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in DAY_PM_ASSIGNMENTS
         )
-        # デイ利用者がいない曜日はデイ下限を1名に緩和（浮いた人員は訪問等へ）
+        # デイ利用者がいない曜日はデイ下限を1名に緩和（浮いた人員は訪問等へ）。
+        #   その日の介護人数そのものは下の「非デイ曜日は原則ちょうどN名」で縛る。
         eff_min_day = 1 if d_idx in no_service_day_indices else min_day_service
         if use_slack:
             model.add(day_am_count + slack_day_am[d_idx] >= eff_min_day)
@@ -2338,6 +2365,29 @@ def _solve_care(
         # 上限制約（スラック有無に関わらず常に有効）
         model.add(day_am_count <= max_day_service)
         model.add(day_pm_count <= max_day_service)
+
+    # ==================================================================
+    # 制約: デイ利用者がいない曜日は介護人数を「原則ちょうど N 名」（既定2名）
+    #   ユーザー依頼（2026-08）:「デイサービス以外の曜日は介護人数2人いればいい」。
+    #   ・その日に出勤する介護職員（看護師/PTを除く）の人数を N 名に合わせる。
+    #     早番・遅番は非デイ曜日も必須配置（ユーザー確認済み）なので、通常は
+    #     早番1＋遅番1＝ちょうど2名に落ち着く。
+    #   ・訪問営業日と重なる等で N 名に収まらない日は、スラック（超過分）を
+    #     許容して警告にとどめる（生成は継続）。
+    # ==================================================================
+    for d_idx in range(num_days):
+        if d_idx in closed_day_indices or d_idx not in no_service_day_indices:
+            continue
+        care_work_count = sum(
+            1 - x[s, d_idx, "off"] for s in non_nurse_pt_staff
+        )
+        _target = min(no_service_min_staff, len(non_nurse_pt_staff))
+        if use_slack:
+            model.add(care_work_count <= no_service_min_staff + slack_no_ds_over[d_idx])
+            model.add(care_work_count + slack_no_ds_short[d_idx] >= _target)
+        else:
+            model.add(care_work_count <= no_service_min_staff)
+            model.add(care_work_count >= _target)
 
     # ==================================================================
     # 制約: 訪問介護午前はちょうど指定人数（休業日・訪問非営業日・祝日はスキップ）
@@ -2986,8 +3036,12 @@ def _solve_care(
                 el_slack_terms.extend([slack_early[d], slack_late[d]])
             if nurse_ids:
                 all_slack_terms.append(slack_nurse[d])
+            # 非デイ曜日の人数(原則ちょうどN名)の過不足
+            if d in slack_no_ds_over:
+                all_slack_terms.extend([slack_no_ds_over[d], slack_no_ds_short[d]])
         max_slack_terms_per_day = (
             8
+            + 2
             + (1 if nurse_ids else 0)
         )
         total_slack = model.new_int_var(
@@ -3151,6 +3205,27 @@ def _solve_care(
                         "warning_type": "understaffed_nurse",
                         "message": "看護師配置不足: この日の看護師の勤務が合計2時間未満です"
                                    "（全看護師が休み希望・勤務不可曜日・出勤可能日外・祝日不可のいずれか）。",
+                    })
+
+            # 非デイ曜日（デイ利用者がいない曜日）の介護人数が原則人数から外れた日
+            if d_idx in slack_no_ds_over and d_idx not in closed_day_indices:
+                _over = solver.value(slack_no_ds_over[d_idx])
+                if _over > 0:
+                    warnings_data.append({
+                        "date": date_str,
+                        "warning_type": "over_staffed_no_day_service",
+                        "message": (
+                            f"デイ以外の曜日: 介護{no_service_min_staff + _over}名"
+                            f"（原則{no_service_min_staff}名／{_over}名超過）。"
+                            "早番・遅番・訪問などの必須配置が原則人数に収まりませんでした。"
+                        ),
+                    })
+                _short = solver.value(slack_no_ds_short[d_idx])
+                if _short > 0:
+                    warnings_data.append({
+                        "date": date_str,
+                        "warning_type": "understaffed_no_day_service",
+                        "message": f"デイ以外の曜日: 介護{_short}名不足（原則{no_service_min_staff}名）",
                     })
 
             val = solver.value(slack_visit_am[d_idx])

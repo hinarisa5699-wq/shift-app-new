@@ -191,6 +191,11 @@ _VISIT_PM_SET = {"visit_pm", "day_p3_visit_pm", "day_am_visit_pm"}
 _DUAL_SET = {"day_p3_visit_pm", "visit_am_day_p4", "day_am_visit_pm", "visit_am_day_pm"}
 # 調理
 _COOK_SET = {"cooking_1", "cooking_2", "cooking_3", "cooking_4", "cooking_5"}
+# 介護の「出勤」枠（デイ午前/午後・訪問・早番/遅番・看護短時間）
+_CARE_WORK_SET = (
+    _DAY_AM_SET | _DAY_PM_SET | _VISIT_AM_SET | _VISIT_PM_SET
+    | {"early", "late", "nurse_short"}
+)
 _NURSE_PT_NAME_ALIASES = {"看護師", "PT", "理学療法士"}
 _NURSE_PT_CODE_ALIASES = {"nurse", "pt"}
 
@@ -1704,6 +1709,9 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
     min_out = int(settings.get("min_bath_out", 0) or 0)
     min_early = int(settings.get("min_early_staff", 1) or 0)
     min_late = int(settings.get("min_late_staff", 1) or 0)
+    # デイ利用者がいない曜日は介護を原則N名（既定2名）に抑える（デイ人数の下限は課さない）
+    no_ds_days = set(settings.get("no_day_service_days", []) or [])
+    no_ds_min = int(settings.get("no_day_service_min_staff", 2) or 0)
 
     nurse_pt_ids = {st["id"] for st in staff_list if _is_nurse_or_pt_staff(st)}
     counselor_qual_ids = _get_counselor_qual_ids_for_validation(settings)
@@ -1731,10 +1739,25 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
         def warn(wt, msg):
             warnings.append({"date": iso, "warning_type": wt, "message": msg})
 
-        if min_day > 0 and day_am < min_day:
-            warn("understaffed_day_am", f"デイサービス午前: {min_day - day_am}名不足")
-        if min_day > 0 and day_pm < min_day:
-            warn("understaffed_day_pm", f"デイサービス午後: {min_day - day_pm}名不足")
+        if dt.weekday() in no_ds_days:
+            # デイ利用者がいない曜日はデイ人数の下限を課さず、介護人数の超過だけ見る
+            if no_ds_min > 0:
+                care_work = sum(
+                    1 for it in items
+                    if it["staff_id"] not in nurse_pt_ids
+                    and it["assignment"] in _CARE_WORK_SET
+                )
+                if care_work > no_ds_min:
+                    warn(
+                        "over_staffed_no_day_service",
+                        f"デイ以外の曜日: 介護{care_work}名"
+                        f"（原則{no_ds_min}名／{care_work - no_ds_min}名超過）",
+                    )
+        else:
+            if min_day > 0 and day_am < min_day:
+                warn("understaffed_day_am", f"デイサービス午前: {min_day - day_am}名不足")
+            if min_day > 0 and day_pm < min_day:
+                warn("understaffed_day_pm", f"デイサービス午後: {min_day - day_pm}名不足")
         if dt.weekday() in visit_days:
             if min_vam > 0 and v_am < min_vam:
                 warn("understaffed_visit_am", f"訪問介護午前: {min_vam - v_am}名不足")

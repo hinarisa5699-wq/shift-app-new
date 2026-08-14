@@ -105,7 +105,7 @@ _COUNSELOR_QUALIFICATION_NAMES = {"相談員", "生活相談員"}
 STAFF_CSV_COLUMNS = [
     "id", "name", "job_category", "role", "employment_type", "gender",
     "can_visit", "can_counsel", "can_bath_assist", "has_phone_duty",
-    "holiday_ng", "weekend_constraint",
+    "oncall_only", "holiday_ng", "weekend_constraint",
     "work_start_time", "work_end_time",
     "available_time_slots", "available_days", "fixed_days_off",
     "max_consecutive_days", "max_days_per_week", "min_days_per_week",
@@ -321,6 +321,9 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE staff ADD COLUMN on_leave BOOLEAN NOT NULL DEFAULT 0")
     if "public_holiday_count" not in columns:
         cursor.execute("ALTER TABLE staff ADD COLUMN public_holiday_count INTEGER NOT NULL DEFAULT 0")
+    if "oncall_only" not in columns:
+        # オンコールのみ当番（出勤シフトは割り当てない）
+        cursor.execute("ALTER TABLE staff ADD COLUMN oncall_only BOOLEAN NOT NULL DEFAULT 0")
     # --- v3: 区分・役割・入浴介助可・勤務時間 ---
     if "job_category" not in columns:
         cursor.execute(
@@ -1348,6 +1351,7 @@ def create_app():
             weekend_constraint=request.form.get("weekend_constraint", ""),
             holiday_ng="holiday_ng" in request.form,
             on_leave="on_leave" in request.form,
+            oncall_only="oncall_only" in request.form if is_care else False,
             public_holiday_count=max(0, safe_int(request.form.get("public_holiday_count"), 0)),
             car_commute="car_commute" in request.form,
             parking_slot=(request.form.get("parking_slot", "") or "").strip(),
@@ -1413,6 +1417,7 @@ def create_app():
             staff.can_visit = False
             staff.has_phone_duty = False
             staff.can_bath_assist = False
+            staff.oncall_only = False
             staff.available_time_slots = "full_day"
             # 調理スタッフのみ新人/ベテランを保持
             staff.cooking_experience = _normalize_cooking_experience(
@@ -1426,6 +1431,7 @@ def create_app():
             staff.can_visit = "can_visit" in request.form
             staff.has_phone_duty = "has_phone_duty" in request.form
             staff.can_bath_assist = "can_bath_assist" in request.form
+            staff.oncall_only = "oncall_only" in request.form
             staff.available_time_slots = request.form.get(
                 "available_time_slots", staff.available_time_slots
             )
@@ -1526,6 +1532,7 @@ def create_app():
                 1 if has_counsel else 0,
                 1 if (getattr(s, "can_bath_assist", False) or False) else 0,
                 1 if s.has_phone_duty else 0,
+                1 if (getattr(s, "oncall_only", False) or False) else 0,
                 1 if (getattr(s, "holiday_ng", False) or False) else 0,
                 getattr(s, "weekend_constraint", "") or "",
                 getattr(s, "work_start_time", "") or "",
@@ -1589,11 +1596,15 @@ def create_app():
             staff.can_visit = False
             staff.has_phone_duty = False
             staff.can_bath_assist = False
+            staff.oncall_only = False
             staff.available_time_slots = "full_day"
         else:
             staff.can_visit = _csv_to_bool(row.get("can_visit"))
             staff.has_phone_duty = _csv_to_bool(row.get("has_phone_duty"))
             staff.can_bath_assist = _csv_to_bool(row.get("can_bath_assist"))
+            # 旧形式CSV（列なし）では既存値を維持する
+            if "oncall_only" in row:
+                staff.oncall_only = _csv_to_bool(row.get("oncall_only"))
             staff.available_time_slots = (row.get("available_time_slots") or "full_day").strip() or "full_day"
 
     def _apply_csv_qualifications(staff, row):
@@ -2401,6 +2412,10 @@ def create_app():
         care_dicts = []
         cook_dicts = []
         for s in staffs:
+            # 「オンコールのみ当番」の職員は出勤シフトを一切割り当てない
+            #   （オンコールのローテーションには通常どおり参加する）。
+            if getattr(s, "oncall_only", False):
+                continue
             avail_days = [int(x) for x in s.available_days.split(",") if x.strip()]
             fixed_off = [int(x) for x in s.fixed_days_off.split(",") if x.strip()] if s.fixed_days_off else []
             d = {
@@ -2509,7 +2524,12 @@ def create_app():
                 dayoff_by_staff.setdefault(r.staff_id, set()).add(r.date.isoformat())
 
             oncall_eligible = []
-            for st in Staff.query.filter_by(has_phone_duty=True, on_leave=False).order_by(Staff.id).all():
+            # 「オンコールのみ当番」の職員は電話当番チェックの有無に関わらず対象に含める
+            oncall_candidates = Staff.query.filter(
+                Staff.on_leave == False,  # noqa: E712
+                db.or_(Staff.has_phone_duty == True, Staff.oncall_only == True),  # noqa: E712
+            ).order_by(Staff.id).all()
+            for st in oncall_candidates:
                 avail_wd = set(int(x) for x in st.available_days.split(",") if x.strip())
                 fixed_wd = (set(int(x) for x in st.fixed_days_off.split(",") if x.strip())
                             if st.fixed_days_off else set())
@@ -3289,8 +3309,13 @@ def create_app():
         vdays = [int(x) for x in (so.visit_operating_days or "").split(",") if x.strip()] if so and so.visit_operating_days else []
         cdates = [x.strip() for x in (getattr(so, "closed_dates", "") or "").split(",") if x.strip()]
         placement = [r.to_dict() for r in PlacementRule.query.filter_by(is_active=True).all()]
+        nods = [
+            int(x) for x in (getattr(so, "no_day_service_days", "") or "").split(",")
+            if x.strip()
+        ]
         return {
             "closed_days": closed, "closed_dates": cdates, "visit_operating_days": vdays,
+            "no_day_service_days": nods,
             "min_day_service": getattr(so, "min_day_service", 0) or 0,
             "min_visit_am": getattr(so, "min_visit_am", 0) or 0,
             "min_visit_pm": getattr(so, "min_visit_pm", 0) or 0,

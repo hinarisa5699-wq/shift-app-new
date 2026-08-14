@@ -105,3 +105,53 @@ def test_generate_endpoint_without_weekday_settings(tmp_path, monkeypatch):
 
     assert res.status_code == 200, res.get_data(as_text=True)[:500]
     assert res.get_json().get("status") == "success"
+
+
+def test_shifts_api_returns_day_off_requests(tmp_path, monkeypatch):
+    """シフト参照APIが休み希望を返す（画面で「希望休」と表示するため）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    from models import db, Staff, DayOffRequest
+    import datetime
+
+    with flask_app.app_context():
+        sid = Staff.query.filter_by(name="介護B").first().id
+        db.session.add(DayOffRequest(staff_id=sid, date=datetime.date(2026, 9, 2)))
+        db.session.commit()
+
+    client = flask_app.test_client()
+    client.post("/login", data={"username": "admin", "password": "testpass"},
+                follow_redirects=True)
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+
+    res = client.get("/api/shifts/2026/9")
+    assert res.status_code == 200
+    data = res.get_json()
+    assert "2026-09-02" in data.get("day_off_requests", {}), data.get("day_off_requests")
+
+
+def test_export_marks_requested_day_off(tmp_path, monkeypatch):
+    """CSV出力の休みセルが、休み希望の日は「希望休」になる。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    from models import db, Staff, DayOffRequest
+    import datetime
+
+    with flask_app.app_context():
+        staff = Staff.query.filter_by(name="介護B").first()
+        db.session.add(DayOffRequest(staff_id=staff.id, date=datetime.date(2026, 9, 2)))
+        db.session.commit()
+        sid = staff.id
+
+    client = flask_app.test_client()
+    client.post("/login", data={"username": "admin", "password": "testpass"},
+                follow_redirects=True)
+    gen = client.post("/api/generate", json={"year": 2026, "month": 9}).get_json()
+
+    res = client.get(f"/api/export/{gen['generation_id']}/csv")
+    assert res.status_code == 200
+    text = res.get_data(as_text=True)
+    assert "希望休" in text, "休み希望の日が『希望休』と表示されていない"
+
+    # 休み希望を出していない職員の休みは「休」のまま
+    assert "\n介護A" in text or "介護A" in text

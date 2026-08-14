@@ -350,6 +350,30 @@ def _staff_name_label(staff: dict, is_cook: bool) -> str:
     return staff["name"]
 
 
+# 休み希望（シフト表で「希望休」と表示する）: {"YYYY-MM-DD": {staff_id, ...}}
+_DAY_OFF_REQUESTS: dict = {}
+
+
+def register_day_off_requests(day_off_map):
+    """休み希望を登録する（出力時に休みのセルを「希望休」と表示するため）。
+
+    day_off_map: {"YYYY-MM-DD": [staff_id, ...]} / None で解除
+    """
+    global _DAY_OFF_REQUESTS
+    _DAY_OFF_REQUESTS = {
+        d: set(ids) for d, ids in (day_off_map or {}).items()
+    }
+
+
+def _is_day_off_request(d_str, sid) -> bool:
+    return sid in _DAY_OFF_REQUESTS.get(d_str, ())
+
+
+def _off_cell_text(d_str, sid) -> str:
+    """休みのセルの表示。本人の休み希望日は「希望休」と分かるようにする。"""
+    return "希望休" if _is_day_off_request(d_str, sid) else "休"
+
+
 def _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map):
     """ケアスタッフ 1 セルの (assignment, 表示テキスト) を組み立てる。"""
     asgn = assignment_map.get(d_str, {}).get(sid, "")
@@ -624,6 +648,9 @@ def _write_group_sheet(
                 text = ASSIGNMENT_LABELS.get(asgn, "")
             else:
                 asgn, text = _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map)
+            if not text and _is_day_off_request(d_str, sid):
+                # 休みのセルのうち、本人が休み希望を出していた日は「希望休」と表示
+                text = "希望休"
 
             # 駐車場（依頼文24）: 車通勤・出勤者のセルに枠/コインを追記
             text = _append_parking(text, parking_map, d_str, sid)
@@ -921,10 +948,12 @@ def export_csv(
                 d_str = d.isoformat()
                 if is_cook:
                     asgn = assignment_map.get(d_str, {}).get(sid, "")
-                    cells.append(ASSIGNMENT_LABELS.get(asgn, ""))
+                    text = ASSIGNMENT_LABELS.get(asgn, "")
                 else:
                     asgn, text = _care_cell(d_str, sid)
-                    cells.append(text)
+                if not text and _is_day_off_request(d_str, sid):
+                    text = "希望休"
+                cells.append(text)
                 if asgn not in (off_token, ""):
                     work_days += 1
             writer.writerow([name] + cells + [work_days])
@@ -1219,6 +1248,8 @@ def export_pdf(
             text = ASSIGNMENT_LABELS.get(asgn, "")
         else:
             asgn, text = _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map)
+        if not text and _is_day_off_request(d_str, sid):
+            text = "希望休"
         text = _append_parking(text, parking_map, d_str, sid)
         return text, asgn
 
@@ -1327,7 +1358,8 @@ def export_pdf_individual(
         working = asgn not in (off_token, "")
         if not text:
             # 休み（off）・未割当は「休」表示。空文字は当該日に行が無い＝休扱い。
-            text = "休"
+            #   本人の休み希望日は「希望休」と表示する。
+            text = _off_cell_text(d_str, sid)
         is_oncall = d_str in phone_by_sid.get(sid, set())
         if oncall_map and oncall_map.get(d_str) == staff.get("name"):
             is_oncall = True

@@ -326,6 +326,7 @@ function renderCalendar(data, year, month) {
     const fixedSet = new Set(data.fixed_staff_ids || []);  // 依頼文28: 固定中の職員ID
     const holidays = data.holidays || {};
     const oncallMap = data.oncall || {};  // {date: 氏名} オンコール担当
+    const dayOffMap = data.day_off_requests || {};  // {date: [staff_id,...]} 休み希望
     const parkingMap = data.parking || {};  // 駐車場 {date: {staff_id: "4"/"7"/"8"/"コイン"}}
 
     // 駐車場バッジ（車通勤・出勤者のみ map に存在）
@@ -456,11 +457,20 @@ function renderCalendar(data, year, month) {
         return `<tr><td colspan="${totalCols}" style="background:#1f2937;color:#fff;font-weight:700;text-align:left;padding:6px 10px">${title}</td></tr>`;
     }
 
+    // 休みのセル。本人が休み希望を出していた日は「希望休」と分かるようにする。
+    function offCellHtml(dateStr, s) {
+        const ids = dayOffMap[dateStr] || [];
+        if (ids.indexOf(s.id) !== -1) {
+            return '<span class="badge" style="background:#fde68a;color:#92400e">希望休</span>';
+        }
+        return '<span class="badge badge-off">休</span>';
+    }
+
     // ケアスタッフ 1 セルの中身
     function careCellHtml(dateStr, s) {
         const assignment = shiftMap[dateStr] ? shiftMap[dateStr][s.id] : null;
         if (!assignment || assignment === 'off') {
-            return '<span class="badge badge-off">休</span>';
+            return offCellHtml(dateStr, s);
         }
         const info = ASSIGNMENT_MAP[assignment];
         const isPhone = phoneDutyMap[dateStr] && phoneDutyMap[dateStr][s.id];
@@ -571,7 +581,7 @@ function renderCalendar(data, year, month) {
                         : `<span class="badge badge-off">${escapeHtml(a)}</span>`;
                     cell = `${baseBadge}${parkingBadge(m.dateStr, s.id)}`;
                 } else {
-                    cell = '<span class="badge badge-off">休</span>';
+                    cell = offCellHtml(m.dateStr, s);
                 }
                 r += `<td class="staff-cell ${m.colClass}">${cell}</td>`;
             });

@@ -59,6 +59,7 @@ from export import (
     export_excel_group_half, export_pdf_from_excel,
     parse_uploaded_shift_excel, parse_shift_cell, state_to_cell_text,
     recompute_warnings_from_shifts, ASSIGNMENT_LABELS, configure_operating_days,
+    register_day_off_requests,
 )
 
 
@@ -3001,6 +3002,13 @@ def create_app():
         for r in parking_rows:
             parking_map.setdefault(r.date.isoformat(), {})[str(r.staff_id)] = r.label
 
+        # 休み希望（この月）: 日付→[staff_id, ...]（シフト表に「希望休」と表示する）
+        dayoff_map = {}
+        for r in DayOffRequest.query.filter(
+            DayOffRequest.date >= first_day, DayOffRequest.date <= last_day
+        ).all():
+            dayoff_map.setdefault(r.date.isoformat(), []).append(r.staff_id)
+
         # 確定情報（この月）
         conf = ShiftConfirmation.query.filter_by(year=year, month=month).first()
 
@@ -3043,6 +3051,7 @@ def create_app():
                 "warnings": [w.to_dict() for w in warnings],
                 "holidays": holidays,
                 "oncall": oncall_map,
+                "day_off_requests": dayoff_map,
                 "parking": parking_map,
                 "confirmation": conf.to_dict() if conf else None,
                 "fixed_staff_ids": fixed_staff_ids,
@@ -3187,6 +3196,16 @@ def create_app():
         first_date = shifts[0].date
         year = first_date.year
         month = first_date.month
+
+        # 休み希望（この月）: 出力の休みセルを「希望休」と表示するため登録する
+        _first_day = date(year, month, 1)
+        _last_day = date(year, month, calendar.monthrange(year, month)[1])
+        _dayoff_map = {}
+        for _r in DayOffRequest.query.filter(
+            DayOffRequest.date >= _first_day, DayOffRequest.date <= _last_day
+        ).all():
+            _dayoff_map.setdefault(_r.date.isoformat(), []).append(_r.staff_id)
+        register_day_off_requests(_dayoff_map)
 
         # 駐車場（依頼文24）: (date, staff_id) → ラベル。各シフト項目に付与して
         #   Excel/PDF のセルに表示できるようにする（生成ロジックには非干渉）。

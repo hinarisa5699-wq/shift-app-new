@@ -178,3 +178,50 @@ def test_no_breakfast_period_still_uses_9_16():
     thin = [s["assignment"] for s in shifts if s["date"] == THIN_DAY]
     assert thin == ["cooking_6"], f"朝食なし期間は9:00-16:00のまま: {thin}"
     assert not [s for s in shifts if s["assignment"] == "cooking_9"]
+
+
+def test_breakfast_off_converts_six_start_to_eight_start():
+    """朝食なし日は 6:00 開始（④6-13・⑦6-12）が 8:00 開始（②8-13）に置き換わる。
+
+    ユーザー依頼（2026-08）:「朝ごはんがない日は 6-13 の部分が 8-13 に変換される
+    ようにして」。終了時刻が同じ 8時開始の種類（②8:00-13:00）があればそれを使う。
+    """
+    from solver import _bf_off_replacement_map
+
+    ranges = {
+        "cooking_2": (8 * 60, 13 * 60),
+        "cooking_4": (6 * 60, 13 * 60),
+        "cooking_7": (6 * 60, 12 * 60),
+        "cooking_9": (6 * 60 + 30, 14 * 60 + 30),
+        "cooking_3": (12 * 60, 19 * 60),
+        "cooking_1": (6 * 60, 8 * 60),
+    }
+    m = _bf_off_replacement_map(list(ranges), ranges)
+
+    assert m["cooking_4"] == "cooking_2", "④6-13 は ②8-13 になる"
+    assert m["cooking_7"] == "cooking_2", "⑦6-12 も 8時開始へ寄せる"
+    # 8時以降開始・朝専用・該当する8時開始の種類が無いものは変換しない
+    assert "cooking_3" not in m
+    assert "cooking_1" not in m
+    assert "cooking_9" not in m, "8時以降開始で14:30終わりの種類が無いのでそのまま"
+
+    # 8:30-14:30 の種類を用意すれば ⑨6:30-14:30 もそこへ変換される
+    ranges2 = dict(ranges, cooking_10=(8 * 60 + 30, 14 * 60 + 30))
+    m2 = _bf_off_replacement_map(list(ranges2), ranges2)
+    assert m2["cooking_9"] == "cooking_10"
+
+
+def test_breakfast_off_day_has_no_six_oclock_start():
+    """朝食なし期間の生成結果に 6:00 開始の勤務が残らない（②8-13 等に変換済み）。"""
+    settings = _base_settings()
+    settings["cooking_types"] = COOKING_TYPES + [
+        {"code": "cooking_2", "label": "② 8:00-13:00",
+         "start_time": "08:00", "end_time": "13:00"},
+    ]
+    settings["breakfast_off_start"] = "2026-08-01"
+    settings["breakfast_off_end"] = "2026-08-31"
+    shifts, _w = _run(settings)
+    assert shifts is not None
+    assert not [s for s in shifts if s["assignment"] in ("cooking_4", "cooking_7")], (
+        "朝食なし日に 6:00 開始のシフトが残っている"
+    )

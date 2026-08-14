@@ -343,6 +343,11 @@ def _run_migrations(app):
     if "oncall_only" not in columns:
         # オンコールのみ当番（出勤シフトは割り当てない）
         cursor.execute("ALTER TABLE staff ADD COLUMN oncall_only BOOLEAN NOT NULL DEFAULT 0")
+    if "workable_dates_mode" not in columns:
+        # 出勤可能日の扱い: only=その日しか出勤しない / extra=通常に加えて必ず出勤
+        cursor.execute(
+            "ALTER TABLE staff ADD COLUMN workable_dates_mode VARCHAR(10) NOT NULL DEFAULT 'only'"
+        )
     # --- v3: 区分・役割・入浴介助可・勤務時間 ---
     if "job_category" not in columns:
         cursor.execute(
@@ -1884,6 +1889,18 @@ def create_app():
         db.session.commit()
         return jsonify({"message": "削除しました"}), 200
 
+    @app.route("/api/staff/<int:staff_id>/workable-mode", methods=["POST"])
+    def api_workable_mode_update(staff_id):
+        """出勤可能日の扱いを切り替える（only=その日だけ / extra=通常に加えて出勤）。"""
+        staff = Staff.query.get_or_404(staff_id)
+        data = request.get_json(silent=True) or {}
+        mode = (data.get("mode") or request.form.get("mode") or "").strip()
+        if mode not in ("only", "extra"):
+            return jsonify({"error": "mode は only / extra のいずれかです"}), 400
+        staff.workable_dates_mode = mode
+        db.session.commit()
+        return jsonify({"staff_id": staff_id, "workable_dates_mode": mode}), 200
+
     @app.route("/api/staff/<int:staff_id>/workable-dates", methods=["GET"])
     def api_workable_date_list(staff_id):
         """出勤可能日一覧"""
@@ -2417,9 +2434,20 @@ def create_app():
 
         # 出勤可能日（whitelist）の取得: {staff_id: [YYYY-MM-DD, ...]}
         # 1日でも登録があれば、その職員は登録日のみ出勤可（solverで強制）。
+        #   扱いは職員ごとの workable_dates_mode:
+        #     only  … 登録日のみ出勤（従来）
+        #     extra … 通常のシフトに加えて、その日は必ず出勤（振替出勤）
+        _wd_mode = {
+            st.id: (getattr(st, "workable_dates_mode", "only") or "only")
+            for st in Staff.query.all()
+        }
         workable_dates_map = {}
+        forced_work_dates = []      # [(staff_id, "YYYY-MM-DD"), ...] 追加出勤日
         for w in StaffWorkableDate.query.all():
-            workable_dates_map.setdefault(w.staff_id, []).append(w.date.isoformat())
+            if _wd_mode.get(w.staff_id, "only") == "extra":
+                forced_work_dates.append((w.staff_id, w.date.isoformat()))
+            else:
+                workable_dates_map.setdefault(w.staff_id, []).append(w.date.isoformat())
 
         # 公休日数の自動算出。ON時は手入力より優先。
         #   ユーザー依頼（2026-08）:「正社員の公休は土日を抜いた平日日数を出勤日にする」。
@@ -2528,6 +2556,7 @@ def create_app():
             "closed_dates": closed_dates,
             "visit_operating_days": visit_days,
             "no_day_service_days": no_ds_days,
+            "forced_work_dates": forced_work_dates,
             "care_min_by_weekday": _parse_wd_counts(
                 getattr(settings_obj, "care_min_by_weekday", "")
             ),

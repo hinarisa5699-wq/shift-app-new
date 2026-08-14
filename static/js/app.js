@@ -1097,6 +1097,21 @@ function loadWorkableDates(staffId) {
         });
 }
 
+function setWorkableMode(staffId, mode) {
+    fetchWithCsrf(`/api/staff/${staffId}/workable-mode`, {
+        method: 'POST',
+        body: JSON.stringify({ mode: mode }),
+    })
+        .then(response => {
+            if (!response.ok) throw new Error('保存に失敗しました');
+            return response.json();
+        })
+        .catch(error => {
+            alert('出勤可能日の扱いの保存に失敗しました: ' + error.message);
+            console.error('Error saving workable mode:', error);
+        });
+}
+
 function addWorkableDate(staffId) {
     const dateInput = document.getElementById('workable-date');
     if (!dateInput || !dateInput.value) {

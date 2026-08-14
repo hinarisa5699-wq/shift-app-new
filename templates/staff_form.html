@@ -481,8 +481,37 @@
 <!-- 出勤可能日セクション（編集時のみ） -->
 <div class="bg-white rounded-xl shadow-md p-8 max-w-3xl mt-8">
     <h2 class="text-2xl font-bold text-primary-800 mb-4">出勤可能日</h2>
-    <p class="text-gray-600 mb-2">特定の日付のみ出勤可能な職員の場合に登録してください。</p>
-    <p class="text-amber-700 text-sm mb-6">※ 1日でも登録すると「登録した日のみ出勤可」になります（シフト生成でも登録外の日は自動的に休みになります）。制約が無い職員は登録不要です。</p>
+    <p class="text-gray-600 mb-2">日付を指定して、その職員の出勤日を調整します。</p>
+
+    <!-- 出勤可能日の扱い -->
+    <div class="mb-6 p-4 bg-amber-50 rounded-lg border border-amber-200">
+        <p class="text-base font-semibold text-gray-800 mb-2">登録した日の扱い</p>
+        {% set wd_mode = staff.workable_dates_mode or 'only' %}
+        <label class="flex items-start cursor-pointer mb-2">
+            <input type="radio" name="workable_dates_mode" value="only"
+                   {% if wd_mode != 'extra' %}checked{% endif %}
+                   onchange="setWorkableMode({{ staff.id }}, this.value)"
+                   class="w-5 h-5 mt-1 text-amber-600 border-gray-300 focus:ring-amber-500">
+            <span class="ml-3">
+                <span class="text-base font-medium text-gray-800">この日しか出勤しない（限定）</span>
+                <span class="block text-gray-600 text-sm">登録した日だけ出勤し、他の日は自動的に休みになります。スポット勤務の方向け。</span>
+            </span>
+        </label>
+        <label class="flex items-start cursor-pointer">
+            <input type="radio" name="workable_dates_mode" value="extra"
+                   {% if wd_mode == 'extra' %}checked{% endif %}
+                   onchange="setWorkableMode({{ staff.id }}, this.value)"
+                   class="w-5 h-5 mt-1 text-amber-600 border-gray-300 focus:ring-amber-500">
+            <span class="ml-3">
+                <span class="text-base font-medium text-gray-800">通常のシフトに加えて出勤する（追加・振替）</span>
+                <span class="block text-gray-600 text-sm">
+                    いつもどおりシフトを組んだうえで、登録した日は必ず出勤にします。
+                    「10日を休んで11日に振替出勤」なら、10日を「休み希望」に登録し、11日をここに登録してください
+                    （この日は勤務可能曜日・固定休・休み希望より優先されます）。
+                </span>
+            </span>
+        </label>
+    </div>
 
     <!-- 出勤可能日追加フォーム -->
     <div class="flex flex-col sm:flex-row items-start sm:items-end gap-3 mb-6 p-4 bg-gray-50 rounded-lg">

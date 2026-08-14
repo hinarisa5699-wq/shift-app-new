@@ -49,6 +49,10 @@ class Staff(db.Model):
     # True = 祝日は出勤不可
     on_leave = db.Column(db.Boolean, default=False, nullable=False)
     # True = 休職中（シフト生成・オンコールの対象外。一覧には残しバッジ表示）
+    workable_dates_mode = db.Column(db.String(10), default="only", nullable=False)
+    # 出勤可能日(StaffWorkableDate)の扱い（ユーザー依頼 2026-08）
+    #   "only"  = 登録した日しか出勤しない（従来動作・スポット勤務者向け）
+    #   "extra" = 通常のシフト作成に加えて、登録した日は必ず出勤する（振替出勤向け）
     oncall_only = db.Column(db.Boolean, default=False, nullable=False)
     # True = オンコール（電話当番）のみ担当。出勤シフトは一切割り当てない
     # （ユーザー依頼 2026-08: 「前垣茜はオンコールのみ当番」）。
@@ -122,6 +126,7 @@ class Staff(db.Model):
             "holiday_ng": self.holiday_ng or False,
             "on_leave": self.on_leave or False,
             "oncall_only": self.oncall_only or False,
+            "workable_dates_mode": self.workable_dates_mode or "only",
             "public_holiday_count": self.public_holiday_count or 0,
             "job_category": self.job_category or "caregiver",
             "role": self.role or "",

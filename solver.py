@@ -268,6 +268,72 @@ COOK_ASSIGNMENTS = ["cook_off"] + COOK_WORKING_ASSIGNMENTS
 COOK_COVERAGE = _cook_coverage_from_ranges(COOK_ASSIGNMENT_TIME_RANGES)
 
 
+def _bf_off_replacement_map(cook_working, cook_time_ranges):
+    """朝食なし日の読み替えマップ {元の記号: 8時開始の記号}。
+
+    ユーザー依頼（2026-08）:「朝ごはんがない日は 6-13 の部分が 8-13 に変換される
+    ようにして」。朝食を作らない日は 6:00 開始で出勤する必要がないため、
+    8:00 開始・終了時刻が同じ種類があればその記号に読み替える
+    （④6:00-13:00 → ②8:00-13:00）。
+    終了時刻が同じ種類が無い場合は、昼まで働く 6時台開始（〜13:00以前に終わる）に
+    限り 8:00 開始の種類へ寄せる（従来の ⑦6:00-12:00 → ②8:00-13:00 の挙動を維持）。
+    それ以外（例 ⑨6:30-14:30）は該当する 8時開始の種類が無いためそのまま。
+    """
+    ranges = cook_time_ranges or {}
+    eight = 8 * 60
+    # 8時以降に始まる種類。終了時刻ごとに「最も早く始まる種類」を代表にする。
+    late_start = {}         # 終了時刻 -> 記号
+    for c in cook_working:
+        r = ranges.get(c)
+        if not r or r[0] < eight:
+            continue
+        cur = late_start.get(r[1])
+        if cur is None or ranges[cur][0] > r[0]:
+            late_start[r[1]] = c
+    by_start8 = {
+        e: c for e, c in late_start.items() if ranges[c][0] == eight
+    }
+    out = {}
+    if not late_start:
+        return out
+    for c in cook_working:
+        r = ranges.get(c)
+        if not r or r[0] >= eight or r[1] <= eight:
+            continue        # 8時以降開始／8時までに終わる(朝専用)はそのまま
+        if r[1] in late_start:
+            # 終了時刻が同じ種類（④6:00-13:00 → ②8:00-13:00 / ⑨6:30-14:30 → 8:30-14:30）
+            out[c] = late_start[r[1]]
+        elif r[1] <= 13 * 60 and by_start8:
+            # 昼までの勤務は 8時開始の種類（終了が最も近いもの）へ寄せる
+            best_end = min(by_start8, key=lambda e: abs(e - r[1]))
+            out[c] = by_start8[best_end]
+    return out
+
+
+def _cook_overlap_map(cook_working, cook_time_ranges):
+    """各調理記号に対し「勤務時間が実際に重なる記号」の一覧を返す。
+
+    重なり0分（例 6:00-8:00 と 8:00-13:00 のように接するだけ）は重なりとみなさない。
+    新人×ベテランの同行判定に使う（同じ記号・同じ食事帯でなくてよい）。
+    """
+    ranges = cook_time_ranges or {}
+    out = {}
+    for a in cook_working:
+        a_rng = ranges.get(a)
+        if not a_rng:
+            out[a] = [a]
+            continue
+        same = []
+        for b in cook_working:
+            b_rng = ranges.get(b)
+            if not b_rng:
+                continue
+            if min(a_rng[1], b_rng[1]) - max(a_rng[0], b_rng[0]) > 0:
+                same.append(b)
+        out[a] = same or [a]
+    return out
+
+
 def _build_cooking_maps(cooking_types):
     """調理シフト種類マスタ [{code, start_time, end_time}, ...] から
     (working_codes, time_ranges{code:(start_min,end_min)}, coverage{code:tuple}) を構築。
@@ -1667,6 +1733,9 @@ def _solve_care_with_fallback(
     # 形式: [(staff_id, "YYYY-MM-DD"), ...]
     oncall_work_days = settings.get("oncall_work_days", []) or []
 
+    # 追加出勤日（振替）: [(staff_id, "YYYY-MM-DD"), ...]
+    forced_work_dates = settings.get("forced_work_dates", []) or []
+
     # Phase 1: ハード制約のみ
     shifts_data, warnings_data = _solve_care(
         year, month, all_dates, staff_ids, staff_by_id,
@@ -1690,6 +1759,7 @@ def _solve_care_with_fallback(
         care_headcount_by_day=care_headcount_by_day,
         oncall_forced_off=oncall_forced_off,
         oncall_work_days=oncall_work_days,
+        forced_work_dates=forced_work_dates,
         require_early_late=True,
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
@@ -1735,6 +1805,7 @@ def _solve_care_with_fallback(
         care_headcount_by_day=care_headcount_by_day,
         oncall_forced_off=oncall_forced_off,
         oncall_work_days=oncall_work_days,
+        forced_work_dates=forced_work_dates,
         require_early_late=True,
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
@@ -1790,6 +1861,7 @@ def _solve_care_with_fallback(
         care_headcount_by_day=care_headcount_by_day,
         oncall_forced_off=oncall_forced_off,
         oncall_work_days=oncall_work_days,
+        forced_work_dates=forced_work_dates,
         require_early_late=True,
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
@@ -1860,6 +1932,7 @@ def _solve_care(
     care_headcount_by_day: dict = None,
     oncall_forced_off: list = None,
     oncall_work_days: list = None,
+    forced_work_dates: list = None,
     require_early_late: bool = False,
     min_early_staff: int = 1,
     min_late_staff: int = 1,
@@ -2067,12 +2140,41 @@ def _solve_care(
                 model.add(x[s, d_idx, "day_pattern4"] == 0)
 
     # ==================================================================
+    # 追加出勤日（振替）: 出勤可能日を「通常に加えて出勤」で登録した日
+    #   ユーザー依頼（2026-08）:「いつもは10日出るけどこの日は休んで11日に
+    #   出勤したい、という振替の要望に対応したい」。
+    #   この日は必ず出勤（off にしない）。勤務可能曜日・固定休・希望休より優先する。
+    #   休業日（曜日・日付指定）は全員休みのため対象外。
+    # ==================================================================
+    forced_work_by_staff = {}
+    _date_idx_map = {dt.isoformat(): i for i, dt in enumerate(all_dates)}
+    for _entry in (forced_work_dates or []):
+        try:
+            _sid, _diso = _entry
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(_diso, str):
+            _diso = _diso.isoformat()
+        _di = _date_idx_map.get(_diso)
+        if _di is None or _sid not in staff_by_id or _sid in locked_staff_ids:
+            continue
+        if _di in closed_day_indices:
+            continue
+        forced_work_by_staff.setdefault(_sid, set()).add(_di)
+    for _sid, _days in forced_work_by_staff.items():
+        for _di in _days:
+            model.add(x[_sid, _di, "off"] == 0)
+
+    # ==================================================================
     # 制約: 勤務可能曜日の遵守
     # ==================================================================
     for s in free_staff_ids:
         info = staff_by_id[s]
         avail_weekdays = set(info["available_days"])
+        _forced = forced_work_by_staff.get(s, set())
         for d_idx, dt in enumerate(all_dates):
+            if d_idx in _forced:
+                continue
             if dt.weekday() not in avail_weekdays:
                 model.add(x[s, d_idx, "off"] == 1)
 
@@ -2095,7 +2197,10 @@ def _solve_care(
     for s in staff_ids:
         info = staff_by_id[s]
         fixed_off = set(info["fixed_days_off"])
+        _forced = forced_work_by_staff.get(s, set())
         for d_idx, dt in enumerate(all_dates):
+            if d_idx in _forced:
+                continue
             if dt.weekday() in fixed_off:
                 model.add(x[s, d_idx, "off"] == 1)
 
@@ -2103,7 +2208,10 @@ def _solve_care(
     # 制約: 希望休の遵守
     # ==================================================================
     for s in staff_ids:
+        _forced = forced_work_by_staff.get(s, set())
         for d_idx, dt in enumerate(all_dates):
+            if d_idx in _forced:
+                continue
             if (s, dt) in off_request_set:
                 model.add(x[s, d_idx, "off"] == 1)
 
@@ -3633,6 +3741,9 @@ def _solve_cooking_with_fallback(
         except (TypeError, ValueError):
             no_breakfast_day_indices = set()
 
+    # 追加出勤日（振替）: [(staff_id, "YYYY-MM-DD"), ...]
+    forced_work_dates = settings.get("forced_work_dates", []) or []
+
     # Phase 1: ハード制約のみ
     shifts_data, warnings_data = _solve_cooking(
         year, month, all_dates, staff_ids, staff_by_id,
@@ -3645,6 +3756,7 @@ def _solve_cooking_with_fallback(
         locked_assignments=locked_assignments or {},
         pair_target=pair_target,
         no_breakfast_day_indices=no_breakfast_day_indices,
+        forced_work_dates=forced_work_dates,
     )
     if shifts_data is not None:
         return shifts_data, warnings_data
@@ -3661,6 +3773,7 @@ def _solve_cooking_with_fallback(
         locked_assignments=locked_assignments or {},
         pair_target=pair_target,
         no_breakfast_day_indices=no_breakfast_day_indices,
+        forced_work_dates=forced_work_dates,
     )
     if shifts_data is not None:
         return shifts_data, warnings_data
@@ -3692,6 +3805,7 @@ def _solve_cooking(
     locked_assignments: dict = None,
     pair_target: int = 0,
     no_breakfast_day_indices: set = None,
+    forced_work_dates: list = None,
 ):
     """
     調理職員の CP-SAT モデルを構築し解を求める。
@@ -3779,12 +3893,37 @@ def _solve_cooking(
                 model.add(x[s, d_idx, "cook_off"] == 1)
 
     # ==================================================================
+    # 追加出勤日（振替）: 出勤可能日を「通常に加えて出勤」で登録した日は必ず出勤
+    # ==================================================================
+    forced_work_by_staff = {}
+    _date_idx_map = {dt.isoformat(): i for i, dt in enumerate(all_dates)}
+    for _entry in (forced_work_dates or []):
+        try:
+            _sid, _diso = _entry
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(_diso, str):
+            _diso = _diso.isoformat()
+        _di = _date_idx_map.get(_diso)
+        if _di is None or _sid not in staff_by_id or _sid in locked_staff_ids:
+            continue
+        if _di in closed_day_indices:
+            continue
+        forced_work_by_staff.setdefault(_sid, set()).add(_di)
+    for _sid, _days in forced_work_by_staff.items():
+        for _di in _days:
+            model.add(x[_sid, _di, "cook_off"] == 0)
+
+    # ==================================================================
     # 制約: 勤務可能曜日の遵守
     # ==================================================================
     for s in staff_ids:
         info = staff_by_id[s]
         avail_weekdays = set(info["available_days"])
+        _forced = forced_work_by_staff.get(s, set())
         for d_idx, dt in enumerate(all_dates):
+            if d_idx in _forced:
+                continue
             if dt.weekday() not in avail_weekdays:
                 model.add(x[s, d_idx, "cook_off"] == 1)
 
@@ -3822,7 +3961,10 @@ def _solve_cooking(
     for s in staff_ids:
         info = staff_by_id[s]
         fixed_off = set(info["fixed_days_off"])
+        _forced = forced_work_by_staff.get(s, set())
         for d_idx, dt in enumerate(all_dates):
+            if d_idx in _forced:
+                continue
             if dt.weekday() in fixed_off:
                 model.add(x[s, d_idx, "cook_off"] == 1)
 
@@ -3830,7 +3972,10 @@ def _solve_cooking(
     # 制約: 希望休の遵守
     # ==================================================================
     for s in staff_ids:
+        _forced = forced_work_by_staff.get(s, set())
         for d_idx, dt in enumerate(all_dates):
+            if d_idx in _forced:
+                continue
             if (s, dt) in off_request_set:
                 model.add(x[s, d_idx, "cook_off"] == 1)
 
@@ -4186,25 +4331,24 @@ def _solve_cooking(
     new_ids = _onboard_new_ids
     vet_ids = [s for s in staff_ids if staff_by_id[s].get("experience") == "veteran"]
 
-    # ハード制約（依頼）: 新人を1人にしない。新人がやる「時間帯」に、必ずベテランも
-    #   同じ時間帯で同行する（＝初出勤から同時間帯で同行）。ただし記号完全一致ではなく
-    #   「同じ食事帯(カバレッジ)」を同行とみなす（例: 宇佐美③12-19 と 池田⑧13-19 は
-    #   同じ"夜"帯=イコール、④6-13 と ⑦6-12 は同じ"朝昼"帯=イコール）。
+    # ハード制約（依頼）: 新人を1人にしない。新人が勤務する時間に、必ずベテランも
+    #   勤務している状態にする。
+    #   ユーザー依頼（2026-08）:「新人の出勤時間とベテランの出勤時間が現実かぶって
+    #   いれば、まったく同じでなくてもいい」。
+    #   → 記号一致でも食事帯一致でもなく【勤務時間が実際に重なる記号】を同行とみなす
+    #     （例: 新人④6:00-13:00 × ベテラン⑤9:00-15:00 は4時間重なる＝OK。
+    #       新人①6:00-8:00 × ベテラン②8:00-13:00 は接するだけで重なり0＝NG）。
     #   これにより1人フォールバック(9-16)の担当も新人には割り当たらない（＝ベテランのみ）。
     #   ベテランが1人も居ない場合は課さない（無解化防止）。新人を休みにすれば常に充足可。
+    overlap_of = _cook_overlap_map(cook_working, cook_time_ranges)
     if new_ids and vet_ids:
-        # 各シフト記号 a に対し「同じ食事帯」の記号集合を事前計算
-        equiv_of = {
-            a: [b for b in cook_working if cook_coverage.get(b) == cook_coverage.get(a)]
-            for a in cook_working
-        }
         for d_idx in range(num_days):
             if d_idx in closed_day_indices:
                 continue
             for n in new_ids:
                 for a in cook_working:
                     vet_terms = [
-                        x[v, d_idx, b] for v in vet_ids for b in equiv_of[a]
+                        x[v, d_idx, b] for v in vet_ids for b in overlap_of[a]
                     ]
                     model.add(sum(vet_terms) >= 1).only_enforce_if(x[n, d_idx, a])
 
@@ -4262,11 +4406,17 @@ def _solve_cooking(
     _vet_sym_cache = {}
 
     def _vet_sym_var(d_idx, a):
-        """その日 d に記号 a でベテランが1人以上勤務しているか（依頼文38）。"""
+        """その日 d に、記号 a と勤務時間が重なる記号でベテランが1人以上いるか。
+
+        ユーザー依頼（2026-08）: 新人とベテランは同じ記号でなくてよく、
+        勤務時間が実際に重なっていれば同行とみなす。
+        """
         key = (d_idx, a)
         if key not in _vet_sym_cache:
             vs = model.new_bool_var(f"cook_vet_sym_d{d_idx}_{a}")
-            vw = sum(x[v, d_idx, a] for v in vet_ids)
+            vw = sum(
+                x[v, d_idx, b] for v in vet_ids for b in overlap_of.get(a, [a])
+            )
             model.add(vw >= 1).only_enforce_if(vs)
             model.add(vw == 0).only_enforce_if(vs.Not())
             _vet_sym_cache[key] = vs
@@ -4449,6 +4599,7 @@ def _solve_cooking(
     shifts_data = []
     warnings_data = []
 
+    _bf_off_map = _bf_off_replacement_map(cook_working, cook_time_ranges)
     for d_idx, dt in enumerate(all_dates):
         date_str = dt.strftime("%Y-%m-%d")
         _bf_off = d_idx in no_breakfast_day_indices
@@ -4456,8 +4607,8 @@ def _solve_cooking(
             for a in cook_assignments:
                 if solver.value(x[s, d_idx, a]) == 1:
                     if a != "cook_off":
-                        # 朝食なし日は ④6-13 / ⑦6-12 → ②8:00-13:00(8時開始・池田さんも同じ)
-                        out_a = "cooking_2" if (_bf_off and a in ("cooking_4", "cooking_7")) else a
+                        # 朝食なし日は 6時開始 → 8時開始へ読み替え（④6-13 → ②8-13 等）
+                        out_a = _bf_off_map.get(a, a) if _bf_off else a
                         shifts_data.append({
                             "date": date_str,
                             "staff_id": s,

@@ -343,6 +343,9 @@ def _run_migrations(app):
     if "oncall_only" not in columns:
         # オンコールのみ当番（出勤シフトは割り当てない）
         cursor.execute("ALTER TABLE staff ADD COLUMN oncall_only BOOLEAN NOT NULL DEFAULT 0")
+    if "oncall_when_off_ok" not in columns:
+        # 出勤していない日でもオンコールを持てる例外職員
+        cursor.execute("ALTER TABLE staff ADD COLUMN oncall_when_off_ok BOOLEAN NOT NULL DEFAULT 0")
     if "workable_dates_mode" not in columns:
         # 出勤可能日の扱い: only=その日しか出勤しない / extra=通常に加えて必ず出勤
         cursor.execute(
@@ -485,6 +488,11 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN oncall_fairness_max INTEGER NOT NULL DEFAULT 1")
     if "auto_ph_include_holidays" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN auto_ph_include_holidays BOOLEAN NOT NULL DEFAULT 0")
+    if "oncall_requires_work" not in columns:
+        # オンコールは出勤している職員にだけ割り当てる（既定ON）
+        cursor.execute(
+            "ALTER TABLE shift_settings ADD COLUMN oncall_requires_work BOOLEAN NOT NULL DEFAULT 1"
+        )
     if "care_min_by_weekday" not in columns:
         # 曜日ごとの介護配置人数（最低/最大）。空=未設定（従来動作）
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN care_min_by_weekday VARCHAR(50) NOT NULL DEFAULT ''")
@@ -1383,6 +1391,7 @@ def create_app():
             holiday_ng="holiday_ng" in request.form,
             on_leave="on_leave" in request.form,
             oncall_only="oncall_only" in request.form if is_care else False,
+            oncall_when_off_ok="oncall_when_off_ok" in request.form if is_care else False,
             public_holiday_count=max(0, safe_int(request.form.get("public_holiday_count"), 0)),
             car_commute="car_commute" in request.form,
             parking_slot=(request.form.get("parking_slot", "") or "").strip(),
@@ -1449,6 +1458,7 @@ def create_app():
             staff.has_phone_duty = False
             staff.can_bath_assist = False
             staff.oncall_only = False
+            staff.oncall_when_off_ok = False
             staff.available_time_slots = "full_day"
             # 調理スタッフのみ新人/ベテランを保持
             staff.cooking_experience = _normalize_cooking_experience(
@@ -1463,6 +1473,7 @@ def create_app():
             staff.has_phone_duty = "has_phone_duty" in request.form
             staff.can_bath_assist = "can_bath_assist" in request.form
             staff.oncall_only = "oncall_only" in request.form
+            staff.oncall_when_off_ok = "oncall_when_off_ok" in request.form
             staff.available_time_slots = request.form.get(
                 "available_time_slots", staff.available_time_slots
             )
@@ -1628,6 +1639,7 @@ def create_app():
             staff.has_phone_duty = False
             staff.can_bath_assist = False
             staff.oncall_only = False
+            staff.oncall_when_off_ok = False
             staff.available_time_slots = "full_day"
         else:
             staff.can_visit = _csv_to_bool(row.get("can_visit"))
@@ -1993,6 +2005,7 @@ def create_app():
         s.breakfast_off_end = (request.form.get("breakfast_off_end", "") or "").strip()
         s.am_preferred_gender = request.form.get("am_preferred_gender", "")
         s.phone_duty_enabled = "phone_duty_enabled" in request.form
+        s.oncall_requires_work = "oncall_requires_work" in request.form
         s.phone_duty_max_consecutive = safe_int(request.form.get("phone_duty_max_consecutive"), 1)
         s.min_staff_at_9 = safe_int(request.form.get("min_staff_at_9"), 4)
         s.min_staff_at_15 = safe_int(request.form.get("min_staff_at_15"), 4)
@@ -2616,6 +2629,16 @@ def create_app():
                 Staff.on_leave == False,  # noqa: E712
                 db.or_(Staff.has_phone_duty == True, Staff.oncall_only == True),  # noqa: E712
             ).order_by(Staff.id).all()
+            # オンコールは「その日出勤している職員」に割り当てる（電話を持ち帰るため）。
+            #   ユーザー依頼（2026-08）:「オンコールは出勤してる職員しか電話を
+            #   持って帰れない」。例外（oncall_when_off_ok / オンコールのみ当番）は
+            #   休みの日でも持てる。休業日は出勤者がいないため例外者のみが候補。
+            _oncall_requires_work = bool(
+                getattr(settings_obj, "oncall_requires_work", True)
+            )
+            _closed_wd = set(closed_days)
+            _closed_iso = set(closed_dates)
+            must_work_ids = set()
             for st in oncall_candidates:
                 avail_wd = set(int(x) for x in st.available_days.split(",") if x.strip())
                 fixed_wd = (set(int(x) for x in st.fixed_days_off.split(",") if x.strip())
@@ -2623,6 +2646,13 @@ def create_app():
                 wk = set(workable_dates_map.get(st.id, []))
                 offs = dayoff_by_staff.get(st.id, set())
                 hol_ng = bool(getattr(st, "holiday_ng", False))
+                exempt = (
+                    bool(getattr(st, "oncall_when_off_ok", False))
+                    or bool(getattr(st, "oncall_only", False))
+                    or not _oncall_requires_work
+                )
+                if not exempt:
+                    must_work_ids.add(st.id)
                 # オンコールに入れない日を集約（休み希望・勤務不可曜日・出勤可能日外・祝日不可）
                 unavailable = set()
                 for dt in month_dates:
@@ -2632,6 +2662,9 @@ def create_app():
                             or (wk and iso not in wk)
                             or iso in offs
                             or (hol_ng and jpholiday.is_holiday(dt))):
+                        unavailable.add(iso)
+                    elif not exempt and (dt.weekday() in _closed_wd or iso in _closed_iso):
+                        # 休業日は出勤者がいないので、出勤者限定の職員は当番に入れない
                         unavailable.add(iso)
                 oncall_eligible.append(
                     {"id": st.id, "name": st.name, "unavailable": unavailable}
@@ -2655,6 +2688,11 @@ def create_app():
             # 連勤上限のカウントに含める（オンコール込みで連勤上限を超えないように）。
             settings_dict["oncall_work_days"] = [
                 (it["staff_id"], it["date"].isoformat()) for it in oncall_items
+            ]
+            # 出勤者限定の担当者は、その当番日に必ず出勤させる（電話を持ち帰るため）
+            settings_dict["oncall_must_work"] = [
+                (it["staff_id"], it["date"].isoformat())
+                for it in oncall_items if it["staff_id"] in must_work_ids
             ]
 
         # --- 固定職員（依頼文28）の既存シフトを読み込む ---

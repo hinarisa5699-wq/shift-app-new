@@ -119,3 +119,59 @@ def test_forced_work_date_ignored_on_closed_day():
 
     assert shifts is not None
     assert not _worked(shifts, 1, "2026-09-06")
+
+
+def test_nurse_not_counted_in_care_headcount():
+    """看護師は曜日ごとの介護配置人数に数えない（配置ルールの有無に関係なく）。
+
+    2026-08 本番: 看護師がデイに入った木曜が「介護3名（上限2名）」と警告されていた。
+    看護師の判定を配置ルール名頼りにしていたため（対象資格が未設定だと素通り）。
+    """
+    care = [_staff(1), _staff(2)]
+    # 看護師は毎日必ず出勤させる（＝介護2名＋看護1名の日を必ず作る）
+    nurse = _staff(3, qualification_codes=["nurse"], qualification_names=["看護師"],
+                   min_days_per_week=7)
+    settings = _settings(care_min_by_weekday="2,2,2,2,2,2,2",
+                         care_max_by_weekday="2,2,2,2,2,2,2")
+    shifts, warnings = _run(care + [nurse], settings)
+
+    assert shifts is not None
+    nurse_days = {i["date"] for i in shifts
+                  if i["staff_id"] == 3 and i["assignment"] != "off"}
+    assert len(nurse_days) >= 20, f"看護師がほとんど出勤していない: {len(nurse_days)}日"
+    # 看護師が出た日も介護は2名のまま＝看護師は人数に数えられていない
+    three_people_days = 0
+    for d in nurse_days:
+        working = {i["staff_id"] for i in shifts
+                   if i["date"] == d and i["assignment"] != "off"}
+        if len(working) == 3:
+            three_people_days += 1
+    assert three_people_days >= 20, "介護2名＋看護1名の日が作れていない"
+    assert not [w for w in warnings if w["warning_type"] == "over_staffed_care"], (
+        "看護師が介護人数に数えられている"
+    )
+
+
+def test_oncall_staff_must_work_on_duty_day():
+    """オンコール担当はその当番日に出勤する（電話を持ち帰るため）。"""
+    staff = [_staff(1, fixed_days_off=[5, 6]), _staff(2), _staff(3)]
+    settings = _settings(oncall_must_work=[(1, "2026-09-10")])
+    shifts, _ = _run(staff, settings)
+
+    assert shifts is not None
+    assert _worked(shifts, 1, "2026-09-10")
+
+
+def test_oncall_must_work_degrades_to_warning_when_impossible():
+    """出勤にできない日（休み希望と重なる等）は警告にとどめ、生成は続ける。"""
+    # 出勤可能日を1日だけに限定した職員に、別の日の当番を割り当てる
+    staff = [
+        _staff(1, workable_dates=["2026-09-01"]),
+        _staff(2), _staff(3),
+    ]
+    settings = _settings(oncall_must_work=[(1, "2026-09-10")])
+    shifts, warnings = _run(staff, settings)
+
+    assert shifts is not None, "無解にしてはいけない"
+    assert not _worked(shifts, 1, "2026-09-10")
+    assert any(w["warning_type"] == "oncall_staff_not_working" for w in warnings)

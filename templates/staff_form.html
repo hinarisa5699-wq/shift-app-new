@@ -157,6 +157,36 @@
                 <p class="text-gray-500 text-sm mt-1 ml-8">チェックを入れると、シフト（出勤）は一切割り当てず、オンコール（電話当番）だけを担当します。</p>
             </div>
 
+            <!-- 休みでもオンコール可 -->
+            <div class="mb-6">
+                <label class="flex items-center cursor-pointer">
+                    <input type="checkbox" name="oncall_when_off_ok" value="1"
+                           {% if staff and staff.oncall_when_off_ok %}checked{% endif %}
+                           class="w-5 h-5 text-red-500 border-gray-300 rounded focus:ring-red-400">
+                    <span class="ml-3 text-lg font-semibold text-gray-700">休みの日でもオンコールを持てる</span>
+                </label>
+                <p class="text-gray-500 text-sm mt-1 ml-8">
+                    通常オンコールは「その日出勤している職員」だけに割り当てます（電話を持ち帰るため）。
+                    この職員だけは休みの日でも当番に入れたい場合にチェックしてください
+                    （「オンコールのみ当番」の職員は自動的にこの扱いです）。
+                </p>
+            </div>
+
+            <!-- 休みでもオンコール可 -->
+            <div class="mb-6">
+                <label class="flex items-center cursor-pointer">
+                    <input type="checkbox" name="oncall_when_off_ok" value="1"
+                           {% if staff and staff.oncall_when_off_ok %}checked{% endif %}
+                           class="w-5 h-5 text-red-500 border-gray-300 rounded focus:ring-red-400">
+                    <span class="ml-3 text-lg font-semibold text-gray-700">休みの日でもオンコールを持てる</span>
+                </label>
+                <p class="text-gray-500 text-sm mt-1 ml-8">
+                    通常オンコールは「その日出勤している職員」だけに割り当てます（電話を持ち帰るため）。
+                    この職員だけは休みの日でも当番に入れたい場合にチェックしてください
+                    （「オンコールのみ当番」の職員は自動的にこの扱いです）。
+                </p>
+            </div>
+
             <!-- 相談員可 -->
             <div class="mb-6">
                 <label class="flex items-center cursor-pointer">

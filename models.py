@@ -49,6 +49,9 @@ class Staff(db.Model):
     # True = 祝日は出勤不可
     on_leave = db.Column(db.Boolean, default=False, nullable=False)
     # True = 休職中（シフト生成・オンコールの対象外。一覧には残しバッジ表示）
+    oncall_when_off_ok = db.Column(db.Boolean, default=False, nullable=False)
+    # True = 出勤していない日でもオンコール（電話当番）を持てる（例外扱い）。
+    #   既定は「出勤している職員しか電話を持ち帰れない」（ユーザー依頼 2026-08）。
     workable_dates_mode = db.Column(db.String(10), default="only", nullable=False)
     # 出勤可能日(StaffWorkableDate)の扱い（ユーザー依頼 2026-08）
     #   "only"  = 登録した日しか出勤しない（従来動作・スポット勤務者向け）
@@ -127,6 +130,7 @@ class Staff(db.Model):
             "on_leave": self.on_leave or False,
             "oncall_only": self.oncall_only or False,
             "workable_dates_mode": self.workable_dates_mode or "only",
+            "oncall_when_off_ok": self.oncall_when_off_ok or False,
             "public_holiday_count": self.public_holiday_count or 0,
             "job_category": self.job_category or "caregiver",
             "role": self.role or "",
@@ -368,6 +372,10 @@ class ShiftSettings(db.Model):
     #   "月,火,水,木,金,土,日" の順にカンマ区切りで7個。空欄("")＝その曜日は指定なし。
     #   例 "3,3,3,3,3,2,0" ／ 未設定(空文字)なら従来動作（デイ営業日=デイ人数設定、
     #   デイ非営業日=2名）にフォールバックする。
+    oncall_requires_work = db.Column(db.Boolean, default=True, nullable=False)
+    # True = オンコールはその日出勤している職員にだけ割り当てる（電話を持ち帰るため）。
+    #   職員側の oncall_when_off_ok にチェックがある人は例外として休みでも持てる。
+
     care_min_by_weekday = db.Column(db.String(50), default="", nullable=False)
     care_max_by_weekday = db.Column(db.String(50), default="", nullable=False)
 
@@ -469,6 +477,9 @@ class ShiftSettings(db.Model):
             "visit_operating_days": self.visit_operating_days,
             "day_service_operating_days": self.day_service_operating_days or "",
             "no_day_service_days": self.no_day_service_days or "",
+            "oncall_requires_work": (
+                self.oncall_requires_work if self.oncall_requires_work is not None else True
+            ),
             "care_min_by_weekday": self.care_min_by_weekday or "",
             "care_max_by_weekday": self.care_max_by_weekday or "",
             "min_cooking_staff": self.min_cooking_staff,

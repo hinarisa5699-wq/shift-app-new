@@ -1736,6 +1736,9 @@ def _solve_care_with_fallback(
     # 追加出勤日（振替）: [(staff_id, "YYYY-MM-DD"), ...]
     forced_work_dates = settings.get("forced_work_dates", []) or []
 
+    # オンコール担当をその日出勤させる（電話を持ち帰るため）: [(staff_id, iso), ...]
+    oncall_must_work = settings.get("oncall_must_work", []) or []
+
     # Phase 1: ハード制約のみ
     shifts_data, warnings_data = _solve_care(
         year, month, all_dates, staff_ids, staff_by_id,
@@ -1760,6 +1763,7 @@ def _solve_care_with_fallback(
         oncall_forced_off=oncall_forced_off,
         oncall_work_days=oncall_work_days,
         forced_work_dates=forced_work_dates,
+        oncall_must_work=oncall_must_work,
         require_early_late=True,
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
@@ -1806,6 +1810,7 @@ def _solve_care_with_fallback(
         oncall_forced_off=oncall_forced_off,
         oncall_work_days=oncall_work_days,
         forced_work_dates=forced_work_dates,
+        oncall_must_work=oncall_must_work,
         require_early_late=True,
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
@@ -1862,6 +1867,7 @@ def _solve_care_with_fallback(
         oncall_forced_off=oncall_forced_off,
         oncall_work_days=oncall_work_days,
         forced_work_dates=forced_work_dates,
+        oncall_must_work=oncall_must_work,
         require_early_late=True,
         min_early_staff=min_early_staff,
         min_late_staff=min_late_staff,
@@ -1933,6 +1939,7 @@ def _solve_care(
     oncall_forced_off: list = None,
     oncall_work_days: list = None,
     forced_work_dates: list = None,
+    oncall_must_work: list = None,
     require_early_late: bool = False,
     min_early_staff: int = 1,
     min_late_staff: int = 1,
@@ -2058,10 +2065,23 @@ def _solve_care(
         if "看護" in pr_name or "nurse" in pr_name.lower() or "PT" in pr_name:
             nurse_pt_qual_ids.update(pr.get("target_qualification_ids", []))
 
-    non_nurse_pt_staff = [
+    # 看護師・PT は資格コード/名称でも判定する（配置ルール名の "看護" 頼りだと、
+    #   ルールの対象資格が未設定のときに看護師が介護人数に数えられてしまう。
+    #   2026-08 本番で「看護師がデイに入った日が介護3名扱いになり上限超過警告」）。
+    nurse_pt_ids = {
         s for s in staff_ids
-        if not nurse_pt_qual_ids.intersection(set(staff_by_id[s].get("qualification_ids", [])))
-    ] if nurse_pt_qual_ids else staff_ids
+        if _staff_has_any_qualification(
+            staff_by_id[s], codes=_NURSE_PT_QUAL_CODES, names=_NURSE_PT_QUAL_NAMES
+        )
+    }
+    if nurse_pt_qual_ids:
+        nurse_pt_ids |= {
+            s for s in staff_ids
+            if nurse_pt_qual_ids.intersection(
+                set(staff_by_id[s].get("qualification_ids", []))
+            )
+        }
+    non_nurse_pt_staff = [s for s in staff_ids if s not in nurse_pt_ids]
 
     # 看護師（資格コード"nurse"／名称"看護師"）を堅牢に特定。
     #   - 短時間枠 nurse_short(9:30-13:30) は看護師のみ割り当て可。
@@ -2163,6 +2183,32 @@ def _solve_care(
         forced_work_by_staff.setdefault(_sid, set()).add(_di)
     for _sid, _days in forced_work_by_staff.items():
         for _di in _days:
+            model.add(x[_sid, _di, "off"] == 0)
+
+    # ==================================================================
+    # 制約: オンコール担当はその日出勤する（電話を持ち帰るため）
+    #   ユーザー依頼（2026-08）:「オンコールは出勤してる職員しか電話を持って帰れない」。
+    #   例外者（休みでも持てる職員・オンコールのみ当番）は app.py 側で除外済み。
+    #   人員的にどうしても出勤にできない日はスラックで許容し警告にとどめる。
+    # ==================================================================
+    oncall_work_miss = {}
+    for _entry in (oncall_must_work or []):
+        try:
+            _sid, _diso = _entry
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(_diso, str):
+            _diso = _diso.isoformat()
+        _di = _date_idx_map.get(_diso)
+        if _di is None or _sid not in staff_by_id or _sid in locked_staff_ids:
+            continue
+        if _di in closed_day_indices:
+            continue
+        if use_slack:
+            _miss = model.new_bool_var(f"oncall_work_miss_s{_sid}_d{_di}")
+            model.add(x[_sid, _di, "off"] <= _miss)
+            oncall_work_miss[(_sid, _di)] = _miss
+        else:
             model.add(x[_sid, _di, "off"] == 0)
 
     # ==================================================================
@@ -3239,9 +3285,15 @@ def _solve_care(
         visit_slack_penalty = (
             sum(visit_slack_terms) * visit_slack_weight if visit_slack_terms else 0
         )
+        # オンコール担当を出勤にできなかった件数（一般の不足より重く扱う）
+        oncall_work_penalty = (
+            sum(oncall_work_miss.values()) * visit_slack_weight
+            if oncall_work_miss else 0
+        )
         model.minimize(
             early_late_slack_penalty
             + visit_slack_penalty
+            + oncall_work_penalty
             + total_slack * slack_weight
             + total_working_days * headcount_weight
             + bath_short_penalty + desk_short_penalty + counselor_soft_penalty
@@ -3377,6 +3429,18 @@ def _solve_care(
                         "warning_type": "understaffed_nurse",
                         "message": "看護師配置不足: この日の看護師の勤務が合計2時間未満です"
                                    "（全看護師が休み希望・勤務不可曜日・出勤可能日外・祝日不可のいずれか）。",
+                    })
+
+            # オンコール担当を出勤にできなかった日
+            for (_sid, _di), _miss in oncall_work_miss.items():
+                if _di == d_idx and solver.value(_miss) > 0:
+                    warnings_data.append({
+                        "date": date_str,
+                        "warning_type": "oncall_staff_not_working",
+                        "message": (
+                            f"オンコール担当 {staff_by_id[_sid].get('name', _sid)}: "
+                            "この日を出勤にできませんでした（電話は出勤者が持ち帰る設定）。"
+                        ),
                     })
 
             # 曜日ごとの介護配置人数（頭数）の過不足

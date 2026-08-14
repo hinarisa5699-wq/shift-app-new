@@ -715,7 +715,21 @@
                 </label>
                 <p class="text-gray-600 text-sm mt-1 ml-8">
                     有効にすると、オンコール担当者（★マーク）の中から毎日1名を自動で割り当てます。<br>
-                    オンコールは出勤の有無と関係なく割り当てられ（休みの担当者も対象）、連続当番は下の上限で回避します。
+                    連続当番は下の上限で回避します。
+                </p>
+            </div>
+
+            <div class="mt-4">
+                <label class="flex items-center cursor-pointer">
+                    <input type="checkbox" name="oncall_requires_work" value="1"
+                           {% if not settings or settings.oncall_requires_work %}checked{% endif %}
+                           class="w-5 h-5 text-red-500 border-gray-300 rounded focus:ring-red-400">
+                    <span class="ml-3 text-base font-medium text-gray-700">オンコールは出勤している職員だけに割り当てる</span>
+                </label>
+                <p class="text-gray-600 text-sm mt-1 ml-8">
+                    電話は出勤者が持ち帰るため、当番はその日出勤する職員から選び、当番日は必ず出勤にします。<br>
+                    休みでも持てる職員は、職員編集の「休みの日でもオンコールを持てる」にチェックしてください
+                    （休業日は出勤者がいないため、その例外の職員だけが候補になります）。
                 </p>
             </div>
 

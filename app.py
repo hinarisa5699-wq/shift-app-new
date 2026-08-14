@@ -1944,7 +1944,10 @@ def create_app():
             s = ShiftSettings()
             db.session.add(s)
 
-        s.min_day_service = safe_int(request.form.get("min_day_service"), 4)
+        # デイの最低/最大配置人数は「曜日ごとの介護配置人数」に統合したためフォームから削除。
+        #   既存値は曜日設定が空の曜日のフォールバックとしてそのまま残す。
+        if "min_day_service" in request.form:
+            s.min_day_service = safe_int(request.form.get("min_day_service"), 4)
         s.min_visit_am = safe_int(request.form.get("min_visit_am"), 1)
         s.min_visit_pm = safe_int(request.form.get("min_visit_pm"), 1)
         # 依頼文35: 兼務者最低人数(min_dual_assignment)は削除（フォーム保存しない）。
@@ -2019,7 +2022,8 @@ def create_app():
         s.min_staff_at_9 = safe_int(request.form.get("min_staff_at_9"), 4)
         s.min_staff_at_15 = safe_int(request.form.get("min_staff_at_15"), 4)
         s.male_am_constraint_mode = request.form.get("male_am_constraint_mode", "hard")
-        s.max_day_service = safe_int(request.form.get("max_day_service"), 0)
+        if "max_day_service" in request.form:
+            s.max_day_service = safe_int(request.form.get("max_day_service"), 0)
         # 依頼文35: 相談員ローテーション(counselor_desk_enabled / counselor_desk_count)は削除。
         # 調理 新人×ベテランのペア成立回数の目標値（依頼文28・0=無効）
         s.cooking_pair_target = max(0, safe_int(request.form.get("cooking_pair_target"), 0))

@@ -1653,6 +1653,7 @@ def _solve_care_with_fallback(
             _mx = _mn
         if _mn is not None or _mx is not None:
             care_headcount_by_day[_d_idx] = (_mn, _mx)
+
     am_preferred_gender = settings.get("am_preferred_gender", "")
     phone_duty_enabled = settings.get("phone_duty_enabled", False)
     phone_duty_max_consecutive = settings.get("phone_duty_max_consecutive", 1)
@@ -1726,6 +1727,27 @@ def _solve_care_with_fallback(
     # 上限が下限を下回らないようにだけ整合させる（上乗せはしない）。
     max_day_service = max(max_day_service, min_day_service)
 
+    # デイ午前/午後の下限・上限、および11時/13時の在籍下限も曜日ごとの人数から決める。
+    #   ユーザー依頼（2026-08）:「曜日ごとに設定できるようになったので
+    #   『デイサービス 最低/最大配置人数』の欄はいらない」。
+    #   曜日設定が無い曜日だけ、旧設定（min_day_service / max_day_service）を使う。
+    day_service_by_day = {}   # {d_idx: (デイ下限, デイ上限 or None)}
+    present_floor_by_day = {}  # {d_idx: 11時・13時の在籍下限}
+    for _d_idx, _dt in enumerate(all_dates):
+        _mn, _mx = care_headcount_by_day.get(_d_idx, (None, None))
+        if _mn is None:
+            _floor = 1 if _d_idx in no_service_day_indices else min_day_service
+        elif _d_idx in no_service_day_indices:
+            # デイ利用者がいない日はデイ枠としての下限は課さない（頭数で縛る）
+            _floor = 1
+        else:
+            _floor = _mn
+        day_service_by_day[_d_idx] = (_floor, _mx)
+        present_floor_by_day[_d_idx] = (
+            1 if _d_idx in no_service_day_indices
+            else (_mn if _mn is not None else min_staff_at_11)
+        )
+
     # オンコール（電話当番）は出勤と独立した後処理 assign_oncall() で割り当てる。
     # モデル内の電話当番ローテーションは無効化し、対象者ゼロの警告も後処理側で出す。
     _phone_no_eligible_warning = None
@@ -1743,31 +1765,6 @@ def _solve_care_with_fallback(
 
     # オンコール担当をその日出勤させる（電話を持ち帰るため）: [(staff_id, iso), ...]
     oncall_must_work = settings.get("oncall_must_work", []) or []
-
-    # 設定の矛盾チェック: 曜日ごとの介護最低人数 > デイの最大配置人数 だと、
-    #   4人目以降がデイ人数の上限に引っかかって物理的に配置できない。
-    #   （ユーザー実データ 2026-09: 水曜 最低4名／デイ最大3名で毎週1名不足していた）
-    _config_warnings = []
-    _wd_names = "月火水木金土日"
-    for _wd in range(7):
-        _mn = care_min_by_weekday[_wd]
-        if _mn is None or _mn <= max_day_service:
-            continue
-        if _wd in no_day_service_weekdays or _wd in closed_days_set:
-            continue
-        _first = next((dt for dt in all_dates if dt.weekday() == _wd), None)
-        if _first is None:
-            continue
-        _config_warnings.append({
-            "date": _first.strftime("%Y-%m-%d"),
-            "warning_type": "care_min_over_day_service_max",
-            "message": (
-                f"設定の矛盾: {_wd_names[_wd]}曜の介護最低{_mn}名に対し"
-                f"「デイサービス 最大配置人数」が{max_day_service}名です。"
-                f"早番・遅番もデイ人数に数えるため、{_mn}名を配置するには"
-                f"デイの最大配置人数を{_mn}名以上にしてください。"
-            ),
-        })
 
     # Phase 1: ハード制約のみ
     shifts_data, warnings_data = _solve_care(
@@ -1790,6 +1787,8 @@ def _solve_care_with_fallback(
         max_day_service=max_day_service,
         no_service_day_indices=no_service_day_indices,
         care_headcount_by_day=care_headcount_by_day,
+        day_service_by_day=day_service_by_day,
+        present_floor_by_day=present_floor_by_day,
         oncall_forced_off=oncall_forced_off,
         oncall_work_days=oncall_work_days,
         forced_work_dates=forced_work_dates,
@@ -1814,7 +1813,7 @@ def _solve_care_with_fallback(
     if shifts_data is not None:
         if _phone_no_eligible_warning:
             warnings_data.append(_phone_no_eligible_warning)
-        return shifts_data, warnings_data + _config_warnings
+        return shifts_data, warnings_data
 
     # Phase 2: スラック変数付き
     shifts_data, warnings_data = _solve_care(
@@ -1837,6 +1836,8 @@ def _solve_care_with_fallback(
         max_day_service=max_day_service,
         no_service_day_indices=no_service_day_indices,
         care_headcount_by_day=care_headcount_by_day,
+        day_service_by_day=day_service_by_day,
+        present_floor_by_day=present_floor_by_day,
         oncall_forced_off=oncall_forced_off,
         oncall_work_days=oncall_work_days,
         forced_work_dates=forced_work_dates,
@@ -1861,7 +1862,7 @@ def _solve_care_with_fallback(
     if shifts_data is not None:
         if _phone_no_eligible_warning:
             warnings_data.append(_phone_no_eligible_warning)
-        return shifts_data, warnings_data + _config_warnings
+        return shifts_data, warnings_data
 
     # Phase 3: 配置ルールの hard を soft に緩和して再試行
     relaxed_rules = []
@@ -1894,6 +1895,8 @@ def _solve_care_with_fallback(
         max_day_service=max_day_service,
         no_service_day_indices=no_service_day_indices,
         care_headcount_by_day=care_headcount_by_day,
+        day_service_by_day=day_service_by_day,
+        present_floor_by_day=present_floor_by_day,
         oncall_forced_off=oncall_forced_off,
         oncall_work_days=oncall_work_days,
         forced_work_dates=forced_work_dates,
@@ -1925,7 +1928,7 @@ def _solve_care_with_fallback(
             })
         if _phone_no_eligible_warning:
             warnings_data.append(_phone_no_eligible_warning)
-        return shifts_data, warnings_data + _config_warnings
+        return shifts_data, warnings_data
 
     # Phase 4: 完全フォールバック（全員休み）
     shifts_data = []
@@ -1966,6 +1969,8 @@ def _solve_care(
     max_day_service: int = 0,
     no_service_day_indices: set = None,
     care_headcount_by_day: dict = None,
+    day_service_by_day: dict = None,
+    present_floor_by_day: dict = None,
     oncall_forced_off: list = None,
     oncall_work_days: list = None,
     forced_work_dates: list = None,
@@ -2003,6 +2008,10 @@ def _solve_care(
         no_service_day_indices = set()
     if care_headcount_by_day is None:
         care_headcount_by_day = {}
+    if day_service_by_day is None:
+        day_service_by_day = {}
+    if present_floor_by_day is None:
+        present_floor_by_day = {}
     if oncall_forced_off is None:
         oncall_forced_off = []
     if oncall_work_days is None:
@@ -2624,18 +2633,22 @@ def _solve_care(
         day_pm_count = sum(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in DAY_PM_ASSIGNMENTS
         )
-        # デイ利用者がいない曜日はデイ下限を1名に緩和（浮いた人員は訪問等へ）。
-        #   その日の介護人数そのものは下の「非デイ曜日は原則ちょうどN名」で縛る。
-        eff_min_day = 1 if d_idx in no_service_day_indices else min_day_service
+        # デイ午前/午後の下限・上限は曜日ごとの介護人数設定から決まる。
+        #   デイ利用者がいない曜日は下限1名に緩和（人数そのものは頭数の制約で縛る）。
+        eff_min_day, eff_max_day = day_service_by_day.get(
+            d_idx,
+            (1 if d_idx in no_service_day_indices else min_day_service, max_day_service),
+        )
         if use_slack:
             model.add(day_am_count + slack_day_am[d_idx] >= eff_min_day)
             model.add(day_pm_count + slack_day_pm[d_idx] >= eff_min_day)
         else:
             model.add(day_am_count >= eff_min_day)
             model.add(day_pm_count >= eff_min_day)
-        # 上限制約（スラック有無に関わらず常に有効）
-        model.add(day_am_count <= max_day_service)
-        model.add(day_pm_count <= max_day_service)
+        # 上限制約（スラック有無に関わらず常に有効）。None＝上限なし。
+        if eff_max_day is not None:
+            model.add(day_am_count <= eff_max_day)
+            model.add(day_pm_count <= eff_max_day)
 
     # ==================================================================
     # 制約: 曜日ごとの介護配置人数（その日出勤する介護職員の総数・看護師/PT除く）
@@ -2731,12 +2744,14 @@ def _solve_care(
         count_15 = sum(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in PRESENT_AT_14
         )
-        # デイ利用者がいない曜日は在籍下限も1名に緩和（浮いた人員は訪問等へ）
+        # 11時・13時の在籍下限は曜日ごとの介護人数から決める。
+        #   デイ利用者がいない曜日は1名に緩和（浮いた人員は訪問等へ）。
         if d_idx in no_service_day_indices:
             _m9 = _m11 = _m13 = _m15 = 1
         else:
+            _mid = present_floor_by_day.get(d_idx, min_staff_at_11)
             _m9, _m11, _m13, _m15 = (
-                min_staff_at_9, min_staff_at_11, min_staff_at_13, min_staff_at_15
+                min_staff_at_9, _mid, _mid, min_staff_at_15
             )
         if use_slack:
             model.add(count_9 + slack_staff_9[d_idx] >= _m9)

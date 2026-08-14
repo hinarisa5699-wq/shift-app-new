@@ -13,42 +13,6 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         {% set day_names = ['月', '火', '水', '木', '金', '土', '日'] %}
 
-        <!-- デイサービス最低配置人数 -->
-        <div class="mb-8 p-6 bg-blue-50 rounded-lg border border-blue-200">
-            <label for="min_day_service" class="block text-lg font-semibold text-gray-800 mb-2">
-                デイサービス 最低配置人数
-            </label>
-            <p class="text-gray-600 text-sm mb-3">
-                デイサービスに1日あたり最低何名配置する必要があるかを設定します。
-            </p>
-            <div class="flex items-center gap-2">
-                <input type="number" id="min_day_service" name="min_day_service"
-                       min="1" max="20"
-                       value="{{ settings.min_day_service if settings else 4 }}"
-                       class="w-24 px-4 py-3 text-xl font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
-                <span class="text-lg text-gray-600">名</span>
-            </div>
-        </div>
-
-        <!-- デイサービス最大配置人数 -->
-        <div class="mb-8 p-6 bg-blue-50 rounded-lg border border-blue-200">
-            <label for="max_day_service" class="block text-lg font-semibold text-gray-800 mb-2">
-                デイサービス 最大配置人数
-            </label>
-            <p class="text-gray-600 text-sm mb-3">
-                デイサービスに1日あたり最大何名まで配置するかを設定します。0の場合は最低人数と同じ値が適用されます。
-                人数が余る候補者を特定するために使用します。昼帯の人数不足を避けるために、
-                必要に応じて最低人数より大きい値を設定してください。
-            </p>
-            <div class="flex items-center gap-2">
-                <input type="number" id="max_day_service" name="max_day_service"
-                       min="0" max="20"
-                       value="{{ settings.max_day_service if settings and settings.max_day_service else 0 }}"
-                       class="w-24 px-4 py-3 text-xl font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
-                <span class="text-lg text-gray-600">名（0 = 最低人数と同じ）</span>
-            </div>
-        </div>
-
         <!-- 曜日ごとの介護配置人数 -->
         <div class="mb-8 p-6 bg-emerald-50 rounded-lg border border-emerald-200">
             <label class="block text-lg font-semibold text-gray-800 mb-2">
@@ -57,10 +21,9 @@
             <p class="text-gray-600 text-sm mb-3">
                 曜日ごとに「その日出勤する介護職員の人数」の最低・最大を指定します。
                 デイ・早番・遅番・訪問・相談をすべて含めた<strong>頭数</strong>です（看護師・PTは含みません）。
-                空欄はその曜日「指定なし」。<br>
-                空欄のままの曜日は従来どおりの動きになります（デイ営業日＝上のデイ人数設定、
-                デイのない曜日＝2名）。早番・遅番・訪問など必須の配置が人数に収まらない日は、
-                生成は止めずに警告でお知らせします。
+                空欄はその曜日「指定なし」（人数の制限をかけません／デイのない曜日は2名）。<br>
+                ここで指定した人数が、その曜日のデイの配置人数の上限・下限にもなります。
+                早番・遅番・訪問など必須の配置が人数に収まらない日は、生成は止めずに警告でお知らせします。
             </p>
             {% set care_min_wd = (settings.care_min_by_weekday or '').split(',') if settings else [] %}
             {% set care_max_wd = (settings.care_max_by_weekday or '').split(',') if settings else [] %}

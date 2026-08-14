@@ -401,6 +401,29 @@
             </div>
         </div>
 
+        <!-- 必ず出勤する曜日 -->
+        <div class="mb-6">
+            <label class="block text-lg font-semibold text-gray-700 mb-3">必ず出勤する曜日</label>
+            <p class="text-gray-500 text-sm mb-3">
+                毎週かならず出勤する曜日を選択してください（例: 水曜は必ず出勤）。
+                休業日・休み希望の日は対象外です。人員の都合で満たせない日は警告を出して生成は継続します。
+            </p>
+            {% set req_days = (staff.required_days.split(',') | map('trim') | list) if staff and staff.required_days else [] %}
+            <div class="flex flex-wrap gap-3">
+                {% for i in range(7) %}
+                <label class="inline-flex items-center cursor-pointer bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 hover:bg-emerald-50 hover:border-emerald-300 transition-colors has-[:checked]:bg-emerald-100 has-[:checked]:border-emerald-400">
+                    <input type="checkbox" name="required_days" value="{{ i }}"
+                           {% if i|string in req_days %}checked{% endif %}
+                           class="w-5 h-5 text-emerald-600 border-gray-300 rounded focus:ring-emerald-500">
+                    <span class="ml-2 text-base font-medium
+                        {% if i == 5 %}text-blue-600{% elif i == 6 %}text-red-600{% else %}text-gray-700{% endif %}">
+                        {{ day_names[i] }}
+                    </span>
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+
         <!-- 連勤上限 -->
         <div class="mb-6">
             <label for="max_consecutive_days" class="block text-lg font-semibold text-gray-700 mb-2">

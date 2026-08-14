@@ -49,6 +49,9 @@ class Staff(db.Model):
     # True = 祝日は出勤不可
     on_leave = db.Column(db.Boolean, default=False, nullable=False)
     # True = 休職中（シフト生成・オンコールの対象外。一覧には残しバッジ表示）
+    required_days = db.Column(db.String(50), default="", nullable=False)
+    # 必ず出勤する曜日 (0=月〜6=日, カンマ区切り)。休業日・休み希望の日は除く。
+    #   ユーザー依頼 2026-08:「内田さんは水曜日必須」
     oncall_when_off_ok = db.Column(db.Boolean, default=False, nullable=False)
     # True = 出勤していない日でもオンコール（電話当番）を持てる（例外扱い）。
     #   既定は「出勤している職員しか電話を持ち帰れない」（ユーザー依頼 2026-08）。
@@ -131,6 +134,7 @@ class Staff(db.Model):
             "oncall_only": self.oncall_only or False,
             "workable_dates_mode": self.workable_dates_mode or "only",
             "oncall_when_off_ok": self.oncall_when_off_ok or False,
+            "required_days": self.required_days or "",
             "public_holiday_count": self.public_holiday_count or 0,
             "job_category": self.job_category or "caregiver",
             "role": self.role or "",

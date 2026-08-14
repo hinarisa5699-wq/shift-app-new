@@ -1591,6 +1591,10 @@ def _solve_care_with_fallback(
             "available_days": raw_avail,
             "available_time_slots": s.get("available_time_slots", "full_day"),
             "fixed_days_off": raw_fixed,
+            "required_days": [
+                int(x) for x in (s.get("required_days") or [])
+                if str(x).strip().isdigit()
+            ],
             "gender": s.get("gender", ""),
             "has_phone_duty": s.get("has_phone_duty", False),
             "qualification_ids": s.get("qualification_ids", []),
@@ -1739,6 +1743,31 @@ def _solve_care_with_fallback(
     # オンコール担当をその日出勤させる（電話を持ち帰るため）: [(staff_id, iso), ...]
     oncall_must_work = settings.get("oncall_must_work", []) or []
 
+    # 設定の矛盾チェック: 曜日ごとの介護最低人数 > デイの最大配置人数 だと、
+    #   4人目以降がデイ人数の上限に引っかかって物理的に配置できない。
+    #   （ユーザー実データ 2026-09: 水曜 最低4名／デイ最大3名で毎週1名不足していた）
+    _config_warnings = []
+    _wd_names = "月火水木金土日"
+    for _wd in range(7):
+        _mn = care_min_by_weekday[_wd]
+        if _mn is None or _mn <= max_day_service:
+            continue
+        if _wd in no_day_service_weekdays or _wd in closed_days_set:
+            continue
+        _first = next((dt for dt in all_dates if dt.weekday() == _wd), None)
+        if _first is None:
+            continue
+        _config_warnings.append({
+            "date": _first.strftime("%Y-%m-%d"),
+            "warning_type": "care_min_over_day_service_max",
+            "message": (
+                f"設定の矛盾: {_wd_names[_wd]}曜の介護最低{_mn}名に対し"
+                f"「デイサービス 最大配置人数」が{max_day_service}名です。"
+                f"早番・遅番もデイ人数に数えるため、{_mn}名を配置するには"
+                f"デイの最大配置人数を{_mn}名以上にしてください。"
+            ),
+        })
+
     # Phase 1: ハード制約のみ
     shifts_data, warnings_data = _solve_care(
         year, month, all_dates, staff_ids, staff_by_id,
@@ -1784,7 +1813,7 @@ def _solve_care_with_fallback(
     if shifts_data is not None:
         if _phone_no_eligible_warning:
             warnings_data.append(_phone_no_eligible_warning)
-        return shifts_data, warnings_data
+        return shifts_data, warnings_data + _config_warnings
 
     # Phase 2: スラック変数付き
     shifts_data, warnings_data = _solve_care(
@@ -1831,7 +1860,7 @@ def _solve_care_with_fallback(
     if shifts_data is not None:
         if _phone_no_eligible_warning:
             warnings_data.append(_phone_no_eligible_warning)
-        return shifts_data, warnings_data
+        return shifts_data, warnings_data + _config_warnings
 
     # Phase 3: 配置ルールの hard を soft に緩和して再試行
     relaxed_rules = []
@@ -1895,7 +1924,7 @@ def _solve_care_with_fallback(
             })
         if _phone_no_eligible_warning:
             warnings_data.append(_phone_no_eligible_warning)
-        return shifts_data, warnings_data
+        return shifts_data, warnings_data + _config_warnings
 
     # Phase 4: 完全フォールバック（全員休み）
     shifts_data = []
@@ -2186,6 +2215,36 @@ def _solve_care(
             model.add(x[_sid, _di, "off"] == 0)
 
     # ==================================================================
+    # 制約: 必ず出勤する曜日（職員ごと）
+    #   ユーザー依頼（2026-08）:「内田さんは水曜日必須」。
+    #   休業日・休み希望・出勤可能日外・勤務可能曜日外の日は対象外（矛盾させない）。
+    #   人員的に満たせない日はスラックで許容し警告にとどめる。
+    # ==================================================================
+    required_day_miss = {}
+    for s_id in free_staff_ids:
+        _req = set(staff_by_id[s_id].get("required_days") or [])
+        if not _req:
+            continue
+        # 「必ず出勤する曜日」は勤務可能曜日・固定休より優先する（明示指定のため）。
+        #   出勤可能日(whitelist)・休業日・休み希望・祝日不可は尊重する。
+        _workable = staff_by_id[s_id].get("workable_dates") or set()
+        for d_idx, dt in enumerate(all_dates):
+            if dt.weekday() not in _req or d_idx in closed_day_indices:
+                continue
+            if _workable and dt.isoformat() not in _workable:
+                continue
+            if (s_id, dt) in off_request_set:
+                continue   # 休み希望が優先
+            if staff_by_id[s_id].get("holiday_ng") and jpholiday.is_holiday(dt):
+                continue
+            if use_slack:
+                _rm = model.new_bool_var(f"required_day_miss_s{s_id}_d{d_idx}")
+                model.add(x[s_id, d_idx, "off"] <= _rm)
+                required_day_miss[(s_id, d_idx)] = _rm
+            else:
+                model.add(x[s_id, d_idx, "off"] == 0)
+
+    # ==================================================================
     # 制約: オンコール担当はその日出勤する（電話を持ち帰るため）
     #   ユーザー依頼（2026-08）:「オンコールは出勤してる職員しか電話を持って帰れない」。
     #   例外者（休みでも持てる職員・オンコールのみ当番）は app.py 側で除外済み。
@@ -2217,9 +2276,10 @@ def _solve_care(
     for s in free_staff_ids:
         info = staff_by_id[s]
         avail_weekdays = set(info["available_days"])
+        _req_wd = set(info.get("required_days") or [])
         _forced = forced_work_by_staff.get(s, set())
         for d_idx, dt in enumerate(all_dates):
-            if d_idx in _forced:
+            if d_idx in _forced or dt.weekday() in _req_wd:
                 continue
             if dt.weekday() not in avail_weekdays:
                 model.add(x[s, d_idx, "off"] == 1)
@@ -2243,9 +2303,10 @@ def _solve_care(
     for s in staff_ids:
         info = staff_by_id[s]
         fixed_off = set(info["fixed_days_off"])
+        _req_wd = set(info.get("required_days") or [])
         _forced = forced_work_by_staff.get(s, set())
         for d_idx, dt in enumerate(all_dates):
-            if d_idx in _forced:
+            if d_idx in _forced or dt.weekday() in _req_wd:
                 continue
             if dt.weekday() in fixed_off:
                 model.add(x[s, d_idx, "off"] == 1)
@@ -3077,6 +3138,10 @@ def _solve_care(
     #   人員不足等で満たせない月は警告のみ（無解化しない）。固定職員は対象外。
     public_holiday_penalties = []
     public_holiday_trackers = []  # (staff_id, target_off, over_var, under_var)
+    # 1日の配置人数の枠が足りない月は、誰かが必ず目標未達になる。
+    #   ユーザー依頼（2026-08）:「菊地さん正社員なのに出勤日数足りないと困る」
+    #   → 常勤・正社員の不足を強く優先して埋める（パートより重い重み）。
+    _FULLTIME_EMPLOYMENT = ("常勤", "正社員", "時短正社員", "管理者")
     for s in free_staff_ids:
         target_off = int(staff_by_id[s].get("public_holiday_count", 0) or 0)
         if target_off <= 0:
@@ -3087,8 +3152,10 @@ def _solve_care(
         over = model.new_int_var(0, num_days, f"ph_over_s{s}")   # 働きすぎ＝公休不足
         under = model.new_int_var(0, num_days, f"ph_under_s{s}")  # 働かなすぎ＝公休過多
         model.add(work_count[s] - target_work == over - under)
-        public_holiday_penalties.append(over)
-        public_holiday_penalties.append(under)
+        _emp = str(staff_by_id[s].get("employment_type", "") or "")
+        _mult = 3 if _emp in _FULLTIME_EMPLOYMENT else 1
+        public_holiday_penalties.append(over * _mult)
+        public_holiday_penalties.append(under * _mult)
         public_holiday_trackers.append((s, target_off, over, under))
     # 重み: 週下限と同等(num_days+1)*5。人員確保スラックより十分小さく、
     #   総出勤日数最小化(headcount)は上回るので目標日数へ寄せられる。
@@ -3242,6 +3309,7 @@ def _solve_care(
         all_slack_terms = []
         el_slack_terms = []
         visit_slack_terms = []
+        nurse_slack_terms = []
         for d in range(num_days):
             all_slack_terms.extend([slack_day_am[d], slack_day_pm[d]])
             # 訪問スラックは別枠（下で早番/遅番の次に高い重みを付ける）
@@ -3249,15 +3317,15 @@ def _solve_care(
             all_slack_terms.extend([slack_staff_9[d], slack_staff_11[d], slack_staff_13[d], slack_staff_15[d]])
             if require_early_late:
                 el_slack_terms.extend([slack_early[d], slack_late[d]])
-            if nurse_ids:
-                all_slack_terms.append(slack_nurse[d])
+            # 看護師配置はデイ営業日の必須枠として最優先で埋める（一般スラックと別枠）
+            if nurse_ids and d in slack_nurse:
+                nurse_slack_terms.append(slack_nurse[d])
             # 非デイ曜日の人数(原則ちょうどN名)の過不足
             if d in slack_no_ds_over:
                 all_slack_terms.extend([slack_no_ds_over[d], slack_no_ds_short[d]])
         max_slack_terms_per_day = (
             8
             + 2
-            + (1 if nurse_ids else 0)
         )
         total_slack = model.new_int_var(
             0,
@@ -3285,6 +3353,16 @@ def _solve_care(
         visit_slack_penalty = (
             sum(visit_slack_terms) * visit_slack_weight if visit_slack_terms else 0
         )
+        # 看護師配置（デイ営業日は看護師の勤務合計2時間以上）を高優先で埋める。
+        #   ユーザー依頼（2026-08）:「看護師配置はデイサービス時は必須」。
+        nurse_slack_penalty = (
+            sum(nurse_slack_terms) * visit_slack_weight if nurse_slack_terms else 0
+        )
+        # 必須出勤曜日を満たせなかった件数（一般の不足より重く扱う）
+        required_day_penalty = (
+            sum(required_day_miss.values()) * visit_slack_weight
+            if required_day_miss else 0
+        )
         # オンコール担当を出勤にできなかった件数（一般の不足より重く扱う）
         oncall_work_penalty = (
             sum(oncall_work_miss.values()) * visit_slack_weight
@@ -3293,6 +3371,8 @@ def _solve_care(
         model.minimize(
             early_late_slack_penalty
             + visit_slack_penalty
+            + nurse_slack_penalty
+            + required_day_penalty
             + oncall_work_penalty
             + total_slack * slack_weight
             + total_working_days * headcount_weight
@@ -3429,6 +3509,18 @@ def _solve_care(
                         "warning_type": "understaffed_nurse",
                         "message": "看護師配置不足: この日の看護師の勤務が合計2時間未満です"
                                    "（全看護師が休み希望・勤務不可曜日・出勤可能日外・祝日不可のいずれか）。",
+                    })
+
+            # 必ず出勤する曜日を満たせなかった日
+            for (_sid, _di), _rm in required_day_miss.items():
+                if _di == d_idx and solver.value(_rm) > 0:
+                    warnings_data.append({
+                        "date": date_str,
+                        "warning_type": "required_day_unmet",
+                        "message": (
+                            f"{staff_by_id[_sid].get('name', _sid)}: "
+                            "「必ず出勤する曜日」に設定されていますが出勤にできませんでした。"
+                        ),
                     })
 
             # オンコール担当を出勤にできなかった日

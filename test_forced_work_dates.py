@@ -175,3 +175,26 @@ def test_oncall_must_work_degrades_to_warning_when_impossible():
     assert shifts is not None, "無解にしてはいけない"
     assert not _worked(shifts, 1, "2026-09-10")
     assert any(w["warning_type"] == "oncall_staff_not_working" for w in warnings)
+
+
+def test_required_weekday_forces_attendance():
+    """「必ず出勤する曜日」に設定した曜日は毎週出勤する（内田さん＝水曜必須）。"""
+    staff = [_staff(1, required_days=[2]), _staff(2), _staff(3)]
+    settings = _settings()
+    shifts, _ = _run(staff, settings)
+
+    assert shifts is not None
+    wednesdays = ["2026-09-02", "2026-09-09", "2026-09-16", "2026-09-23", "2026-09-30"]
+    for d in wednesdays:
+        assert _worked(shifts, 1, d), f"{d}(水) に出勤していない"
+
+
+def test_required_weekday_yields_to_day_off_request():
+    """必須曜日でも、その日に休み希望があれば休みが優先される。"""
+    staff = [_staff(1, required_days=[2]), _staff(2), _staff(3)]
+    settings = _settings()
+    shifts, _ = _run(staff, settings, [{"staff_id": 1, "date": "2026-09-09"}])
+
+    assert shifts is not None
+    assert not _worked(shifts, 1, "2026-09-09")
+    assert _worked(shifts, 1, "2026-09-02")

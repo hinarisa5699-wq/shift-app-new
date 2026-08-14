@@ -343,6 +343,9 @@ def _run_migrations(app):
     if "oncall_only" not in columns:
         # オンコールのみ当番（出勤シフトは割り当てない）
         cursor.execute("ALTER TABLE staff ADD COLUMN oncall_only BOOLEAN NOT NULL DEFAULT 0")
+    if "required_days" not in columns:
+        # 必ず出勤する曜日
+        cursor.execute("ALTER TABLE staff ADD COLUMN required_days VARCHAR(50) NOT NULL DEFAULT ''")
     if "oncall_when_off_ok" not in columns:
         # 出勤していない日でもオンコールを持てる例外職員
         cursor.execute("ALTER TABLE staff ADD COLUMN oncall_when_off_ok BOOLEAN NOT NULL DEFAULT 0")
@@ -1387,6 +1390,7 @@ def create_app():
             work_start_time=(request.form.get("work_start_time", "") or "").strip(),
             work_end_time=(request.form.get("work_end_time", "") or "").strip(),
             fixed_days_off=fixed_days_off,
+            required_days=",".join(request.form.getlist("required_days")),
             weekend_constraint=request.form.get("weekend_constraint", ""),
             holiday_ng="holiday_ng" in request.form,
             on_leave="on_leave" in request.form,
@@ -1492,6 +1496,7 @@ def create_app():
         )
         staff.available_days = available_days if available_days else staff.available_days
         staff.fixed_days_off = fixed_days_off
+        staff.required_days = ",".join(request.form.getlist("required_days"))
         staff.weekend_constraint = request.form.get("weekend_constraint", "")
         staff.holiday_ng = "holiday_ng" in request.form
         staff.on_leave = "on_leave" in request.form
@@ -2486,6 +2491,36 @@ def create_app():
             and not (_ph_include_holidays and jpholiday.is_holiday(date(year, month, _d)))
         )
 
+        _closed_wd_for_ph = set(closed_days)
+        _closed_iso_for_ph = set(closed_dates)
+
+        def _max_workable_days(s):
+            """その職員が当月に物理的に出勤しうる最大日数。
+
+            勤務可能曜日・固定休・休業日（曜日/日付）・祝日不可・週の勤務日数上限を
+            すべて考慮する。ユーザー指摘（2026-08）:「池田さんは固定休が火木土なのに
+            公休目標が週5相当（月22日出勤）になっていて、目標がそもそも達成不能」。
+            """
+            avail = {int(x) for x in (s.available_days or "").split(",") if x.strip()}
+            fixed = {int(x) for x in (s.fixed_days_off or "").split(",") if x.strip()}
+            hol_ng = bool(getattr(s, "holiday_ng", False))
+            week_cap = s.max_days_per_week or 7
+            by_week = {}
+            for _d in range(1, _calendar_days + 1):
+                dt = date(year, month, _d)
+                iso = dt.isoformat()
+                if avail and dt.weekday() not in avail:
+                    continue
+                if dt.weekday() in fixed:
+                    continue
+                if dt.weekday() in _closed_wd_for_ph or iso in _closed_iso_for_ph:
+                    continue
+                if hol_ng and jpholiday.is_holiday(dt):
+                    continue
+                by_week.setdefault(dt.isocalendar()[1], 0)
+                by_week[dt.isocalendar()[1]] += 1
+            return sum(min(n, week_cap) for n in by_week.values())
+
         def _effective_public_holidays(s):
             """auto_ph_enabled時は正社員基準＋短時間補正の公休日数を返す（手入力より優先）。"""
             # 出勤可能日(whitelist)を登録した“スポット/希望日のみ”勤務者は、月の勤務日数が
@@ -2499,6 +2534,8 @@ def create_app():
             # 週5から1日減るごとに所定労働日数を -4日（週4=-4, 週3=-8 …）
             reduction = max(0, 5 - week_days) * 4
             shotei_work_days = max(0, _fulltime_shotei - reduction)
+            # 固定休・勤務可能曜日・休業日で物理的に出られない分は目標から差し引く
+            shotei_work_days = min(shotei_work_days, _max_workable_days(s))
             return max(0, _calendar_days - shotei_work_days)
 
         # ORM → dict 変換（部門別に分割）
@@ -2522,6 +2559,10 @@ def create_app():
                 "available_days": avail_days,
                 "available_time_slots": s.available_time_slots,
                 "fixed_days_off": fixed_off,
+                "required_days": [
+                    int(x) for x in (getattr(s, "required_days", "") or "").split(",")
+                    if x.strip().isdigit()
+                ],
                 "staff_group": s.staff_group,
                 "gender": s.gender,
                 "has_phone_duty": s.has_phone_duty,

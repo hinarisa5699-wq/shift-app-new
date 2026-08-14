@@ -124,6 +124,11 @@ def configure_operating_days(
         _EXTERNAL_DAY_SERVICE = _norm(external_day_service_days)
 
 
+def _is_visit_weekday(d):
+    """日付 d が訪問の営業日か（2階・3階いずれかが訪問の曜日）。"""
+    return d.weekday() in (_FLOOR3_VISIT | _FLOOR2_VISIT)
+
+
 def _floor_annotation(d):
     """日付 d の階別 デイ/訪問 注記（例 'デイ3階 訪2階'）。無ければ空文字。"""
     wd = d.weekday()
@@ -289,6 +294,11 @@ def _build_daily_data(shifts_data, staff_list, year, month):
             if asgn in _DAY_PM_SET and not is_nurse_pt:
                 day_pm += 1
             if asgn in _VISIT_AM_SET:
+                visit_am += 1
+            elif asgn == "early" and _is_visit_weekday(d):
+                # 訪問営業日の早番(7:30-16:30)は「午前訪問＋午後デイ」。
+                #   シフト自動作成側も早番を午前訪問の担い手として数えているため、
+                #   集計行でも訪問午前に算入する（従来は0名と表示され誤解の元だった）。
                 visit_am += 1
             if asgn in _VISIT_PM_SET:
                 visit_pm += 1
@@ -1728,7 +1738,11 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
         items = by_date.get(iso, [])
         day_am = sum(1 for it in items if it["assignment"] in _DAY_AM_SET and it["staff_id"] not in nurse_pt_ids)
         day_pm = sum(1 for it in items if it["assignment"] in _DAY_PM_SET and it["staff_id"] not in nurse_pt_ids)
+        is_visit_day = dt.weekday() in visit_days
         v_am = sum(1 for it in items if it["assignment"] in _VISIT_AM_SET)
+        if is_visit_day:
+            # 訪問営業日の早番は「午前訪問＋午後デイ」＝訪問午前の担い手として数える
+            v_am += sum(1 for it in items if it["assignment"] == "early")
         v_pm = sum(1 for it in items if it["assignment"] in _VISIT_PM_SET)
         n_mid = sum(1 for it in items if it.get("bath_role") == "中")
         n_out = sum(1 for it in items if it.get("bath_role") == "外")
@@ -1758,7 +1772,7 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
                 warn("understaffed_day_am", f"デイサービス午前: {min_day - day_am}名不足")
             if min_day > 0 and day_pm < min_day:
                 warn("understaffed_day_pm", f"デイサービス午後: {min_day - day_pm}名不足")
-        if dt.weekday() in visit_days:
+        if is_visit_day:
             if min_vam > 0 and v_am < min_vam:
                 warn("understaffed_visit_am", f"訪問介護午前: {min_vam - v_am}名不足")
             if min_vpm > 0 and v_pm < min_vpm:

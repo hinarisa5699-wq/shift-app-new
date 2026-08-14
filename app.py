@@ -62,6 +62,25 @@ from export import (
 )
 
 
+def _parse_wd_counts(raw):
+    """曜日ごとの人数設定 "3,3,,3,,2,0" を [int|None]×7 に変換（空/未設定は None）。"""
+    out = [None] * 7
+    if not raw:
+        return out
+    parts = str(raw).split(",")
+    for wd in range(min(7, len(parts))):
+        tok = (parts[wd] or "").strip()
+        if tok == "":
+            continue
+        try:
+            n = int(tok)
+        except ValueError:
+            continue
+        if n >= 0:
+            out[wd] = n
+    return out
+
+
 def safe_int(value, default=0):
     """安全に int 変換する。失敗時は default を返す。"""
     try:
@@ -459,6 +478,13 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN oncall_fairness_mode VARCHAR(10) NOT NULL DEFAULT 'soft'")
     if "oncall_fairness_max" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN oncall_fairness_max INTEGER NOT NULL DEFAULT 1")
+    if "auto_ph_include_holidays" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN auto_ph_include_holidays BOOLEAN NOT NULL DEFAULT 0")
+    if "care_min_by_weekday" not in columns:
+        # 曜日ごとの介護配置人数（最低/最大）。空=未設定（従来動作）
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN care_min_by_weekday VARCHAR(50) NOT NULL DEFAULT ''")
+    if "care_max_by_weekday" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN care_max_by_weekday VARCHAR(50) NOT NULL DEFAULT ''")
 
     # GeneratedShift テーブル
     columns = [row[1] for row in cursor.execute("PRAGMA table_info(generated_shift)").fetchall()]
@@ -1924,6 +1950,26 @@ def create_app():
         s.day_service_operating_days = ",".join(str(i) for i in _ds_days)
         s.visit_operating_days = ",".join(str(i) for i in _v_days)
         s.no_day_service_days = ",".join(str(i) for i in range(7) if i not in _ds_days)
+        # --- 曜日ごとの介護配置人数（その日出勤する介護職員の総数・看護師/PT除く）---
+        #   care_min_wd_0..6 / care_max_wd_0..6。空欄はその曜日「指定なし」。
+        def _form_wd_counts(prefix):
+            vals = []
+            any_set = False
+            for wd in range(7):
+                raw = (request.form.get(f"{prefix}_{wd}", "") or "").strip()
+                if raw == "":
+                    vals.append("")
+                    continue
+                n = safe_int(raw, None)
+                if n is None or n < 0:
+                    vals.append("")
+                    continue
+                any_set = True
+                vals.append(str(n))
+            return ",".join(vals) if any_set else ""
+
+        s.care_min_by_weekday = _form_wd_counts("care_min_wd")
+        s.care_max_by_weekday = _form_wd_counts("care_max_wd")
         s.min_cooking_staff = safe_int(request.form.get("min_cooking_staff"), 1)
         s.min_cooking_overlap = safe_int(request.form.get("min_cooking_overlap"), 2)
         s.breakfast_off_start = (request.form.get("breakfast_off_start", "") or "").strip()
@@ -1981,6 +2027,7 @@ def create_app():
         s.oncall_fairness_max = max(0, safe_int(request.form.get("oncall_fairness_max"), 1))
         # 公休日数の自動算出（法定労働時間ベース）
         s.auto_public_holidays = "auto_public_holidays" in request.form
+        s.auto_ph_include_holidays = "auto_ph_include_holidays" in request.form
         try:
             _dwh = float(request.form.get("daily_work_hours", 8.0) or 8.0)
         except (TypeError, ValueError):
@@ -2375,22 +2422,27 @@ def create_app():
             workable_dates_map.setdefault(w.staff_id, []).append(w.date.isoformat())
 
         # 公休日数の自動算出。ON時は手入力より優先。
-        #   正社員(週5)を基準に算出し、週4・週3など短時間職員は所定労働日数を減らす。
-        #     正社員(週5)所定労働日数 = floor(40時間 × 暦日数 ÷ 7 ÷ 1日の所定労働時間)
-        #       → 31日:22 / 30日:21 / 29日:20 / 28日:20（＝公休 9/9/9/8）
+        #   ユーザー依頼（2026-08）:「正社員の公休は土日を抜いた平日日数を出勤日にする」。
+        #     正社員(週5)所定労働日数 = その月の平日日数（月〜金）。祝日は労働日扱い。
+        #       例) 2026年9月 = 平日22日 → 公休8日（＝土日の日数）
         #     短時間: 週5から1日減るごとに所定労働日数を -4日
         #       （週4 = -4日, 週3 = -8日, 週2 = -12日 …）
         #     所定労働日数 = max(0, 正社員所定 − (5 − 週勤務日数) × 4)
         #     公休数 = 暦日数 − 所定労働日数
-        #   ※祝日は労働日扱い（公休に数えない）。
         auto_ph_enabled = bool(getattr(settings_obj, "auto_public_holidays", False))
         _calendar_days = calendar.monthrange(year, month)[1]
         _daily_hours = float(getattr(settings_obj, "daily_work_hours", 8.0) or 8.0)
         if _daily_hours <= 0:
             _daily_hours = 8.0
-        # 正社員(週5・法定40時間)基準の所定労働日数
-        _fulltime_shotei = int(
-            min(5 * _daily_hours, 40.0) * _calendar_days / 7.0 / _daily_hours
+        # 正社員(週5)基準の所定労働日数＝その月の平日日数（月〜金）。
+        #   「祝日も公休に含める」がONなら平日から祝日を除く（＝その分公休が増える）。
+        _ph_include_holidays = bool(
+            getattr(settings_obj, "auto_ph_include_holidays", False)
+        )
+        _fulltime_shotei = sum(
+            1 for _d in range(1, _calendar_days + 1)
+            if date(year, month, _d).weekday() < 5
+            and not (_ph_include_holidays and jpholiday.is_holiday(date(year, month, _d)))
         )
 
         def _effective_public_holidays(s):
@@ -2476,6 +2528,12 @@ def create_app():
             "closed_dates": closed_dates,
             "visit_operating_days": visit_days,
             "no_day_service_days": no_ds_days,
+            "care_min_by_weekday": _parse_wd_counts(
+                getattr(settings_obj, "care_min_by_weekday", "")
+            ),
+            "care_max_by_weekday": _parse_wd_counts(
+                getattr(settings_obj, "care_max_by_weekday", "")
+            ),
             "min_cooking_staff": settings_obj.min_cooking_staff,
             "min_cooking_overlap": settings_obj.min_cooking_overlap,
             "breakfast_off_start": getattr(settings_obj, 'breakfast_off_start', '') or '',

@@ -2,6 +2,7 @@ import datetime
 from typing import List, Optional
 
 from solver import (
+    DAY_PM_ASSIGNMENTS,
     _BREAK_SLOTS,
     _assign_break_times,
     _repair_breaks_for_onsite_staffing,
@@ -138,7 +139,9 @@ def test_fallback_reports_understaffed_at_13_when_only_half_day_cover_exists():
         _build_staff(8, can_visit=False, available_time_slots="pm_only"),
     ]
     settings = {
-        "min_day_service": 4,
+        # 13時在籍は min_day_service と同数を要求する。終日勤務できるのは4名
+        # （残りは午前のみ/午後のみ）なので、5名要求で必ず不足になる。
+        "min_day_service": 5,
         "max_day_service": 0,
         "min_visit_am": 0,
         "min_visit_pm": 0,
@@ -263,80 +266,81 @@ def test_fallback_relaxes_hard_placement_rules_before_no_solution():
     assert "no_solution" not in warning_types
 
 
-def _solve_no_day_service_day(num_staff: int, **overrides):
-    """デイ利用者がいない曜日（no_service_day_indices={0}）を1日だけ解く。"""
-    dt = datetime.date(2026, 6, 1)
-    staff_ids = list(range(1, num_staff + 1))
-    staff_by_id = {sid: _build_staff(sid, can_visit=False) for sid in staff_ids}
-    kwargs = dict(
-        off_request_set=set(),
-        min_day_service=5,
-        min_visit_am=0,
-        min_visit_pm=0,
-        closed_days_set=set(),
-        visit_operating_days=[],       # 訪問非営業日＝早番/デイは終日デイ扱い
-        am_preferred_gender="",
-        phone_duty_enabled=False,
-        male_am_constraint_mode="off",
-        placement_rules=[],
-        min_staff_at_9=5,
-        min_staff_at_15=5,
-        max_day_service=5,
-        no_service_day_indices={0},
-        require_early_late=False,
-        use_slack=False,
+def _base_settings(**overrides):
+    st = {
+        "min_day_service": 2,
+        "max_day_service": 3,
+        "min_visit_am": 0,
+        "min_visit_pm": 0,
+        "closed_days": [],
+        "visit_operating_days": [],
+        "no_day_service_days": [],
+        "am_preferred_gender": "",
+        "phone_duty_enabled": False,
+        "phone_duty_max_consecutive": 1,
+        "min_staff_at_9": 1,
+        "min_staff_at_15": 1,
+        "male_am_constraint_mode": "off",
+        "placement_rules": [],
+    }
+    st.update(overrides)
+    return st
+
+
+def _run(settings, num_staff=6, can_visit=False, month_dates=None):
+    dates = month_dates or [datetime.date(2026, 6, 1)]   # 2026-06-01 は月曜
+    staff = [_build_staff(i, can_visit=can_visit) for i in range(1, num_staff + 1)]
+    return _solve_care_with_fallback(
+        2026, 6, dates, staff, [], settings, allowed_patterns={}
     )
-    kwargs.update(overrides)
-    return _solve_care(2026, 6, [dt], staff_ids, staff_by_id, **kwargs)
 
 
-def test_no_day_service_day_staffs_exactly_two():
-    """デイ以外の曜日は介護がちょうど2名（余剰人員は入れない）。"""
-    shifts, _ = _solve_no_day_service_day(6)
+def _working_ids(shifts):
+    return {i["staff_id"] for i in shifts if i["assignment"] != "off"}
+
+
+def test_day_service_max_is_taken_literally():
+    """デイ最大3名の設定に内部で早番/遅番・休憩バッファを上乗せしない。"""
+    shifts, _ = _run(_base_settings())
     assert shifts is not None
-    working = {i["staff_id"] for i in shifts if i["assignment"] != "off"}
-    assert len(working) == 2, f"デイ以外の曜日は介護2名のはず: {sorted(working)}"
+    pm = [i for i in shifts if i["assignment"] in DAY_PM_ASSIGNMENTS]
+    assert len(pm) <= 3, f"デイ午後が上限3名を超えた: {len(pm)}名"
 
 
-def test_no_day_service_day_target_capped_by_available_staff():
-    """在籍が原則人数に満たなくても無解にしない（いる人数で解く）。"""
-    shifts, _ = _solve_no_day_service_day(1)
+def test_care_headcount_by_weekday_caps_staff():
+    """曜日ごとの介護配置人数（最大）でその日の頭数を抑えられる。"""
+    shifts, _ = _run(_base_settings(care_max_by_weekday="2,,,,,,"))
     assert shifts is not None
-    working = {i["staff_id"] for i in shifts if i["assignment"] != "off"}
-    assert len(working) == 1
+    assert len(_working_ids(shifts)) <= 2
 
 
-def test_no_day_service_min_staff_is_configurable():
-    """no_service_min_staff で人数を変更できる（1名に絞る）。"""
-    shifts, _ = _solve_no_day_service_day(6, no_service_min_staff=1)
+def test_care_headcount_by_weekday_min_fills_up():
+    """曜日ごとの介護配置人数（最低）でその日の頭数を確保できる。"""
+    shifts, _ = _run(_base_settings(max_day_service=5,
+                                    care_min_by_weekday="4,,,,,,",
+                                    care_max_by_weekday="4,,,,,,"))
     assert shifts is not None
-    working = {i["staff_id"] for i in shifts if i["assignment"] != "off"}
-    assert len(working) == 1
+    assert len(_working_ids(shifts)) == 4
 
 
-def test_no_day_service_day_over_staff_warns_with_slack():
-    """必須配置(早番/遅番＋訪問)が2名に収まらない日は超過を警告して生成継続。"""
-    dt = datetime.date(2026, 6, 1)
-    staff_ids = [1, 2, 3, 4]
-    staff_by_id = {sid: _build_staff(sid, can_visit=True) for sid in staff_ids}
-    shifts, warnings = _solve_care(
-        2026, 6, [dt], staff_ids, staff_by_id,
-        off_request_set=set(),
-        min_day_service=1,
-        min_visit_am=1,
-        min_visit_pm=1,
-        closed_days_set=set(),
-        visit_operating_days=[0, 1, 2, 3, 4, 5, 6],   # 訪問営業日かつデイ非営業日
-        am_preferred_gender="",
-        phone_duty_enabled=False,
-        male_am_constraint_mode="off",
-        placement_rules=[],
-        min_staff_at_9=1,
-        min_staff_at_15=1,
-        max_day_service=4,
-        no_service_day_indices={0},
-        require_early_late=True,
-        use_slack=True,
+def test_no_day_service_weekday_defaults_to_two_staff():
+    """曜日設定が空なら、デイ非営業曜日は従来どおり原則2名。"""
+    shifts, _ = _run(_base_settings(no_day_service_days=[0]))
+    assert shifts is not None
+    assert len(_working_ids(shifts)) == 2
+
+
+def test_care_headcount_over_limit_warns_but_generates():
+    """必須配置（早番・遅番・訪問）が上限に収まらない日は警告のみで生成継続。"""
+    shifts, warnings = _run(
+        _base_settings(
+            no_day_service_days=[0],
+            visit_operating_days=[0],
+            min_visit_am=1,
+            min_visit_pm=1,
+            care_max_by_weekday="2,,,,,,",
+        ),
+        can_visit=True,
     )
     assert shifts is not None
-    assert any(w["warning_type"] == "over_staffed_no_day_service" for w in warnings)
+    assert any(w["warning_type"] == "over_staffed_care" for w in warnings)

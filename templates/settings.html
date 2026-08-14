@@ -49,6 +49,57 @@
             </div>
         </div>
 
+        <!-- 曜日ごとの介護配置人数 -->
+        <div class="mb-8 p-6 bg-emerald-50 rounded-lg border border-emerald-200">
+            <label class="block text-lg font-semibold text-gray-800 mb-2">
+                曜日ごとの介護配置人数（出勤する介護職員の人数）
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                曜日ごとに「その日出勤する介護職員の人数」の最低・最大を指定します。
+                デイ・早番・遅番・訪問・相談をすべて含めた<strong>頭数</strong>です（看護師・PTは含みません）。
+                空欄はその曜日「指定なし」。<br>
+                空欄のままの曜日は従来どおりの動きになります（デイ営業日＝上のデイ人数設定、
+                デイのない曜日＝2名）。早番・遅番・訪問など必須の配置が人数に収まらない日は、
+                生成は止めずに警告でお知らせします。
+            </p>
+            {% set care_min_wd = (settings.care_min_by_weekday or '').split(',') if settings else [] %}
+            {% set care_max_wd = (settings.care_max_by_weekday or '').split(',') if settings else [] %}
+            <div class="overflow-x-auto">
+                <table class="min-w-full text-center">
+                    <thead>
+                        <tr>
+                            <th class="px-2 py-2 text-sm font-semibold text-gray-700"></th>
+                            {% for d in day_names %}
+                            <th class="px-2 py-2 text-base font-bold text-gray-800">{{ d }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td class="px-2 py-2 text-sm font-medium text-gray-700 whitespace-nowrap">最低</td>
+                            {% for i in range(7) %}
+                            <td class="px-1 py-2">
+                                <input type="number" name="care_min_wd_{{ i }}" min="0" max="20"
+                                       value="{{ care_min_wd[i] if care_min_wd|length > i else '' }}"
+                                       class="w-16 px-2 py-2 text-lg font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
+                            </td>
+                            {% endfor %}
+                        </tr>
+                        <tr>
+                            <td class="px-2 py-2 text-sm font-medium text-gray-700 whitespace-nowrap">最大</td>
+                            {% for i in range(7) %}
+                            <td class="px-1 py-2">
+                                <input type="number" name="care_max_wd_{{ i }}" min="0" max="20"
+                                       value="{{ care_max_wd[i] if care_max_wd|length > i else '' }}"
+                                       class="w-16 px-2 py-2 text-lg font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
+                            </td>
+                            {% endfor %}
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
         <!-- 9時・15時 事業所最低在籍人数 -->
         <div class="mb-8 p-6 bg-blue-50 rounded-lg border border-blue-200">
             <label class="block text-lg font-semibold text-gray-800 mb-2">
@@ -451,12 +502,24 @@
                 <input type="checkbox" id="auto_public_holidays" name="auto_public_holidays" value="1"
                        {% if settings and settings.auto_public_holidays %}checked{% endif %}
                        class="w-5 h-5 text-amber-600 border-gray-300 rounded focus:ring-amber-500">
-                <span class="ml-3 text-lg font-semibold text-gray-800">公休日数を自動算出する（法定労働時間ベース）</span>
+                <span class="ml-3 text-lg font-semibold text-gray-800">公休日数を自動算出する（平日日数ベース）</span>
             </label>
             <p class="text-gray-600 text-sm mt-2 ml-8">
-                ONにすると、生成する月の暦日数から公休日数を自動で決めます（職員フォームの手入力の公休日数より優先）。
-                <strong>正社員（週5）を基準</strong>に算出し、週4・週3など短時間職員は<strong>週5から1日減るごとに所定労働日数を −4日</strong>（＝公休が増える）として補正します。
+                ONにすると、生成する月の平日日数から公休日数を自動で決めます（職員フォームの手入力の公休日数より優先）。
+                <strong>正社員（週5）は「土日を除いた平日日数」を出勤日</strong>とし、残り（＝土日の日数）が公休になります。
+                週4・週3など短時間職員は<strong>週5から1日減るごとに所定労働日数を −4日</strong>（＝公休が増える）として補正します。
                 <strong>祝日は労働日として扱い、公休には数えません。</strong>
+            </p>
+            <label class="flex items-center cursor-pointer mt-3 ml-8">
+                <input type="checkbox" id="auto_ph_include_holidays" name="auto_ph_include_holidays" value="1"
+                       {% if settings and settings.auto_ph_include_holidays %}checked{% endif %}
+                       class="w-5 h-5 text-amber-600 border-gray-300 rounded focus:ring-amber-500">
+                <span class="ml-3 text-base font-semibold text-gray-800">祝日も公休に含める</span>
+            </label>
+            <p class="text-gray-600 text-sm mt-1 ml-16">
+                ONにすると祝日を出勤日から外し、その分公休が増えます
+                （2026年9月の正社員：OFF＝出勤22日・公休8日／ON＝出勤19日・公休11日）。
+                施設は祝日も営業するため、既定はOFF（祝日も出勤日）です。
             </p>
             <div class="mt-3 ml-8 flex items-center gap-2">
                 <label for="daily_work_hours" class="text-base text-gray-700">1日の所定労働時間</label>
@@ -469,14 +532,13 @@
             <div class="text-gray-600 text-sm mt-3 ml-8">
                 <p class="font-medium">計算式：</p>
                 <ul class="list-disc list-inside mt-1">
-                    <li>正社員(週5)の所定労働日数 = 40時間 × 暦日数 ÷ 7 ÷ 1日の所定労働時間</li>
+                    <li>正社員(週5)の所定労働日数 = その月の平日日数（月〜金の日数。祝日も労働日）</li>
                     <li>短時間補正：所定労働日数 − (5 − 週の勤務日数) × 4日</li>
                     <li>公休数 = 暦日数 − 所定労働日数</li>
                 </ul>
-                <p class="mt-1">例（8時間）：</p>
+                <p class="mt-1">例：</p>
                 <ul class="list-disc list-inside mt-1">
-                    <li>31日：正社員(週5)→所定22日・<strong>公休9日</strong>／週4→所定18日・<strong>公休13日</strong>／週3→所定14日・<strong>公休17日</strong></li>
-                    <li>28日：正社員(週5)→所定20日・<strong>公休8日</strong>／週4→所定16日・<strong>公休12日</strong>／週3→所定12日・<strong>公休16日</strong></li>
+                    <li>2026年9月（30日・平日22日）：正社員(週5)→出勤22日・<strong>公休8日</strong>／週4→出勤18日・<strong>公休12日</strong>／週3→出勤14日・<strong>公休16日</strong></li>
                 </ul>
             </div>
         </div>

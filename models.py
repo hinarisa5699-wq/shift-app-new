@@ -359,6 +359,13 @@ class ShiftSettings(db.Model):
         db.String(50), default="2", nullable=False
     )  # デイ利用者がいない曜日。day_service_operating_days の裏返しとして自動保存される
     # この曜日はデイ人員を1名に緩和。外部デイのみの日もここに入る。
+    # --- 曜日ごとの介護配置人数（その日出勤する介護職員の総数・看護師/PTは除く）---
+    #   "月,火,水,木,金,土,日" の順にカンマ区切りで7個。空欄("")＝その曜日は指定なし。
+    #   例 "3,3,3,3,3,2,0" ／ 未設定(空文字)なら従来動作（デイ営業日=デイ人数設定、
+    #   デイ非営業日=2名）にフォールバックする。
+    care_min_by_weekday = db.Column(db.String(50), default="", nullable=False)
+    care_max_by_weekday = db.Column(db.String(50), default="", nullable=False)
+
     min_cooking_staff = db.Column(
         db.Integer, default=1
     )  # 調理スタッフ最低配置人数/日
@@ -432,6 +439,8 @@ class ShiftSettings(db.Model):
     #     公休数 = 暦日数 − 所定労働日数
     #   ※祝日は労働日扱い（公休に数えない）。
     auto_public_holidays = db.Column(db.Boolean, default=False, nullable=False)
+    # 公休自動算出で「祝日も公休に含める」か（既定 False＝祝日は出勤日）
+    auto_ph_include_holidays = db.Column(db.Boolean, default=False, nullable=False)
     # 1日の所定労働時間（時間）。公休自動算出に使用。既定 8.0。
     daily_work_hours = db.Column(db.Float, default=8.0, nullable=False)
 
@@ -455,6 +464,8 @@ class ShiftSettings(db.Model):
             "visit_operating_days": self.visit_operating_days,
             "day_service_operating_days": self.day_service_operating_days or "",
             "no_day_service_days": self.no_day_service_days or "",
+            "care_min_by_weekday": self.care_min_by_weekday or "",
+            "care_max_by_weekday": self.care_max_by_weekday or "",
             "min_cooking_staff": self.min_cooking_staff,
             "min_cooking_overlap": self.min_cooking_overlap,
             "breakfast_off_start": self.breakfast_off_start or "",
@@ -485,6 +496,7 @@ class ShiftSettings(db.Model):
             "oncall_fairness_mode": self.oncall_fairness_mode or "soft",
             "oncall_fairness_max": self.oncall_fairness_max if self.oncall_fairness_max is not None else 1,
             "auto_public_holidays": self.auto_public_holidays or False,
+            "auto_ph_include_holidays": self.auto_ph_include_holidays or False,
             "daily_work_hours": self.daily_work_hours if self.daily_work_hours is not None else 8.0,
         }
 

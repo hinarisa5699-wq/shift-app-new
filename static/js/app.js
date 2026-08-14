@@ -432,6 +432,7 @@ function renderCalendar(data, year, month) {
         dayMeta.push({
             dateStr,
             colClass,
+            isVisitDay: F3_VISIT.has(dayOfWeek) || F2_VISIT.has(dayOfWeek),
             label: `${month}/${day}<br>${DAY_NAMES[dayOfWeek]}${holidayName}${floorAnnotHtml(dayOfWeek)}`,
         });
     }
@@ -518,17 +519,19 @@ function renderCalendar(data, year, month) {
     const careSummaryRows = [
         ['デイ午前', DAY_AM_SET, 'understaffed_day_am', true],
         ['デイ午後', DAY_PM_SET, 'understaffed_day_pm', true],
-        ['訪問午前', VISIT_AM_SET, 'understaffed_visit_am', false],
+        // 訪問営業日の早番(7:30-16:30)は午前訪問＋午後デイ。自動作成側と同じく訪問午前に数える
+        ['訪問午前', VISIT_AM_SET, 'understaffed_visit_am', false, true],
         ['訪問午後', VISIT_PM_SET, 'understaffed_visit_pm', false],
         ['兼務者数', DUAL_SET, 'dual_shortage', false],
     ];
-    careSummaryRows.forEach(([label, set, warnType, excludeNursePt]) => {
+    careSummaryRows.forEach(([label, set, warnType, excludeNursePt, earlyCountsOnVisitDay]) => {
         let r = `<tr><td class="staff-name-cell" style="text-align:left;font-weight:700;background:#eef2ff;position:sticky;left:0;z-index:5">${label}</td>`;
         dayMeta.forEach(m => {
             let cnt = 0;
             careStaff.forEach(s => {
                 const a = shiftMap[m.dateStr] ? shiftMap[m.dateStr][s.id] : null;
                 if (a && set.has(a) && !(excludeNursePt && nursePtIds.has(s.id))) cnt++;
+                else if (a === 'early' && earlyCountsOnVisitDay && m.isVisitDay) cnt++;
             });
             const warn = (data.warnings || []).some(w => w.date === m.dateStr && w.warning_type === warnType);
             r += `<td class="staff-cell ${warn ? 'summary-warning' : m.colClass}" style="font-weight:600">${cnt}</td>`;

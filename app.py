@@ -2631,14 +2631,30 @@ def create_app():
             ).order_by(Staff.id).all()
             # オンコールは「その日出勤している職員」に割り当てる（電話を持ち帰るため）。
             #   ユーザー依頼（2026-08）:「オンコールは出勤してる職員しか電話を
-            #   持って帰れない」。例外（oncall_when_off_ok / オンコールのみ当番）は
-            #   休みの日でも持てる。休業日は出勤者がいないため例外者のみが候補。
+            #   持って帰れない」「日曜日は例外。オンコール担当は土曜出勤が持って帰る」。
+            #   → 休業日（日曜など）の当番は、その直前の営業日に出勤する職員が持ち帰る。
+            #   例外（oncall_when_off_ok / オンコールのみ当番）は休みの日でも持てる。
             _oncall_requires_work = bool(
                 getattr(settings_obj, "oncall_requires_work", True)
             )
             _closed_wd = set(closed_days)
             _closed_iso = set(closed_dates)
+
+            def _is_closed_day(dt):
+                return dt.weekday() in _closed_wd or dt.isoformat() in _closed_iso
+
+            def _prev_open_day(dt):
+                """休業日の当番を持ち帰る「直前の営業日」（当月内）。無ければ None。"""
+                d = dt - timedelta(days=1)
+                while d >= month_dates[0]:
+                    if not _is_closed_day(d):
+                        return d
+                    d -= timedelta(days=1)
+                return None
+
             must_work_ids = set()
+            # 休業日の当番 → 実際に出勤させる日（前営業日）。{staff_id: {当番日: 出勤日}}
+            oncall_carry_day = {}
             for st in oncall_candidates:
                 avail_wd = set(int(x) for x in st.available_days.split(",") if x.strip())
                 fixed_wd = (set(int(x) for x in st.fixed_days_off.split(",") if x.strip())
@@ -2653,19 +2669,38 @@ def create_app():
                 )
                 if not exempt:
                     must_work_ids.add(st.id)
-                # オンコールに入れない日を集約（休み希望・勤務不可曜日・出勤可能日外・祝日不可）
+
+                def _can_work(dt):
+                    """その日に出勤できるか（休み希望・勤務不可曜日・出勤可能日外・祝日不可）。"""
+                    iso = dt.isoformat()
+                    return not (
+                        dt.weekday() not in avail_wd
+                        or dt.weekday() in fixed_wd
+                        or (wk and iso not in wk)
+                        or iso in offs
+                        or (hol_ng and jpholiday.is_holiday(dt))
+                    )
+
+                # オンコールに入れない日を集約
                 unavailable = set()
                 for dt in month_dates:
                     iso = dt.isoformat()
-                    if (dt.weekday() not in avail_wd
-                            or dt.weekday() in fixed_wd
-                            or (wk and iso not in wk)
-                            or iso in offs
-                            or (hol_ng and jpholiday.is_holiday(dt))):
+                    if exempt or not _is_closed_day(dt):
+                        # 例外者＝従来どおり（出勤の有無と無関係／勤務不可日のみ除外）
+                        # 出勤者限定＝その日に出勤できる職員だけ
+                        if not _can_work(dt):
+                            unavailable.add(iso)
+                        continue
+                    # 休業日（日曜など）は出勤者がいない。
+                    #   → 直前の営業日（土曜など）に出勤する職員が電話を持ち帰る。
+                    if iso in offs or (hol_ng and jpholiday.is_holiday(dt)):
                         unavailable.add(iso)
-                    elif not exempt and (dt.weekday() in _closed_wd or iso in _closed_iso):
-                        # 休業日は出勤者がいないので、出勤者限定の職員は当番に入れない
+                        continue
+                    prev = _prev_open_day(dt)
+                    if prev is None or not _can_work(prev):
                         unavailable.add(iso)
+                    else:
+                        oncall_carry_day.setdefault(st.id, {})[iso] = prev.isoformat()
                 oncall_eligible.append(
                     {"id": st.id, "name": st.name, "unavailable": unavailable}
                 )
@@ -2689,11 +2724,16 @@ def create_app():
             settings_dict["oncall_work_days"] = [
                 (it["staff_id"], it["date"].isoformat()) for it in oncall_items
             ]
-            # 出勤者限定の担当者は、その当番日に必ず出勤させる（電話を持ち帰るため）
-            settings_dict["oncall_must_work"] = [
-                (it["staff_id"], it["date"].isoformat())
-                for it in oncall_items if it["staff_id"] in must_work_ids
-            ]
+            # 出勤者限定の担当者は、その当番日に必ず出勤させる（電話を持ち帰るため）。
+            #   休業日（日曜など）の当番は、直前の営業日（土曜など）に出勤させる。
+            _must_work = []
+            for it in oncall_items:
+                if it["staff_id"] not in must_work_ids:
+                    continue
+                _iso = it["date"].isoformat()
+                _target = oncall_carry_day.get(it["staff_id"], {}).get(_iso, _iso)
+                _must_work.append((it["staff_id"], _target))
+            settings_dict["oncall_must_work"] = _must_work
 
         # --- 固定職員（依頼文28）の既存シフトを読み込む ---
         #   固定職員は再生成の対象外。既存シフトをそのまま温存し、ソルバーには

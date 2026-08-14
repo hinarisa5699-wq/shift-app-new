@@ -2499,8 +2499,14 @@ def create_app():
             and not (_ph_include_holidays and jpholiday.is_holiday(date(year, month, _d)))
         )
 
-        _closed_wd_for_ph = set(closed_days)
-        _closed_iso_for_ph = set(closed_dates)
+        # 休業曜日・休業日（この時点では settings_dict 未構築なので設定から直接読む）
+        _closed_wd_for_ph = {
+            int(x) for x in (settings_obj.closed_days or "").split(",") if x.strip()
+        }
+        _closed_iso_for_ph = {
+            x.strip() for x in (getattr(settings_obj, "closed_dates", "") or "").split(",")
+            if x.strip()
+        }
 
         def _max_workable_days(s):
             """その職員が当月に物理的に出勤しうる最大日数。

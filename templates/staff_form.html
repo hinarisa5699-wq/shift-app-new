@@ -89,11 +89,14 @@
                     onchange="toggleCareFields()"
                     class="w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors bg-white">
                 {% set current_jc = staff.job_category if staff and staff.job_category else 'caregiver' %}
-                {% for code, label in (job_categories or [('caregiver', '介護'), ('nurse_rehab', '看護'), ('cooking', '調理')]) %}
+                {% for code, label in (job_categories or [('caregiver', '介護'), ('nurse_rehab', '看護'), ('driver', 'ドライバー'), ('cooking', '調理')]) %}
                 <option value="{{ code }}" {% if current_jc == code %}selected{% endif %}>{{ label }}</option>
                 {% endfor %}
             </select>
-            <p class="text-gray-500 text-sm mt-1">「調理」を選ぶと調理スタッフ扱いになり、訪問・電話当番・入浴介助・時間帯の項目は非表示になります。</p>
+            <p class="text-gray-500 text-sm mt-1">
+                「調理」を選ぶと調理スタッフ扱いになり、訪問・電話当番・入浴介助・時間帯の項目は非表示になります。<br>
+                「ドライバー」は送迎担当として、看護師と同じく<strong>介護の配置人数には数えません</strong>（シフト表には出勤として並びます）。
+            </p>
         </div>
 
         <!-- 調理スタッフの経験区分（依頼文28・新人/ベテラン）。調理選択時のみ表示 -->

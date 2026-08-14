@@ -198,3 +198,20 @@ def test_required_weekday_yields_to_day_off_request():
     assert shifts is not None
     assert not _worked(shifts, 1, "2026-09-09")
     assert _worked(shifts, 1, "2026-09-02")
+
+
+def test_driver_not_counted_in_care_headcount():
+    """ドライバー（送迎担当）は介護の配置人数に数えない。"""
+    care = [_staff(1), _staff(2)]
+    driver = _staff(3, job_category="driver", min_days_per_week=7, required_days=[0,1,2,3,4,5,6])
+    settings = _settings(care_min_by_weekday="2,2,2,2,2,2,2",
+                         care_max_by_weekday="2,2,2,2,2,2,2")
+    shifts, warnings = _run(care + [driver], settings)
+
+    assert shifts is not None
+    driver_days = {i["date"] for i in shifts
+                   if i["staff_id"] == 3 and i["assignment"] != "off"}
+    assert len(driver_days) >= 20, f"ドライバーが出勤できていない: {len(driver_days)}日"
+    assert not [w for w in warnings if w["warning_type"] == "over_staffed_care"], (
+        "ドライバーが介護人数に数えられている"
+    )

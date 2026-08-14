@@ -150,6 +150,7 @@ def _normalize_staff_group(value: str) -> str:
 JOB_CATEGORIES = [
     ("caregiver", "介護"),
     ("nurse_rehab", "看護"),
+    ("driver", "ドライバー"),
     ("cooking", "調理"),
 ]
 JOB_CATEGORY_LABELS = dict(JOB_CATEGORIES)
@@ -172,6 +173,9 @@ def _normalize_job_category(value: str) -> str:
         return "cooking"
     if v in ("nurse_rehab", "看護師・リハ", "看護師", "看護", "リハ", "リハビリ", "nurse", "pt"):
         return "nurse_rehab"
+    if v in ("driver", "ドライバー", "運転手", "送迎", "運転"):
+        # ドライバーは送迎担当。介護の配置人数には数えない（ユーザー依頼 2026-08）
+        return "driver"
     return "caregiver"
 
 
@@ -2564,6 +2568,7 @@ def create_app():
                     if x.strip().isdigit()
                 ],
                 "staff_group": s.staff_group,
+                "job_category": getattr(s, "job_category", "caregiver") or "caregiver",
                 "gender": s.gender,
                 "has_phone_duty": s.has_phone_duty,
                 "can_bath_assist": getattr(s, "can_bath_assist", False) or False,
@@ -3039,6 +3044,7 @@ def create_app():
                         "department": st.staff_group,
                         "qualifications": staff_qual_names.get(st.id, []),
                         "qualification_codes": staff_qual_codes.get(st.id, []),
+                        "job_category": getattr(st, "job_category", "caregiver") or "caregiver",
                         "car_commute": st.car_commute or False,
                     }
                     for st in all_staff
@@ -3219,6 +3225,7 @@ def create_app():
                 "department": st.staff_group,
                 "qualifications": staff_qual_names.get(st.id, []),
                 "qualification_codes": staff_qual_codes.get(st.id, []),
+                "job_category": getattr(st, "job_category", "caregiver") or "caregiver",
             }
             for st in staffs
         ]
@@ -3537,7 +3544,8 @@ def create_app():
         return [
             {"id": s.id, "name": s.name,
              "qualification_codes": qc.get(s.id, []),
-             "qualifications": qn.get(s.id, [])}
+             "qualifications": qn.get(s.id, []),
+             "job_category": getattr(s, "job_category", "caregiver") or "caregiver"}
             for s in Staff.query.filter_by(on_leave=False).all()
         ]
 

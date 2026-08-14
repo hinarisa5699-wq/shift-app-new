@@ -1595,6 +1595,7 @@ def _solve_care_with_fallback(
                 int(x) for x in (s.get("required_days") or [])
                 if str(x).strip().isdigit()
             ],
+            "job_category": s.get("job_category", "caregiver"),
             "gender": s.get("gender", ""),
             "has_phone_duty": s.get("has_phone_duty", False),
             "qualification_ids": s.get("qualification_ids", []),
@@ -2102,6 +2103,8 @@ def _solve_care(
         if _staff_has_any_qualification(
             staff_by_id[s], codes=_NURSE_PT_QUAL_CODES, names=_NURSE_PT_QUAL_NAMES
         )
+        # ドライバー（送迎担当）も介護の配置人数には数えない（ユーザー依頼 2026-08）
+        or str(staff_by_id[s].get("job_category", "") or "") == "driver"
     }
     if nurse_pt_qual_ids:
         nurse_pt_ids |= {

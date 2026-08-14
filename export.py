@@ -206,7 +206,12 @@ _NURSE_PT_CODE_ALIASES = {"nurse", "pt"}
 
 
 def _is_nurse_or_pt_staff(staff: dict) -> bool:
-    """看護師/PTはコード優先で判定し、旧名称も受け入れる。"""
+    """デイの人数に数えない職員（看護師/PT・ドライバー）を判定する。
+
+    ドライバーは送迎担当なので介護の配置人数に含めない（ユーザー依頼 2026-08）。
+    """
+    if str(staff.get("job_category", "") or "") == "driver":
+        return True
     qual_codes = {
         code for code in staff.get("qualification_codes", [])
         if isinstance(code, str) and code

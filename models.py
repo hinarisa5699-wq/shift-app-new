@@ -376,6 +376,9 @@ class ShiftSettings(db.Model):
     #   "月,火,水,木,金,土,日" の順にカンマ区切りで7個。空欄("")＝その曜日は指定なし。
     #   例 "3,3,3,3,3,2,0" ／ 未設定(空文字)なら従来動作（デイ営業日=デイ人数設定、
     #   デイ非営業日=2名）にフォールバックする。
+    viewer_password_hash = db.Column(db.String(255), default="", nullable=False)
+    # 閲覧専用ページ(/view)のパスワード（ハッシュ化して保存。空＝閲覧アカウント無効）
+    #   ユーザー依頼 2026-08: Renderの環境変数を触らずに画面から設定できるように。
     oncall_requires_work = db.Column(db.Boolean, default=True, nullable=False)
     # True = オンコールはその日出勤している職員にだけ割り当てる（電話を持ち帰るため）。
     #   職員側の oncall_when_off_ok にチェックがある人は例外として休みでも持てる。

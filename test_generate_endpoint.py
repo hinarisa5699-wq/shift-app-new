@@ -222,3 +222,38 @@ def test_admin_can_still_use_everything(tmp_path, monkeypatch):
     assert client.get("/staff").status_code == 200
     assert client.get("/view").status_code == 200
     assert client.post("/api/generate", json={"year": 2026, "month": 9}).status_code == 200
+
+
+def test_viewer_password_can_be_set_from_settings(tmp_path, monkeypatch):
+    """条件設定で決めたパスワードで閲覧アカウントにログインできる（環境変数なしでも可）。"""
+    monkeypatch.delenv("SHIFT_STAFF_PASSWORD", raising=False)
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    admin = flask_app.test_client()
+    _login(admin, "admin", "testpass")
+
+    # 未設定のうちは閲覧アカウントで入れない
+    guest = flask_app.test_client()
+    assert _login(guest, "staff", "himitsu1234").status_code == 200   # ログイン画面のまま
+
+    # 管理者が条件設定からパスワードを決める
+    res = admin.post("/api/settings", data={
+        "viewer_password": "himitsu1234",
+        "min_staff_at_9": "1", "min_staff_at_15": "1",
+    }, follow_redirects=True)
+    assert res.status_code == 200
+
+    # 設定後はログインでき、/view だけ見られる
+    guest2 = flask_app.test_client()
+    r = _login(guest2, "staff", "himitsu1234")
+    assert r.status_code in (301, 302) and "/view" in r.headers.get("Location", "")
+    assert guest2.get("/view").status_code == 200
+    assert guest2.get("/settings").status_code in (301, 302)
+
+    # 解除するとログインできなくなる
+    admin.post("/api/settings", data={
+        "viewer_password_clear": "1",
+        "min_staff_at_9": "1", "min_staff_at_15": "1",
+    }, follow_redirects=True)
+    guest3 = flask_app.test_client()
+    assert _login(guest3, "staff", "himitsu1234").status_code == 200

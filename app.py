@@ -496,6 +496,11 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN oncall_fairness_max INTEGER NOT NULL DEFAULT 1")
     if "auto_ph_include_holidays" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN auto_ph_include_holidays BOOLEAN NOT NULL DEFAULT 0")
+    if "viewer_password_hash" not in columns:
+        # 閲覧専用ページのパスワード（ハッシュ）
+        cursor.execute(
+            "ALTER TABLE shift_settings ADD COLUMN viewer_password_hash VARCHAR(255) NOT NULL DEFAULT ''"
+        )
     if "oncall_requires_work" not in columns:
         # オンコールは出勤している職員にだけ割り当てる（既定ON）
         cursor.execute(
@@ -1013,6 +1018,7 @@ def _load_users():
 
 # 閲覧専用ロール（このロールは下のエンドポイントだけアクセスできる）
 VIEWER_ROLE = "閲覧"
+VIEWER_USERNAME = "staff"
 _VIEWER_ENDPOINTS = {
     "view_shift",        # 閲覧専用ページ
     "api_shifts_get",    # 月のシフト取得（読み取り）
@@ -1130,6 +1136,12 @@ def create_app():
             username = (request.form.get("username") or "").strip()
             password = request.form.get("password") or ""
             user = app.config["USERS"].get(username)
+            if not user and username == VIEWER_USERNAME:
+                # 環境変数を使わず、条件設定画面から決めた閲覧パスワードでログインする
+                _st = ShiftSettings.query.first()
+                _hash = getattr(_st, "viewer_password_hash", "") or ""
+                if _hash:
+                    user = {"hash": _hash, "role": VIEWER_ROLE}
             if user and check_password_hash(user["hash"], password):
                 session["user"] = username
                 session["role"] = user["role"]
@@ -2066,6 +2078,12 @@ def create_app():
         s.am_preferred_gender = request.form.get("am_preferred_gender", "")
         s.phone_duty_enabled = "phone_duty_enabled" in request.form
         s.oncall_requires_work = "oncall_requires_work" in request.form
+        # 閲覧専用ページのパスワード（空欄＝変更なし／「解除」で無効化）
+        _vp = (request.form.get("viewer_password") or "").strip()
+        if "viewer_password_clear" in request.form:
+            s.viewer_password_hash = ""
+        elif _vp:
+            s.viewer_password_hash = generate_password_hash(_vp)
         s.phone_duty_max_consecutive = safe_int(request.form.get("phone_duty_max_consecutive"), 1)
         s.min_staff_at_9 = safe_int(request.form.get("min_staff_at_9"), 4)
         s.min_staff_at_15 = safe_int(request.form.get("min_staff_at_15"), 4)

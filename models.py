@@ -59,6 +59,10 @@ class Staff(db.Model):
     # 出勤可能日(StaffWorkableDate)の扱い（ユーザー依頼 2026-08）
     #   "only"  = 登録した日しか出勤しない（従来動作・スポット勤務者向け）
     #   "extra" = 通常のシフト作成に加えて、登録した日は必ず出勤する（振替出勤向け）
+    retired = db.Column(db.Boolean, default=False, nullable=False)
+    # True = 退職（在籍していない）。シフト生成・オンコール・閲覧画面・印刷の対象外。
+    #   過去のシフト履歴は残すため、職員データ自体は削除しない
+    #   （ユーザー依頼 2026-08:「シフト閲覧にやめた人がいっぱい出る」）。
     oncall_only = db.Column(db.Boolean, default=False, nullable=False)
     # True = オンコール（電話当番）のみ担当。出勤シフトは一切割り当てない
     # （ユーザー依頼 2026-08: 「前垣茜はオンコールのみ当番」）。
@@ -131,6 +135,7 @@ class Staff(db.Model):
             "weekend_constraint": self.weekend_constraint or "",
             "holiday_ng": self.holiday_ng or False,
             "on_leave": self.on_leave or False,
+            "retired": self.retired or False,
             "oncall_only": self.oncall_only or False,
             "workable_dates_mode": self.workable_dates_mode or "only",
             "oncall_when_off_ok": self.oncall_when_off_ok or False,

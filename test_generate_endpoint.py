@@ -257,3 +257,32 @@ def test_viewer_password_can_be_set_from_settings(tmp_path, monkeypatch):
     }, follow_redirects=True)
     guest3 = flask_app.test_client()
     assert _login(guest3, "staff", "himitsu1234").status_code == 200
+
+
+def test_retired_staff_excluded_everywhere(tmp_path, monkeypatch):
+    """退職にした職員は生成・閲覧画面・印刷から外れる（データは残る）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    from models import db, Staff
+
+    with flask_app.app_context():
+        s = Staff.query.filter_by(name="介護D").first()
+        s.retired = True
+        db.session.commit()
+        retired_id = s.id
+
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    gen = client.post("/api/generate", json={"year": 2026, "month": 9}).get_json()
+    assert gen["status"] == "success"
+
+    data = client.get("/api/shifts/2026/9").get_json()
+    ids = {s["id"] for s in data["staff_list"]}
+    assert retired_id not in ids, "退職者が閲覧画面の一覧に出ている"
+    assert not [s for s in data["shifts"] if s["staff_id"] == retired_id], (
+        "退職者にシフトが割り当てられている"
+    )
+
+    # 職員データ自体は残る（履歴を消さない）
+    with flask_app.app_context():
+        assert Staff.query.get(retired_id) is not None

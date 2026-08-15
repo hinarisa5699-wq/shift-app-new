@@ -39,6 +39,17 @@
                 <span class="ml-3 text-lg font-semibold text-gray-700">休職中</span>
             </label>
             <p class="text-gray-600 text-sm mt-1 ml-8">チェックを入れると、この職員はシフト生成・オンコールの対象外になり、印刷一覧にも表示されません。職員データは削除せず残ります（復職時はチェックを外してください）。</p>
+
+            <label class="flex items-center cursor-pointer mt-4">
+                <input type="checkbox" name="retired" value="1"
+                       {% if staff and staff.retired %}checked{% endif %}
+                       class="w-5 h-5 text-gray-600 border-gray-300 rounded focus:ring-gray-500">
+                <span class="ml-3 text-lg font-semibold text-gray-700">退職（在籍していない）</span>
+            </label>
+            <p class="text-gray-600 text-sm mt-1 ml-8">
+                退職した職員はこちらにチェックしてください。シフト生成・オンコール・職員が見る閲覧画面・印刷のすべてから外れます。
+                過去のシフトを残すため、データは削除しません。
+            </p>
         </div>
 
         <!-- 性別 -->

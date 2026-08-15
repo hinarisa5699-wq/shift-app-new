@@ -653,29 +653,39 @@ function clearExecPlan() {
 }
 
 // 表を横に動かすスライドバー（表の上と、介護看護と調理の間）を本体と合わせる
+//   ※表は描き直すたびに中身が作り直されるので、その都度いまある要素を探す
+function currentScrollBars() {
+    const main = document.getElementById('table-scroll');
+    const bars = Array.from(document.querySelectorAll('.proxy-scroll'));
+    const top = document.getElementById('table-scroll-top');
+    if (top) bars.push(top);
+    return main ? [main].concat(bars) : bars;
+}
+
 function syncTableScrollbars() {
     const main = document.getElementById('table-scroll');
     const table = document.getElementById('calendar-table');
     if (!main || !table) return;
-    const bars = Array.from(document.querySelectorAll('.proxy-scroll'));
-    const top = document.getElementById('table-scroll-top');
-    if (top) bars.push(top);
+    const bars = currentScrollBars();
     bars.forEach(b => {
+        if (b === main) return;
         b.style.width = main.clientWidth + 'px';
         if (b.firstElementChild) b.firstElementChild.style.width = table.scrollWidth + 'px';
     });
-    const all = [main].concat(bars);
-    all.forEach(el => {
+    bars.forEach(el => {
         if (el.dataset.syncReady === '1') return;
         el.dataset.syncReady = '1';
         el.addEventListener('scroll', () => {
             if (window.__scrollSyncing) return;
             window.__scrollSyncing = true;
-            all.forEach(other => { if (other !== el) other.scrollLeft = el.scrollLeft; });
+            currentScrollBars().forEach(other => {
+                if (other !== el) other.scrollLeft = el.scrollLeft;
+            });
             window.__scrollSyncing = false;
         });
     });
-    // 幅が変わったら合わせ直す
+    // いまの位置に合わせておく（描き直した直後のズレを防ぐ）
+    bars.forEach(b => { if (b !== main) b.scrollLeft = main.scrollLeft; });
     if (!window.__scrollResizeReady) {
         window.__scrollResizeReady = true;
         window.addEventListener('resize', () => syncTableScrollbars());

@@ -693,7 +693,8 @@ def _run_migrations(app):
         # 調理フォールバック用: 9:00-16:00 の調理パターンを保証（1人で昼夜をまかなう）
         cursor.execute(
             "SELECT COUNT(*) FROM shift_pattern "
-            "WHERE staff_group='cooking' AND start_time='09:00' AND end_time='16:00'"
+            "WHERE staff_group='cooking' AND ("
+            "  (start_time='09:00' AND end_time='16:00') OR code='cooking_6')"
         )
         if cursor.fetchone()[0] == 0:
             cursor.execute(

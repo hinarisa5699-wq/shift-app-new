@@ -286,3 +286,27 @@ def test_retired_staff_excluded_everywhere(tmp_path, monkeypatch):
     # 職員データ自体は残る（履歴を消さない）
     with flask_app.app_context():
         assert Staff.query.get(retired_id) is not None
+
+
+def test_staff_list_hides_inactive_by_default(tmp_path, monkeypatch):
+    """職員一覧は既定で在籍中のみ。切替で休職中・退職者も見られる。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    from models import db, Staff
+
+    with flask_app.app_context():
+        Staff.query.filter_by(name="介護C").first().on_leave = True
+        Staff.query.filter_by(name="介護D").first().retired = True
+        db.session.commit()
+
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+
+    html = client.get("/staff").get_data(as_text=True)
+    assert "介護A" in html
+    assert "介護C" not in html, "休職中が一覧に出ている"
+    assert "介護D" not in html, "退職者が一覧に出ている"
+    assert "休職中・退職者も表示" in html
+
+    html2 = client.get("/staff?show_inactive=1").get_data(as_text=True)
+    assert "介護C" in html2 and "介護D" in html2

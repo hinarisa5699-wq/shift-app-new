@@ -1347,9 +1347,23 @@ def create_app():
 
     @app.route("/staff")
     def staff_list():
-        """職員一覧"""
-        staffs = Staff.query.order_by(Staff.id).all()
-        return render_template("staff_list.html", staff_list=staffs)
+        """職員一覧（既定では在籍中のみ。休職中・退職者は切替で表示）。
+
+        ユーザー依頼（2026-08）:「退職した人や休職中も一覧から表示されないようにして」。
+        データは残したまま、普段の一覧からは隠す。
+        """
+        show_inactive = request.args.get("show_inactive") == "1"
+        query = Staff.query
+        if not show_inactive:
+            query = query.filter_by(on_leave=False, retired=False)
+        staffs = query.order_by(Staff.id).all()
+        inactive_count = Staff.query.filter(
+            db.or_(Staff.on_leave == True, Staff.retired == True)  # noqa: E712
+        ).count()
+        return render_template(
+            "staff_list.html", staff_list=staffs,
+            show_inactive=show_inactive, inactive_count=inactive_count,
+        )
 
     @app.route("/staff/new")
     def staff_new():

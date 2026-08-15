@@ -8,13 +8,28 @@
         <h1 class="text-3xl font-bold text-primary-800 mb-1">職員一覧</h1>
         <p class="text-gray-600 text-lg">登録されている職員の情報を管理できます。</p>
     </div>
+    <div class="mt-4 sm:mt-0 flex items-center gap-3">
+    {% if inactive_count %}
+        {% if show_inactive %}
+        <a href="{{ url_for('staff_list') }}"
+           class="inline-flex items-center bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-4 rounded-lg transition-colors text-sm">
+            在籍中だけ表示
+        </a>
+        {% else %}
+        <a href="{{ url_for('staff_list', show_inactive=1) }}"
+           class="inline-flex items-center bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-4 rounded-lg transition-colors text-sm">
+            休職中・退職者も表示（{{ inactive_count }}名）
+        </a>
+        {% endif %}
+    {% endif %}
     <a href="{{ url_for('staff_new') }}"
-       class="mt-4 sm:mt-0 inline-flex items-center bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors text-lg">
+       class="inline-flex items-center bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors text-lg">
         <svg class="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
         </svg>
         新規登録
     </a>
+    </div>
 </div>
 
 <!-- CSV 一括管理 -->

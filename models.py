@@ -78,7 +78,8 @@ class Staff(db.Model):
     # 区分: "cooking" = 調理, "nurse_rehab" = 看護師・リハ, "caregiver" = 介護職員
     # ※ staff_group(care/cooking) は job_category から自動連動する（調理→cooking, それ以外→care）
     role = db.Column(db.String(20), default="", nullable=False)
-    # 役割: "" = なし, "manager" = 管理者, "sekinin" = サ責, "sekinin_assist" = サ責補佐
+    # 役割: "" = なし, "manager" = 管理者, "sekinin" = サ責, "sekinin_assist" = サ責補佐,
+    #       "executive" = 役員
     can_bath_assist = db.Column(db.Boolean, default=False)
     # True = 入浴介助可
     work_start_time = db.Column(db.String(5), default="", nullable=False)  # "HH:MM" 空欄可

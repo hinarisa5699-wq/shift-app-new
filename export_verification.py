@@ -37,7 +37,8 @@ def map_value(table, value, default=None):
 
 
 JOB = {"caregiver": "介護", "nurse_rehab": "看護", "cooking": "調理"}
-ROLE = {"": "", "manager": "管理者", "sekinin": "サ責", "sekinin_assist": "サ責補佐"}
+ROLE = {"": "", "manager": "管理者", "sekinin": "サ責", "sekinin_assist": "サ責補佐",
+        "executive": "役員"}
 GENDER = {"": "未設定", "female": "女性", "male": "男性"}
 WEEKEND = {"": "制約なし", "one_off": "土日どちらか休み"}
 TIMESLOT = {"full_day": "終日", "am": "午前", "pm": "午後", "": ""}

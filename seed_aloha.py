@@ -341,7 +341,10 @@ def seed():
         settings.min_visit_pm = 1          # 訪問午後1名
         settings.min_dual_assignment = 0   # 兼務者最低人数（0=制約なし）
         settings.closed_days = ""          # 休業日なし（毎日営業）
-        settings.visit_operating_days = "0,1,3,4"  # 月火木金
+        settings.visit_operating_days = "1,3"             # 訪問=火木
+        settings.day_service_operating_days = "0,2,4"     # デイ=月水金
+        settings.no_day_service_days = "1,3,5,6"          # 上記の裏返し（火木土日）
+        # 調理は毎日（曜日設定なし。休業日=closed_days のみに従う）
         settings.min_cooking_staff = 1     # 調理各スロット1名
         settings.min_cooking_overlap = 2   # 引き継ぎ重複2名
         settings.am_preferred_gender = ""

@@ -255,6 +255,7 @@ ROLES = [
     ("manager", "管理者"),
     ("sekinin", "サ責"),
     ("sekinin_assist", "サ責補佐"),
+    ("executive", "役員"),
 ]
 ROLE_LABELS = dict(ROLES)
 
@@ -287,6 +288,7 @@ def _normalize_role(value: str) -> str:
         "manager": "manager", "管理者": "manager",
         "sekinin": "sekinin", "サ責": "sekinin", "サービス提供責任者": "sekinin",
         "sekinin_assist": "sekinin_assist", "サ責補佐": "sekinin_assist",
+        "executive": "executive", "役員": "executive", "理事": "executive",
     }
     return table.get(v, table.get(v.lower(), ""))
 

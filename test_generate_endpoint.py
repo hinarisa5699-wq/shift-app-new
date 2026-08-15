@@ -675,3 +675,96 @@ def test_whitelist_staff_gets_scheduled_on_registered_days(tmp_path, monkeypatch
 
     target = next(x["public_holiday_target"] for x in data["staff_list"] if x["id"] == sid)
     assert target == 28, f"公休目標が登録日数に合っていない: {target}"
+
+
+def _add_executive(flask_app, name="役員I"):
+    """役員（自動作成の対象外・休みだけ手入力）を1名足す。"""
+    from models import db, Staff
+
+    with flask_app.app_context():
+        st = Staff(
+            name=name, employment_type="常勤", job_category="executive",
+            staff_group="care", can_visit=False, max_consecutive_days=5,
+            max_days_per_week=5, min_days_per_week=0,
+            available_days="0,1,2,3,4,5,6", available_time_slots="full_day",
+            gender="male",
+        )
+        db.session.add(st)
+        db.session.commit()
+        return st.id
+
+
+def test_executive_is_not_scheduled_but_listed(tmp_path, monkeypatch):
+    """役員は自動作成でシフトが入らないが、名前は一覧に出る。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    exec_id = _add_executive(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    res = client.post("/api/generate", json={"year": 2026, "month": 9})
+    assert res.status_code == 200, res.get_data(as_text=True)[:300]
+
+    data = client.get("/api/shifts/2026/9").get_json()
+    assert any(s["id"] == exec_id for s in data["staff_list"]), "一覧に名前が出ていない"
+    assert not [x for x in data["shifts"] if x["staff_id"] == exec_id], "役員に勤務が入っている"
+    # 公休の目標も持たない（公休不足の警告を出さない）
+    st = next(s for s in data["staff_list"] if s["id"] == exec_id)
+    assert st["public_holiday_target"] == 0
+
+
+def test_executive_accepts_only_day_off(tmp_path, monkeypatch):
+    """役員のセルには「休み」だけ入れられる（他のシフトは入らない）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    exec_id = _add_executive(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-01", "staff_id": exec_id, "assignment": "exec_off"}],
+    })
+    assert res.status_code == 200
+    assert res.get_json()["applied"] == 1
+    after = client.get("/api/shifts/2026/9").get_json()
+    assert [x for x in after["shifts"]
+            if x["staff_id"] == exec_id and x["assignment"] == "exec_off"]
+
+    # 介護のシフトは受け付けない
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-02", "staff_id": exec_id, "assignment": "early"}],
+    })
+    assert res.get_json()["applied"] == 0
+    after = client.get("/api/shifts/2026/9").get_json()
+    assert not [x for x in after["shifts"]
+                if x["staff_id"] == exec_id and x["date"] == "2026-09-02"]
+
+
+def test_executive_day_off_is_not_counted_as_work(tmp_path, monkeypatch):
+    """役員の「休み」は出勤日数にも介護の配置人数にも数えない。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    exec_id = _add_executive(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-01", "staff_id": exec_id, "assignment": "exec_off"}],
+    })
+    data = client.get("/api/shifts/2026/9").get_json()
+    gen = data["generation_id"]
+    csv_text = client.get(f"/api/export/{gen}/csv").get_data(as_text=True)
+    row = next(l for l in csv_text.split("\n") if l.startswith("役員I")).strip()
+    assert row.split(",")[1] == "休", f"休みが入っていない: {row[:40]}"
+    assert row.split(",")[-1] == "0", f"出勤日数が0になっていない: {row[-40:]}"
+    # 介護職員の休みは「exec_off」を使えない
+    care_id = next(s["id"] for s in data["staff_list"]
+                   if s["department"] != "cooking" and s["id"] != exec_id)
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-03", "staff_id": care_id, "assignment": "exec_off"}],
+    })
+    assert res.get_json()["applied"] == 0

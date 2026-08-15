@@ -33,6 +33,8 @@ from openpyxl.worksheet.properties import PageSetupProperties
 # 定数: アサインメント → 日本語表示ラベル
 # ---------------------------------------------------------------------------
 ASSIGNMENT_LABELS = {
+    # 役員の「休み」（自動作成では勤務を入れず、休みだけ手入力する）
+    "exec_off":      "休",
     "day_pattern1":    "デイ8:30-17:30",
     "day_pattern2":    "デイ9:00-16:00",
     "day_pattern3":    "デイ午前のみ",
@@ -210,7 +212,7 @@ def _is_nurse_or_pt_staff(staff: dict) -> bool:
 
     ドライバーは送迎担当なので介護の配置人数に含めない（ユーザー依頼 2026-08）。
     """
-    if str(staff.get("job_category", "") or "") == "driver":
+    if str(staff.get("job_category", "") or "") in ("driver", "executive"):
         return True
     qual_codes = {
         code for code in staff.get("qualification_codes", [])
@@ -721,7 +723,7 @@ def _write_group_sheet(
             elif col_fill:
                 cell.fill = col_fill
 
-            if asgn not in (off_token, ""):
+            if asgn not in (off_token, "", "exec_off"):
                 work_days += 1
 
         total_cell = ws.cell(row=row, column=total_col, value=work_days)
@@ -1015,7 +1017,7 @@ def export_csv(
                 if not text and _is_day_off_request(d_str, sid):
                     text = "希望休"
                 cells.append(text)
-                if asgn not in (off_token, ""):
+                if asgn not in (off_token, "", "exec_off"):
                     work_days += 1
             writer.writerow([name] + cells + [work_days])
 
@@ -1416,7 +1418,7 @@ def export_pdf_individual(
             asgn, text = _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map)
         text = _append_parking(text, parking_map, d_str, sid)
         off_token = "cook_off" if is_cook else "off"
-        working = asgn not in (off_token, "")
+        working = asgn not in (off_token, "", "exec_off")
         if not text:
             # 休み（off）・未割当は「休」表示。空文字は当該日に行が無い＝休扱い。
             #   本人の休み希望日は「希望休」と表示する。
@@ -1892,7 +1894,7 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
     work_days = {}
     for it in shifts_data:
         a_code = it.get("assignment") or ""
-        if a_code in ("", "off", "cook_off"):
+        if a_code in ("", "off", "cook_off", "exec_off"):
             continue
         work_days[it["staff_id"]] = work_days.get(it["staff_id"], 0) + 1
     first_iso = date(year, month, 1).isoformat()

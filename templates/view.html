@@ -90,6 +90,7 @@
 
 <script>
 const LABELS = {
+    exec_off: '休',
     day_pattern1: 'デイ 8:30-17:30',
     day_pattern2: 'デイ 9:00-16:00',
     day_pattern3: 'デイ 午前のみ',
@@ -251,7 +252,8 @@ function visitSlotOf(data, dateStr, sid) {
 }
 
 function cellHtml(data, sid, dateStr, assignment, visitSet, dow) {
-    const off = !assignment || assignment === 'off' || assignment === 'cook_off';
+    const off = !assignment || assignment === 'off' || assignment === 'cook_off'
+                || assignment === 'exec_off';
     if (off) {
         const ids = (data.day_off_requests || {})[dateStr] || [];
         return ids.indexOf(sid) !== -1
@@ -350,7 +352,7 @@ function renderPerson(data, map, dates, visitSet) {
     let work = 0;
     const rows = dates.map(({ d, dateStr, dow }) => {
         const a = (map[dateStr] || {})[sid];
-        if (a && a !== 'off' && a !== 'cook_off') work++;
+        if (a && a !== 'off' && a !== 'cook_off' && a !== 'exec_off') work++;
         const oncall = (data.oncall || {})[dateStr] === staff.name;
         const hol = (data.holidays || {})[dateStr];
         return `<tr class="${dayClass(data, dateStr, dow)} border-b border-gray-100">

@@ -81,6 +81,9 @@ def _public_holiday_target(st, year=None, month=None) -> int:
     if getattr(st, "oncall_only", False):
         # オンコールのみ当番の職員は出勤枠を持たないので公休の目標も課さない
         return 0
+    if (getattr(st, "job_category", "") or "") == "executive":
+        # 役員は自動作成の対象外なので公休の目標も持たない
+        return 0
     settings_obj = ShiftSettings.query.first()
     manual = int(getattr(st, "public_holiday_count", 0) or 0)
     if not settings_obj or not getattr(settings_obj, "auto_public_holidays", False):
@@ -241,12 +244,17 @@ def _normalize_staff_group(value: str) -> str:
     return "care"
 
 
+# 役員のセルに入れる「休み」。自動作成では勤務を入れないので、
+#   休みだけをこのコードで記録する（ユーザー依頼 2026-08）。
+EXEC_OFF_CODE = "exec_off"
+
 # --- 区分(job_category) / 役割(role) の選択肢とラベル ---
 JOB_CATEGORIES = [
     ("caregiver", "介護"),
     ("nurse_rehab", "看護"),
     ("driver", "ドライバー"),
     ("cooking", "調理"),
+    ("executive", "役員"),
 ]
 JOB_CATEGORY_LABELS = dict(JOB_CATEGORIES)
 
@@ -269,6 +277,9 @@ def _normalize_job_category(value: str) -> str:
         return "cooking"
     if v in ("nurse_rehab", "看護師・リハ", "看護師", "看護", "リハ", "リハビリ", "nurse", "pt"):
         return "nurse_rehab"
+    if v in ("executive", "役員", "事務", "事務員", "事務職員", "理事"):
+        # 役員は自動作成の対象外。名前だけ表に出して「休み」を手入力する（ユーザー依頼 2026-08）
+        return "executive"
     if v in ("driver", "ドライバー", "運転手", "送迎", "運転"):
         # ドライバーは送迎担当。介護の配置人数には数えない（ユーザー依頼 2026-08）
         return "driver"
@@ -2601,6 +2612,9 @@ def create_app():
 
         # 休職中の職員は生成対象から除外（オンコールも含め一切割り当てない）。
         staffs = _active_staff_for_month(year, month)
+        # 役員は自動作成の対象外（名前だけ表に出して休みを手入力する）
+        staffs = [st for st in staffs
+                  if (getattr(st, "job_category", "") or "") != "executive"]
         if not staffs:
             return jsonify({"error": "職員が登録されていません"}), 400
 
@@ -3406,7 +3420,7 @@ def create_app():
 
         valid_codes = set(CARE_ASSIGNMENTS) | set(COOK_ASSIGNMENTS) | {
             p.code for p in ShiftPattern.query.filter_by(staff_group="cooking").all()
-        }
+        } | {EXEC_OFF_CODE}
         staff_by_id = {s.id: s for s in Staff.query.all()}
 
         applied = 0
@@ -3452,9 +3466,13 @@ def create_app():
                 continue
             if code not in valid_codes:
                 continue
+            is_exec = (getattr(st, "job_category", "") or "") == "executive"
+            if is_exec != (code == EXEC_OFF_CODE):
+                # 役員は「休み」だけ、役員以外に役員の休みは入れられない
+                continue
             # 区分違いの割り当て（調理職員に介護シフト等）は受け付けない
             is_cook_code = code.startswith("cooking_") or code in COOK_ASSIGNMENTS
-            if is_cook_code != (st.staff_group == "cooking"):
+            if not is_exec and is_cook_code != (st.staff_group == "cooking"):
                 continue
             slot = ch.get("visit_slot")
             slot = slot if slot in ("am", "pm") else None

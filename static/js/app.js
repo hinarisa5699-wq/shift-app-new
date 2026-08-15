@@ -50,6 +50,8 @@ function fetchWithCsrf(url, options = {}) {
    配置タイプの定義
    ============================================ */
 const ASSIGNMENT_MAP = {
+    // 役員の休み（自動作成では勤務を入れず、休みだけ手入力する）
+    exec_off:      { label: '休',              badgeClass: 'badge-off'      },
     day_pattern1:    { label: 'デイ8:30-17:30',  badgeClass: 'badge-day-full'  },
     day_pattern2:    { label: 'デイ9:00-16:00',  badgeClass: 'badge-day-p2'   },
     day_pattern3:    { label: 'デイ午前のみ',     badgeClass: 'badge-day-am'   },
@@ -608,6 +610,11 @@ function initShiftDragAndDrop() {
         const toStaff = Number(td.dataset.staff);
         const toGroup = td.dataset.group;
         const code = info.code;
+        if (toGroup === 'executive') {
+            setEditStatus('役員は「休み」だけです。セルをクリックで切り替えてください', 'error');
+            window.__dragInfo = null;
+            return;
+        }
         const isCookCode = code.indexOf('cooking_') === 0 || code === 'cook_off';
         if (code !== 'off' && isCookCode !== (toGroup === 'cooking')) {
             setEditStatus('介護・看護と調理のシフトは入れ替えられません', 'error');
@@ -655,6 +662,15 @@ function initShiftDragAndDrop() {
         }
         applyLocalEdit(toDate, toStaff, code === 'off' ? '' : code);
         window.__dragInfo = null;
+    });
+
+    // 役員: セルをクリックで「休」を付けたり外したりする
+    table.addEventListener('click', e => {
+        const td = e.target.closest('td.shift-cell');
+        if (!td || td.dataset.group !== 'executive') return;
+        const isOff = td.dataset.assignment === 'exec_off';
+        applyLocalEdit(td.dataset.date, Number(td.dataset.staff), isOff ? '' : 'exec_off');
+        setEditStatus(isOff ? '休みを外しました' : '休みにしました', 'ok');
     });
 
     // オンコール担当の入れ替え（プルダウン）
@@ -868,6 +884,12 @@ function renderCalendar(data, year, month) {
     // ケアスタッフ 1 セルの中身
     function careCellHtml(dateStr, s) {
         const assignment = shiftMap[dateStr] ? shiftMap[dateStr][s.id] : null;
+        if (s.job_category === 'executive') {
+            // 役員は自動作成の対象外。クリックで「休」を付けたり外したりする
+            return assignment === 'exec_off'
+                ? '<span class="badge badge-off">休</span>'
+                : '<span style="color:#d1d5db;font-size:10px">＋</span>';
+        }
         if (!assignment || assignment === 'off') {
             return offCellHtml(dateStr, s);
         }
@@ -935,12 +957,15 @@ function renderCalendar(data, year, month) {
         let work = 0;
         let r = '<tr>' + nameCellHtml(s, true);
         dayMeta.forEach(m => {
-            const assignment = shiftMap[m.dateStr] ? shiftMap[m.dateStr][s.id] : null;
-            if (assignment && assignment !== 'off') work++;
             const _a = shiftMap[m.dateStr] ? shiftMap[m.dateStr][s.id] : null;
-            const _drag = (_a && _a !== 'off') ? ' draggable="true"' : '';
+            const isExec = (s.job_category === 'executive');
+            if (_a && _a !== 'off' && _a !== 'exec_off') work++;
+            const _drag = (!isOffice && _a && _a !== 'off') ? ' draggable="true"' : '';
+            const _grp = isExec ? 'executive' : 'care';
+            const _cur = isExec ? ' style="cursor:pointer"' : '';
             r += `<td class="staff-cell shift-cell ${m.colClass}" data-date="${m.dateStr}" data-staff="${s.id}"`
-               + ` data-group="care" data-assignment="${_a || ''}"${_drag}>${careCellHtml(m.dateStr, s)}</td>`;
+               + ` data-group="${_grp}" data-assignment="${_a || ''}"${_drag}${_cur}>`
+               + `${careCellHtml(m.dateStr, s)}</td>`;
         });
         r += `<td class="date-cell" style="font-weight:bold">${work}</td></tr>`;
         html += r;
@@ -1816,6 +1841,8 @@ function escapeHtml(text) {
 }
 
 function isNurseOrPtStaff(staff) {
+    // ドライバー・役員は介護の配置人数に数えない
+    if (staff.job_category === 'driver' || staff.job_category === 'executive') return true;
     const qualificationCodes = new Set(staff.qualification_codes || []);
     if (qualificationCodes.has('nurse') || qualificationCodes.has('pt')) {
         return true;

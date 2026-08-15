@@ -8,6 +8,7 @@
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='icons/favicon-32.png') }}" sizes="32x32">
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
     <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <meta name="theme-color" content="#0ea5b7">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="Alohaシフト">
@@ -89,6 +90,11 @@
 </main>
 
 <script>
+const CAN_EDIT_EXEC = {{ 'true' if can_edit_exec else 'false' }};
+const EXEC_KINDS = ['終日休み', '終日デイ', '在宅勤務', '本部勤務', 'デイ', 'デイ面接', '契約'];
+const EXEC_NO_TIME_KINDS = ['終日休み', '終日デイ'];
+let execEdit = null;   // {date, staffId}
+
 const LABELS = {
     exec_off: '休',
     day_pattern1: 'デイ 8:30-17:30',
@@ -355,6 +361,7 @@ function renderPerson(data, map, dates, visitSet) {
     const sid = state.personId;
     const staff = (data.staff_list || []).find(s => s.id === sid);
     if (!staff) { el('person-view').innerHTML = ''; return; }
+    const canEdit = CAN_EDIT_EXEC && staff.job_category === 'executive';
     let work = 0;
     const rows = dates.map(({ d, dateStr, dow }) => {
         const a = (map[dateStr] || {})[sid];
@@ -367,7 +374,10 @@ function renderPerson(data, map, dates, visitSet) {
                 <span class="text-gray-500">(${DOW[dow]})</span>
                 ${hol ? `<div class="text-[10px] text-amber-700">${esc(hol)}</div>` : ''}
             </td>
-            <td class="px-3 py-3">${cellHtml(data, sid, dateStr, a, visitSet, dow)}</td>
+            <td class="px-3 py-3 ${canEdit ? 'cursor-pointer' : ''}"
+                ${canEdit ? `onclick="openExecPlan('${dateStr}', ${sid}, '${(a || '').replace(/'/g, "")}')"` : ''}>
+                ${cellHtml(data, sid, dateStr, a, visitSet, dow)}
+                ${canEdit ? '<span class="text-[10px] text-teal-600 ml-1">タップして変更</span>' : ''}</td>
             <td class="px-2 py-2 text-right">${oncall ? '<span class="text-[10px] bg-red-100 text-red-700 rounded px-2 py-1 font-bold">オンコール</span>' : ''}</td>
         </tr>`;
     }).join('');
@@ -431,6 +441,125 @@ setMode('person');
     await load();
 })();
 setInterval(load, 60000);   // 1分ごとに最新を取り込む
+
+/* --- 役員の予定をこの画面から入れる --- */
+function execTimeOptions() {
+    const opts = ['<option value="">指定なし</option>'];
+    for (let h = 6; h <= 21; h++) {
+        for (const m of ['00', '30']) opts.push(`<option value="${h}:${m}">${h}:${m}</option>`);
+    }
+    return opts.join('');
+}
+
+function openExecPlan(dateStr, staffId, current) {
+    execEdit = { date: dateStr, staffId: staffId };
+    const start = el('exec-start'), end = el('exec-end');
+    if (!start.options.length) { start.innerHTML = execTimeOptions(); end.innerHTML = execTimeOptions(); }
+    let kind = '終日休み', from = '', to = '';
+    if (current === 'exec_off') kind = '終日休み';
+    else if (current && current.indexOf('exec:') === 0) {
+        const text = current.slice(5);
+        const m = text.match(/^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})\s*(.*)$/);
+        if (m) { from = m[1]; to = m[2]; kind = m[3] || 'デイ'; } else { kind = text; }
+    }
+    el('exec-kind').innerHTML = EXEC_KINDS.map(k => `<option value="${k}">${k}</option>`).join('')
+        + '<option value="その他">その他（自分で入力）</option>';
+    const known = EXEC_KINDS.indexOf(kind) !== -1;
+    el('exec-kind').value = known ? kind : 'その他';
+    el('exec-free').value = known ? '' : kind;
+    el('exec-start').value = from;
+    el('exec-end').value = to;
+    el('exec-when').textContent = dateStr.slice(5).replace('-', '/');
+    onExecKindChange();
+    el('exec-modal').classList.remove('hidden');
+}
+
+function onExecKindChange() {
+    const kind = el('exec-kind').value;
+    el('exec-free-row').classList.toggle('hidden', kind !== 'その他');
+    el('exec-time-row').classList.toggle('hidden', EXEC_NO_TIME_KINDS.indexOf(kind) !== -1);
+}
+
+function closeExecPlan() {
+    el('exec-modal').classList.add('hidden');
+    execEdit = null;
+}
+
+async function sendExecPlan(code) {
+    if (!execEdit) return;
+    const token = document.querySelector('meta[name="csrf-token"]').content;
+    el('exec-msg').textContent = '保存中...';
+    try {
+        const r = await fetch('/api/shift/cells', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': token },
+            body: JSON.stringify({
+                year: state.year, month: state.month,
+                changes: [{ date: execEdit.date, staff_id: execEdit.staffId, assignment: code }],
+            }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || '保存できませんでした');
+        closeExecPlan();
+        await load();
+    } catch (e) {
+        el('exec-msg').textContent = e.message;
+    }
+}
+
+function saveExecPlan() {
+    let kind = el('exec-kind').value;
+    if (kind === 'その他') {
+        kind = (el('exec-free').value || '').trim();
+        if (!kind) { el('exec-msg').textContent = '内容を入力してください'; return; }
+    }
+    let code;
+    if (kind === '終日休み') code = 'exec_off';
+    else {
+        const from = el('exec-start').value, to = el('exec-end').value;
+        const withTime = (EXEC_NO_TIME_KINDS.indexOf(kind) === -1) && from && to;
+        code = 'exec:' + (withTime ? `${from}-${to} ${kind}` : kind);
+    }
+    sendExecPlan(code.slice(0, 30));
+}
+
+function clearExecPlan() { sendExecPlan(''); }
 </script>
+
+<!-- 役員の予定を入れる画面 -->
+<div id="exec-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center px-4"
+     style="background:rgba(0,0,0,.45)">
+    <div class="bg-white rounded-2xl shadow-xl p-5 w-full max-w-sm">
+        <div class="flex items-center justify-between mb-3">
+            <span class="text-lg font-bold text-gray-800">予定を入れる</span>
+            <span id="exec-when" class="text-sm text-gray-500"></span>
+        </div>
+        <label class="block text-sm font-bold text-gray-600 mb-1">内容</label>
+        <select id="exec-kind" onchange="onExecKindChange()"
+                class="w-full px-3 py-3 border border-gray-300 rounded-lg mb-3 text-base"></select>
+        <div id="exec-free-row" class="hidden mb-3">
+            <label class="block text-sm font-bold text-gray-600 mb-1">内容を入力</label>
+            <input id="exec-free" type="text" maxlength="12"
+                   class="w-full px-3 py-3 border border-gray-300 rounded-lg text-base" placeholder="例: 会議">
+        </div>
+        <div id="exec-time-row" class="mb-4">
+            <label class="block text-sm font-bold text-gray-600 mb-1">時間（いらないときは「指定なし」）</label>
+            <div class="flex items-center gap-2">
+                <select id="exec-start" class="flex-1 px-2 py-3 border border-gray-300 rounded-lg text-base"></select>
+                <span class="text-gray-500">〜</span>
+                <select id="exec-end" class="flex-1 px-2 py-3 border border-gray-300 rounded-lg text-base"></select>
+            </div>
+        </div>
+        <div id="exec-msg" class="text-sm text-red-600 mb-2"></div>
+        <div class="flex items-center gap-2">
+            <button onclick="saveExecPlan()"
+                    class="flex-1 bg-teal-600 hover:bg-teal-700 text-white font-bold py-3 rounded-lg">決定</button>
+            <button onclick="clearExecPlan()"
+                    class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-3 px-4 rounded-lg">空にする</button>
+            <button onclick="closeExecPlan()"
+                    class="bg-white border border-gray-300 text-gray-600 font-bold py-3 px-4 rounded-lg">やめる</button>
+        </div>
+    </div>
+</div>
 </body>
 </html>

@@ -882,3 +882,102 @@ def test_executive_can_take_oncall(tmp_path, monkeypatch):
     assert any(v == "役員オンコール" for v in oncall.values()), oncall
     # 勤務そのものは入っていない
     assert not [x for x in data["shifts"] if x["staff_id"] == exec_id]
+
+
+def _set_exec_password(flask_app, pw="execpass"):
+    from models import db, ShiftSettings
+    from werkzeug.security import generate_password_hash
+
+    with flask_app.app_context():
+        s = ShiftSettings.query.first()
+        s.exec_password_hash = generate_password_hash(pw)
+        db.session.commit()
+
+
+def test_exec_account_logs_in_to_viewer(tmp_path, monkeypatch):
+    """役員アカウント（yakuin）は閲覧ページに入る。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    _set_exec_password(flask_app)
+    client = flask_app.test_client()
+
+    res = _login(client, "yakuin", "execpass")
+    assert res.status_code in (301, 302)
+    assert "/view" in res.headers.get("Location", "")
+    assert client.get("/view").status_code == 200
+    assert client.get("/api/shifts/2026/9").status_code == 200
+
+    # 管理系の画面・APIは使えない
+    for path in ("/staff", "/settings", "/calendar"):
+        assert client.get(path).status_code in (301, 302), path
+    assert client.post("/api/generate", json={"year": 2026, "month": 9}).status_code == 403
+
+
+def test_exec_account_can_edit_only_executive_plans(tmp_path, monkeypatch):
+    """役員アカウントは役員の予定だけ入れられる（他人のシフトは不可）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    exec_id = _add_executive(flask_app)
+    _set_exec_password(flask_app)
+
+    admin = flask_app.test_client()
+    _login(admin, "admin", "testpass")
+    admin.post("/api/generate", json={"year": 2026, "month": 9})
+    care_id = next(s["id"] for s in admin.get("/api/shifts/2026/9").get_json()["staff_list"]
+                   if s["department"] != "cooking" and s["id"] != exec_id)
+
+    client = flask_app.test_client()
+    _login(client, "yakuin", "execpass")
+
+    ok = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-05", "staff_id": exec_id, "assignment": "exec:本部勤務"}],
+    })
+    assert ok.status_code == 200, ok.get_data(as_text=True)[:200]
+
+    # 他の職員のシフトは変えられない
+    ng = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-05", "staff_id": care_id, "assignment": "early"}],
+    })
+    assert ng.status_code == 403
+
+    # 役員に介護のシフトも入れられない
+    ng2 = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-06", "staff_id": exec_id, "assignment": "early"}],
+    })
+    assert ng2.status_code == 403
+
+    after = admin.get("/api/shifts/2026/9").get_json()
+    assert [x for x in after["shifts"]
+            if x["staff_id"] == exec_id and x["assignment"] == "exec:本部勤務"]
+
+
+def test_exec_plan_allowed_even_when_confirmed(tmp_path, monkeypatch):
+    """確定済みの月でも役員の予定は入れられる（勤務表は変わらないため）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    exec_id = _add_executive(flask_app)
+    _set_exec_password(flask_app)
+    admin = flask_app.test_client()
+    _login(admin, "admin", "testpass")
+    admin.post("/api/generate", json={"year": 2026, "month": 9})
+    assert admin.post("/api/shifts/2026/9/confirm").status_code == 200
+
+    client = flask_app.test_client()
+    _login(client, "yakuin", "execpass")
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-07", "staff_id": exec_id, "assignment": "exec:在宅勤務"}],
+    })
+    assert res.status_code == 200, res.get_data(as_text=True)[:200]
+
+    # 通常のシフトは確定済みなので変えられない
+    care_id = next(s["id"] for s in admin.get("/api/shifts/2026/9").get_json()["staff_list"]
+                   if s["department"] != "cooking" and s["id"] != exec_id)
+    blocked = admin.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-07", "staff_id": care_id, "assignment": "early"}],
+    })
+    assert blocked.status_code == 409

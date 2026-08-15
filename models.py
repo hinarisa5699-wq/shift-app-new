@@ -388,6 +388,8 @@ class ShiftSettings(db.Model):
     #   例 "3,3,3,3,3,2,0" ／ 未設定(空文字)なら従来動作（デイ営業日=デイ人数設定、
     #   デイ非営業日=2名）にフォールバックする。
     viewer_password_hash = db.Column(db.String(255), default="", nullable=False)
+    # 役員用（閲覧＋自分の予定の入力だけできる）パスワード
+    exec_password_hash = db.Column(db.String(255), default="", nullable=False)
     # 閲覧専用ページ(/view)のパスワード（ハッシュ化して保存。空＝閲覧アカウント無効）
     #   ユーザー依頼 2026-08: Renderの環境変数を触らずに画面から設定できるように。
     oncall_requires_work = db.Column(db.Boolean, default=True, nullable=False)

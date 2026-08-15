@@ -616,6 +616,11 @@ def _run_migrations(app):
         cursor.execute(
             "ALTER TABLE shift_settings ADD COLUMN viewer_password_hash VARCHAR(255) NOT NULL DEFAULT ''"
         )
+    if "exec_password_hash" not in columns:
+        # 役員用ページのパスワード（ハッシュ）
+        cursor.execute(
+            "ALTER TABLE shift_settings ADD COLUMN exec_password_hash VARCHAR(255) NOT NULL DEFAULT ''"
+        )
     if "oncall_requires_work" not in columns:
         # オンコールは出勤している職員にだけ割り当てる（既定ON）
         cursor.execute(
@@ -1137,6 +1142,9 @@ def _load_users():
 # 閲覧専用ロール（このロールは下のエンドポイントだけアクセスできる）
 VIEWER_ROLE = "閲覧"
 VIEWER_USERNAME = "staff"
+# 役員ロール（閲覧＋役員自身の予定の入力だけできる）
+EXEC_VIEW_ROLE = "役員閲覧"
+EXEC_USERNAME = "yakuin"
 _VIEWER_ENDPOINTS = {
     "view_shift",           # 閲覧専用ページ
     "api_shifts_get",       # 月のシフト取得（読み取り）
@@ -1145,6 +1153,9 @@ _VIEWER_ENDPOINTS = {
     "login",
     "static",
 }
+
+# 役員ロールは閲覧に加えて「役員の予定」の保存だけできる
+_EXEC_ENDPOINTS = _VIEWER_ENDPOINTS | {"api_shift_cells_update"}
 
 
 # ログイン不要でアクセスできるエンドポイント
@@ -1245,6 +1256,15 @@ def create_app():
                 if request.path.startswith("/api/"):
                     return jsonify({"error": "閲覧専用アカウントでは実行できません"}), 403
                 return redirect(url_for("view_shift"))
+        if session.get("role") == EXEC_VIEW_ROLE:
+            # 閲覧＋「役員の予定」の保存のみ（中身のチェックは保存時に行う）
+            ok = endpoint in _EXEC_ENDPOINTS and (
+                request.method == "GET" or endpoint == "api_shift_cells_update"
+            )
+            if not ok:
+                if request.path.startswith("/api/"):
+                    return jsonify({"error": "役員アカウントでは実行できません"}), 403
+                return redirect(url_for("view_shift"))
         return None
 
     @app.route("/login", methods=["GET", "POST"])
@@ -1255,6 +1275,12 @@ def create_app():
             username = (request.form.get("username") or "").strip()
             password = request.form.get("password") or ""
             user = app.config["USERS"].get(username)
+            if not user and username == EXEC_USERNAME:
+                # 条件設定画面から決めた役員用パスワードでログインする
+                _st = ShiftSettings.query.first()
+                _hash = getattr(_st, "exec_password_hash", "") or ""
+                if _hash:
+                    user = {"hash": _hash, "role": EXEC_VIEW_ROLE}
             if not user and username == VIEWER_USERNAME:
                 # 環境変数を使わず、条件設定画面から決めた閲覧パスワードでログインする
                 _st = ShiftSettings.query.first()
@@ -1264,12 +1290,12 @@ def create_app():
             if user and check_password_hash(user["hash"], password):
                 session["user"] = username
                 session["role"] = user["role"]
+                _view_only = user["role"] in (VIEWER_ROLE, EXEC_VIEW_ROLE)
                 default_next = (
-                    url_for("view_shift") if user["role"] == VIEWER_ROLE
-                    else url_for("index")
+                    url_for("view_shift") if _view_only else url_for("index")
                 )
                 nxt = request.args.get("next") or default_next
-                if user["role"] == VIEWER_ROLE:
+                if _view_only:
                     nxt = default_next
                 # オープンリダイレクト防止: 内部パスのみ許可
                 if not nxt.startswith("/"):
@@ -1549,6 +1575,8 @@ def create_app():
             default_year=today.year,
             default_month=today.month,
             is_viewer=(session.get("role") == VIEWER_ROLE),
+            # 役員の予定を画面から入れられる人（役員アカウント・管理者・サ責）
+            can_edit_exec=(session.get("role") != VIEWER_ROLE),
         )
 
     # -----------------------------------------------------------------
@@ -2224,6 +2252,12 @@ def create_app():
             s.viewer_password_hash = ""
         elif _vp:
             s.viewer_password_hash = generate_password_hash(_vp)
+        # 役員用のパスワード（空欄＝変更なし／「解除」で無効化）
+        _ep = (request.form.get("exec_password") or "").strip()
+        if "exec_password_clear" in request.form:
+            s.exec_password_hash = ""
+        elif _ep:
+            s.exec_password_hash = generate_password_hash(_ep)
         s.phone_duty_max_consecutive = safe_int(request.form.get("phone_duty_max_consecutive"), 1)
         s.min_staff_at_9 = safe_int(request.form.get("min_staff_at_9"), 4)
         s.min_staff_at_15 = safe_int(request.form.get("min_staff_at_15"), 4)
@@ -3412,7 +3446,30 @@ def create_app():
         if not isinstance(changes, list):
             return jsonify({"error": "changes の形式が正しくありません"}), 400
 
-        if ShiftConfirmation.query.filter_by(year=year, month=month).first():
+        is_exec_account = session.get("role") == EXEC_VIEW_ROLE
+        exec_staff_ids = {
+            st.id for st in Staff.query.all()
+            if (getattr(st, "job_category", "") or "") == "executive"
+        }
+        if is_exec_account:
+            # 役員アカウントは役員の予定だけ。ほかの職員のシフトは触れない
+            for ch in changes:
+                if safe_int(ch.get("staff_id"), None) not in exec_staff_ids:
+                    return jsonify({
+                        "error": "役員アカウントで変えられるのは役員の予定だけです",
+                    }), 403
+                _c = (ch.get("assignment") or "").strip()
+                if _c not in ("", EXEC_OFF_CODE) and not _c.startswith(EXEC_PLAN_PREFIX):
+                    return jsonify({
+                        "error": "役員アカウントで入れられるのは役員の予定だけです",
+                    }), 403
+
+        # 役員の予定だけの変更は、確定済みの月でも入れられる（勤務表は変わらないため）
+        _only_exec_changes = all(
+            safe_int(ch.get("staff_id"), None) in exec_staff_ids for ch in changes
+        ) if changes else False
+        if (not _only_exec_changes
+                and ShiftConfirmation.query.filter_by(year=year, month=month).first()):
             return jsonify({
                 "error": "この月は確定済みのため変更できません。先に「確定解除」してください。",
                 "confirmed": True,

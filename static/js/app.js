@@ -652,9 +652,34 @@ function clearExecPlan() {
     closeExecModal();
 }
 
-// 表のスクロール位置まわり（表の中で縦横にスクロールする）
+// 表を横に動かすスライドバー（表の上と、介護看護と調理の間）を本体と合わせる
 function syncTableScrollbars() {
-    // スライドバーは表そのものに付いている（追加のバーは置かない）
+    const main = document.getElementById('table-scroll');
+    const table = document.getElementById('calendar-table');
+    if (!main || !table) return;
+    const bars = Array.from(document.querySelectorAll('.proxy-scroll'));
+    const top = document.getElementById('table-scroll-top');
+    if (top) bars.push(top);
+    bars.forEach(b => {
+        b.style.width = main.clientWidth + 'px';
+        if (b.firstElementChild) b.firstElementChild.style.width = table.scrollWidth + 'px';
+    });
+    const all = [main].concat(bars);
+    all.forEach(el => {
+        if (el.dataset.syncReady === '1') return;
+        el.dataset.syncReady = '1';
+        el.addEventListener('scroll', () => {
+            if (window.__scrollSyncing) return;
+            window.__scrollSyncing = true;
+            all.forEach(other => { if (other !== el) other.scrollLeft = el.scrollLeft; });
+            window.__scrollSyncing = false;
+        });
+    });
+    // 幅が変わったら合わせ直す
+    if (!window.__scrollResizeReady) {
+        window.__scrollResizeReady = true;
+        window.addEventListener('resize', () => syncTableScrollbars());
+    }
 }
 
 function initShiftDragAndDrop() {
@@ -1164,7 +1189,9 @@ function renderCalendar(data, year, month) {
 
     // --- 調理スタッフセクション ---
     if (hasCooking) {
-        html += `<tr><td colspan="${totalCols}" style="height:16px;border:none;background:#fff"></td></tr>`;
+        // 介護・看護と調理の間にも横スライドバーを置く（ユーザー依頼 2026-08）
+        html += `<tr><td colspan="${totalCols}" style="position:sticky;left:0;padding:4px 0;border:none;background:#fff">`
+             + `<div class="proxy-scroll" style="overflow-x:auto"><div style="height:1px"></div></div></td></tr>`;
         html += sectionTitleRow('調理スタッフ');
         html += headerRowHtml();
 

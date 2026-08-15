@@ -198,6 +198,10 @@
 <!-- カレンダー表示エリア -->
 <div id="calendar-container" class="hidden">
     <div class="bg-white rounded-xl shadow-md">
+        <!-- 表の上の横スライドバー（手直しバーのすぐ下） -->
+        <div id="table-scroll-top" class="overflow-x-auto rounded-t-xl" style="height:16px">
+            <div style="height:1px"></div>
+        </div>
         <!-- 表の中で縦横にスクロールする（職員名・日付/曜日をその場に固定するため） -->
         <div id="table-scroll" class="overflow-auto"
              style="max-height:calc(100vh - 220px);min-height:320px">

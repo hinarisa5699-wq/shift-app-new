@@ -254,6 +254,11 @@ function visitSlotOf(data, dateStr, sid) {
 function cellHtml(data, sid, dateStr, assignment, visitSet, dow) {
     const off = !assignment || assignment === 'off' || assignment === 'cook_off'
                 || assignment === 'exec_off';
+    // 役員は予定を入れた日だけ表示する（何も無い日は空欄）
+    const staffOf = (data.staff_list || []).find(x => x.id === sid);
+    if (!assignment && staffOf && staffOf.job_category === 'executive') {
+        return '<span class="text-gray-300">-</span>';
+    }
     if (off) {
         const ids = (data.day_off_requests || {})[dateStr] || [];
         return ids.indexOf(sid) !== -1

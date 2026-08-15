@@ -202,7 +202,9 @@
         <div id="table-scroll-top" class="overflow-x-auto rounded-t-xl" style="height:14px">
             <div style="height:1px"></div>
         </div>
-        <div id="table-scroll" class="overflow-x-auto">
+        <!-- 表の中で縦横にスクロールする（職員名・日付/曜日をその場に固定するため） -->
+        <div id="table-scroll" class="overflow-auto"
+             style="max-height:calc(100vh - 220px);min-height:320px">
             <table id="calendar-table" class="min-w-full border-collapse">
                 <!-- JSで動的に構築 -->
             </table>

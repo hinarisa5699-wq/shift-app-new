@@ -107,6 +107,21 @@
     z-index: 10;
 }
 
+/* 職員名の列は左に固定（横へスクロールしても名前が見えるように） */
+.calendar-table .staff-name-cell,
+.calendar-table th.date-cell:first-child {
+    position: sticky;
+    left: 0;
+    background-color: #fff;
+    z-index: 12;
+}
+
+/* 左上（職員名の見出し）は縦横どちらの固定より前面に */
+.calendar-table th.date-cell:first-child {
+    z-index: 14;
+    background-color: #eff6ff;
+}
+
 .calendar-table .date-cell {
     font-weight: 700;
     text-align: center;

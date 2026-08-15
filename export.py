@@ -212,7 +212,7 @@ def _is_nurse_or_pt_staff(staff: dict) -> bool:
 
     ドライバーは送迎担当なので介護の配置人数に含めない（ユーザー依頼 2026-08）。
     """
-    if str(staff.get("job_category", "") or "") in ("driver", "executive"):
+    if str(staff.get("job_category", "") or "") in ("driver", "executive", "office"):
         return True
     qual_codes = {
         code for code in staff.get("qualification_codes", [])

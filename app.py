@@ -81,8 +81,8 @@ def _public_holiday_target(st, year=None, month=None) -> int:
     if getattr(st, "oncall_only", False):
         # オンコールのみ当番の職員は出勤枠を持たないので公休の目標も課さない
         return 0
-    if (getattr(st, "job_category", "") or "") == "executive":
-        # 役員は自動作成の対象外なので公休の目標も持たない
+    if _is_plan_only_staff(st):
+        # 役員・事務は自動作成の対象外なので公休の目標も持たない
         return 0
     settings_obj = ShiftSettings.query.first()
     manual = int(getattr(st, "public_holiday_count", 0) or 0)
@@ -244,6 +244,15 @@ def _normalize_staff_group(value: str) -> str:
     return "care"
 
 
+# 自動作成の対象にしない区分（名前だけ表に出して、予定を手入力する）
+PLAN_ONLY_CATEGORIES = ("executive", "office")
+
+
+def _is_plan_only_staff(st) -> bool:
+    """役員・事務（勤務シフトを自動で入れない職員）か。"""
+    return (getattr(st, "job_category", "") or "") in PLAN_ONLY_CATEGORIES
+
+
 # 役員のセルに入れる「休み」。自動作成では勤務を入れないので、
 #   休みだけをこのコードで記録する（ユーザー依頼 2026-08）。
 EXEC_OFF_CODE = "exec_off"
@@ -257,6 +266,7 @@ JOB_CATEGORIES = [
     ("driver", "ドライバー"),
     ("cooking", "調理"),
     ("executive", "役員"),
+    ("office", "事務"),
 ]
 JOB_CATEGORY_LABELS = dict(JOB_CATEGORIES)
 
@@ -279,9 +289,12 @@ def _normalize_job_category(value: str) -> str:
         return "cooking"
     if v in ("nurse_rehab", "看護師・リハ", "看護師", "看護", "リハ", "リハビリ", "nurse", "pt"):
         return "nurse_rehab"
-    if v in ("executive", "役員", "事務", "事務員", "事務職員", "理事"):
-        # 役員は自動作成の対象外。名前だけ表に出して「休み」を手入力する（ユーザー依頼 2026-08）
+    if v in ("executive", "役員", "理事"):
+        # 役員は自動作成の対象外。名前だけ表に出して予定を手入力する（ユーザー依頼 2026-08）
         return "executive"
+    if v in ("office", "事務", "事務員", "事務職員"):
+        # 事務も役員と同じく自動作成の対象外。介護の人数にも数えない
+        return "office"
     if v in ("driver", "ドライバー", "運転手", "送迎", "運転"):
         # ドライバーは送迎担当。介護の配置人数には数えない（ユーザー依頼 2026-08）
         return "driver"
@@ -615,6 +628,11 @@ def _run_migrations(app):
         # 閲覧専用ページのパスワード（ハッシュ）
         cursor.execute(
             "ALTER TABLE shift_settings ADD COLUMN viewer_password_hash VARCHAR(255) NOT NULL DEFAULT ''"
+        )
+    if "office_password_hash" not in columns:
+        # 事務用ページのパスワード（ハッシュ）
+        cursor.execute(
+            "ALTER TABLE shift_settings ADD COLUMN office_password_hash VARCHAR(255) NOT NULL DEFAULT ''"
         )
     if "exec_password_hash" not in columns:
         # 役員用ページのパスワード（ハッシュ）
@@ -1145,6 +1163,14 @@ VIEWER_USERNAME = "staff"
 # 役員ロール（閲覧＋役員自身の予定の入力だけできる）
 EXEC_VIEW_ROLE = "役員閲覧"
 EXEC_USERNAME = "yakuin"
+# 事務ロール（閲覧＋事務職員自身の予定の入力だけできる）
+OFFICE_VIEW_ROLE = "事務閲覧"
+OFFICE_USERNAME = "jimu"
+# ロール → そのアカウントが予定を入れられる区分
+_PLAN_EDIT_ROLES = {
+    EXEC_VIEW_ROLE: ("executive",),
+    OFFICE_VIEW_ROLE: ("office",),
+}
 _VIEWER_ENDPOINTS = {
     "view_shift",           # 閲覧専用ページ
     "api_shifts_get",       # 月のシフト取得（読み取り）
@@ -1154,7 +1180,7 @@ _VIEWER_ENDPOINTS = {
     "static",
 }
 
-# 役員ロールは閲覧に加えて「役員の予定」の保存だけできる
+# 役員・事務ロールは閲覧に加えて「自分たちの予定」の保存だけできる
 _EXEC_ENDPOINTS = _VIEWER_ENDPOINTS | {"api_shift_cells_update"}
 
 
@@ -1256,14 +1282,14 @@ def create_app():
                 if request.path.startswith("/api/"):
                     return jsonify({"error": "閲覧専用アカウントでは実行できません"}), 403
                 return redirect(url_for("view_shift"))
-        if session.get("role") == EXEC_VIEW_ROLE:
+        if session.get("role") in _PLAN_EDIT_ROLES:
             # 閲覧＋「役員の予定」の保存のみ（中身のチェックは保存時に行う）
             ok = endpoint in _EXEC_ENDPOINTS and (
                 request.method == "GET" or endpoint == "api_shift_cells_update"
             )
             if not ok:
                 if request.path.startswith("/api/"):
-                    return jsonify({"error": "役員アカウントでは実行できません"}), 403
+                    return jsonify({"error": "このアカウントでは実行できません"}), 403
                 return redirect(url_for("view_shift"))
         return None
 
@@ -1275,6 +1301,12 @@ def create_app():
             username = (request.form.get("username") or "").strip()
             password = request.form.get("password") or ""
             user = app.config["USERS"].get(username)
+            if not user and username == OFFICE_USERNAME:
+                # 条件設定画面から決めた事務用パスワードでログインする
+                _st = ShiftSettings.query.first()
+                _hash = getattr(_st, "office_password_hash", "") or ""
+                if _hash:
+                    user = {"hash": _hash, "role": OFFICE_VIEW_ROLE}
             if not user and username == EXEC_USERNAME:
                 # 条件設定画面から決めた役員用パスワードでログインする
                 _st = ShiftSettings.query.first()
@@ -1290,7 +1322,8 @@ def create_app():
             if user and check_password_hash(user["hash"], password):
                 session["user"] = username
                 session["role"] = user["role"]
-                _view_only = user["role"] in (VIEWER_ROLE, EXEC_VIEW_ROLE)
+                _view_only = (user["role"] == VIEWER_ROLE
+                              or user["role"] in _PLAN_EDIT_ROLES)
                 default_next = (
                     url_for("view_shift") if _view_only else url_for("index")
                 )
@@ -1575,8 +1608,11 @@ def create_app():
             default_year=today.year,
             default_month=today.month,
             is_viewer=(session.get("role") == VIEWER_ROLE),
-            # 役員の予定を画面から入れられる人（役員アカウント・管理者・サ責）
-            can_edit_exec=(session.get("role") != VIEWER_ROLE),
+            # この画面から予定を入れられる区分（役員／事務）
+            plan_edit_categories=(
+                [] if session.get("role") == VIEWER_ROLE
+                else list(_PLAN_EDIT_ROLES.get(session.get("role"), PLAN_ONLY_CATEGORIES))
+            ),
         )
 
     # -----------------------------------------------------------------
@@ -2258,6 +2294,12 @@ def create_app():
             s.exec_password_hash = ""
         elif _ep:
             s.exec_password_hash = generate_password_hash(_ep)
+        # 事務用のパスワード（空欄＝変更なし／「解除」で無効化）
+        _op = (request.form.get("office_password") or "").strip()
+        if "office_password_clear" in request.form:
+            s.office_password_hash = ""
+        elif _op:
+            s.office_password_hash = generate_password_hash(_op)
         s.phone_duty_max_consecutive = safe_int(request.form.get("phone_duty_max_consecutive"), 1)
         s.min_staff_at_9 = safe_int(request.form.get("min_staff_at_9"), 4)
         s.min_staff_at_15 = safe_int(request.form.get("min_staff_at_15"), 4)
@@ -2650,7 +2692,7 @@ def create_app():
         staffs = _active_staff_for_month(year, month)
         # 役員は自動作成の対象外（名前だけ表に出して休みを手入力する）
         staffs = [st for st in staffs
-                  if (getattr(st, "job_category", "") or "") != "executive"]
+                  if not _is_plan_only_staff(st)]
         if not staffs:
             return jsonify({"error": "職員が登録されていません"}), 400
 
@@ -2971,7 +3013,7 @@ def create_app():
                     bool(getattr(st, "oncall_when_off_ok", False))
                     or bool(getattr(st, "oncall_only", False))
                     # 役員は勤務枠を持たないので「出勤者限定」の対象外
-                    or (getattr(st, "job_category", "") or "") == "executive"
+                    or _is_plan_only_staff(st)
                     or not _oncall_requires_work
                 )
                 if not exempt:
@@ -3084,7 +3126,7 @@ def create_app():
             # 役員の予定は手入力なので、再生成でも消さない
             exec_ids = {
                 st.id for st in Staff.query.all()
-                if (getattr(st, "job_category", "") or "") == "executive"
+                if _is_plan_only_staff(st)
             }
             keep_ids = set(fixed_ids) | exec_ids
             if keep_ids:
@@ -3446,22 +3488,24 @@ def create_app():
         if not isinstance(changes, list):
             return jsonify({"error": "changes の形式が正しくありません"}), 400
 
-        is_exec_account = session.get("role") == EXEC_VIEW_ROLE
-        exec_staff_ids = {
-            st.id for st in Staff.query.all()
-            if (getattr(st, "job_category", "") or "") == "executive"
-        }
-        if is_exec_account:
-            # 役員アカウントは役員の予定だけ。ほかの職員のシフトは触れない
+        _all_staff = Staff.query.all()
+        exec_staff_ids = {st.id for st in _all_staff if _is_plan_only_staff(st)}
+        _my_cats = _PLAN_EDIT_ROLES.get(session.get("role"))
+        if _my_cats:
+            # 役員／事務アカウントは自分の区分の予定だけ。ほかの職員のシフトは触れない
+            allowed_ids = {
+                st.id for st in _all_staff
+                if (getattr(st, "job_category", "") or "") in _my_cats
+            }
             for ch in changes:
-                if safe_int(ch.get("staff_id"), None) not in exec_staff_ids:
+                if safe_int(ch.get("staff_id"), None) not in allowed_ids:
                     return jsonify({
-                        "error": "役員アカウントで変えられるのは役員の予定だけです",
+                        "error": "このアカウントで変えられるのは自分の予定だけです",
                     }), 403
                 _c = (ch.get("assignment") or "").strip()
                 if _c not in ("", EXEC_OFF_CODE) and not _c.startswith(EXEC_PLAN_PREFIX):
                     return jsonify({
-                        "error": "役員アカウントで入れられるのは役員の予定だけです",
+                        "error": "このアカウントで入れられるのは予定だけです",
                     }), 403
 
         # 役員の予定だけの変更は、確定済みの月でも入れられる（勤務表は変わらないため）
@@ -3534,7 +3578,7 @@ def create_app():
             is_exec_code = (code == EXEC_OFF_CODE or code.startswith(EXEC_PLAN_PREFIX))
             if code not in valid_codes and not is_exec_code:
                 continue
-            is_exec = (getattr(st, "job_category", "") or "") == "executive"
+            is_exec = _is_plan_only_staff(st)
             if is_exec != is_exec_code:
                 # 役員は役員の予定だけ、役員以外に役員の予定は入れられない
                 continue

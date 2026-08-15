@@ -390,6 +390,8 @@ class ShiftSettings(db.Model):
     viewer_password_hash = db.Column(db.String(255), default="", nullable=False)
     # 役員用（閲覧＋自分の予定の入力だけできる）パスワード
     exec_password_hash = db.Column(db.String(255), default="", nullable=False)
+    # 事務用（閲覧＋自分の予定の入力だけできる）パスワード
+    office_password_hash = db.Column(db.String(255), default="", nullable=False)
     # 閲覧専用ページ(/view)のパスワード（ハッシュ化して保存。空＝閲覧アカウント無効）
     #   ユーザー依頼 2026-08: Renderの環境変数を触らずに画面から設定できるように。
     oncall_requires_work = db.Column(db.Boolean, default=True, nullable=False)

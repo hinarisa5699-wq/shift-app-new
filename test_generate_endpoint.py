@@ -981,3 +981,101 @@ def test_exec_plan_allowed_even_when_confirmed(tmp_path, monkeypatch):
         "changes": [{"date": "2026-09-07", "staff_id": care_id, "assignment": "early"}],
     })
     assert blocked.status_code == 409
+
+
+def _add_office(flask_app, name="事務J"):
+    """事務職員（自動作成の対象外・予定だけ手入力）を1名足す。"""
+    from models import db, Staff
+
+    with flask_app.app_context():
+        st = Staff(
+            name=name, employment_type="常勤", job_category="office",
+            staff_group="care", can_visit=False, max_consecutive_days=5,
+            max_days_per_week=5, min_days_per_week=0,
+            available_days="0,1,2,3,4,5,6", available_time_slots="full_day",
+            gender="female",
+        )
+        db.session.add(st)
+        db.session.commit()
+        return st.id
+
+
+def _set_office_password(flask_app, pw="jimupass"):
+    from models import db, ShiftSettings
+    from werkzeug.security import generate_password_hash
+
+    with flask_app.app_context():
+        s = ShiftSettings.query.first()
+        s.office_password_hash = generate_password_hash(pw)
+        db.session.commit()
+
+
+def test_office_staff_is_not_scheduled_or_counted(tmp_path, monkeypatch):
+    """事務は自動作成に入らず、介護の配置人数にも数えない。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    office_id = _add_office(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    assert client.post("/api/generate", json={"year": 2026, "month": 9}).status_code == 200
+
+    data = client.get("/api/shifts/2026/9").get_json()
+    assert any(s["id"] == office_id for s in data["staff_list"]), "一覧に名前が出ていない"
+    assert not [x for x in data["shifts"] if x["staff_id"] == office_id]
+    st = next(s for s in data["staff_list"] if s["id"] == office_id)
+    assert st["public_holiday_target"] == 0
+
+    # 事務の予定を入れても出勤日数には数えない
+    client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-01", "staff_id": office_id, "assignment": "exec:在宅勤務"}],
+    })
+    csv_text = client.get(
+        f"/api/export/{data['generation_id']}/csv").get_data(as_text=True)
+    row = next(l for l in csv_text.splitlines() if l.startswith("事務J")).strip()
+    assert row.split(",")[1] == "在宅勤務", row[:60]
+
+    # 介護の配置人数には影響しない（デイ午前の人数が変わらない）
+    def _day_am_line(text):
+        return next(l for l in text.splitlines() if l.startswith("デイ午前")).strip()
+
+    before_csv = csv_text
+    client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-02", "staff_id": office_id, "assignment": "exec:終日デイ"}],
+    })
+    after_csv = client.get(
+        f"/api/export/{data['generation_id']}/csv").get_data(as_text=True)
+    assert _day_am_line(before_csv) == _day_am_line(after_csv)
+
+
+def test_office_account_edits_only_office_plans(tmp_path, monkeypatch):
+    """事務アカウント（jimu）は事務の予定だけ入れられる。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    office_id = _add_office(flask_app)
+    exec_id = _add_executive(flask_app)
+    _set_office_password(flask_app)
+
+    admin = flask_app.test_client()
+    _login(admin, "admin", "testpass")
+    admin.post("/api/generate", json={"year": 2026, "month": 9})
+
+    client = flask_app.test_client()
+    res = _login(client, "jimu", "jimupass")
+    assert res.status_code in (301, 302)
+    assert "/view" in res.headers.get("Location", "")
+
+    ok = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-03", "staff_id": office_id, "assignment": "exec:本部勤務"}],
+    })
+    assert ok.status_code == 200, ok.get_data(as_text=True)[:200]
+
+    # 役員の予定は触れない
+    ng = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-03", "staff_id": exec_id, "assignment": "exec:本部勤務"}],
+    })
+    assert ng.status_code == 403
+    assert client.post("/api/generate", json={"year": 2026, "month": 9}).status_code == 403

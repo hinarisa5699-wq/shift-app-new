@@ -547,10 +547,25 @@ function saveShiftEdits() {
 }
 
 // ドラッグ&ドロップ（表とパレットにイベント委譲で1度だけ登録）
-/* --- 役員の予定（クリックで選ぶ） --- */
+/* --- 役員・事務の予定（クリックで選ぶ） --- */
 let execTarget = null;   // {date, staffId}
 
+const PLAN_ONLY_CATEGORIES = ['executive', 'office'];
 const EXEC_NO_TIME_KINDS = ['終日休み', '終日デイ'];
+// 区分ごとに選べる内容（事務は面接・契約を出さない）
+const PLAN_KINDS = {
+    executive: ['終日休み', '終日デイ', '在宅勤務', '本部勤務', 'デイ', 'デイ面接', '契約'],
+    office:    ['終日休み', '終日デイ', '在宅勤務', '本部勤務', 'デイ'],
+};
+
+function isPlanOnlyStaff(staff) {
+    return PLAN_ONLY_CATEGORIES.indexOf(staff && staff.job_category) !== -1;
+}
+
+function planCategoryOf(staffId) {
+    const s = ((currentShiftData || {}).staff_list || []).find(x => x.id === staffId);
+    return (s && s.job_category) === 'office' ? 'office' : 'executive';
+}
 
 function execTimeOptions() {
     const opts = ['<option value="">指定なし</option>'];
@@ -582,6 +597,9 @@ function openExecModal(dateStr, staffId, current) {
         else { kind = text; }
     }
     const sel = document.getElementById('exec-kind');
+    const kinds = PLAN_KINDS[planCategoryOf(staffId)] || PLAN_KINDS.executive;
+    sel.innerHTML = kinds.map(k => `<option value="${k}">${k}</option>`).join('')
+        + '<option value="その他">その他（自分で入力）</option>';
     const known = Array.from(sel.options).some(o => o.value === kind);
     sel.value = known ? kind : 'その他';
     document.getElementById('exec-free').value = known ? '' : kind;
@@ -757,8 +775,8 @@ function initShiftDragAndDrop() {
         const toStaff = Number(td.dataset.staff);
         const toGroup = td.dataset.group;
         const code = info.code;
-        if (toGroup === 'executive') {
-            setEditStatus('役員は「休み」だけです。セルをクリックで切り替えてください', 'error');
+        if (toGroup === 'plan') {
+            setEditStatus('役員・事務は予定だけです。セルをクリックで選んでください', 'error');
             window.__dragInfo = null;
             return;
         }
@@ -811,7 +829,7 @@ function initShiftDragAndDrop() {
     // 役員: セルをクリックすると予定を選ぶ画面が出る
     table.addEventListener('click', e => {
         const td = e.target.closest('td.shift-cell');
-        if (!td || td.dataset.group !== 'executive') return;
+        if (!td || td.dataset.group !== 'plan') return;
         openExecModal(td.dataset.date, Number(td.dataset.staff), td.dataset.assignment || '');
     });
 
@@ -1026,8 +1044,8 @@ function renderCalendar(data, year, month) {
     // ケアスタッフ 1 セルの中身
     function careCellHtml(dateStr, s) {
         const assignment = shiftMap[dateStr] ? shiftMap[dateStr][s.id] : null;
-        if (s.job_category === 'executive') {
-            // 役員は自動作成の対象外。クリックで予定を選んで入れる
+        if (isPlanOnlyStaff(s)) {
+            // 役員・事務は自動作成の対象外。クリックで予定を選んで入れる
             if (assignment === 'exec_off') return '<span class="badge badge-off">休</span>';
             if (assignment && assignment.indexOf('exec:') === 0) {
                 return `<span class="badge" style="background:#fef3c7;color:#92400e">`
@@ -1103,10 +1121,10 @@ function renderCalendar(data, year, month) {
         let r = '<tr>' + nameCellHtml(s, true);
         dayMeta.forEach(m => {
             const _a = shiftMap[m.dateStr] ? shiftMap[m.dateStr][s.id] : null;
-            const isExec = (s.job_category === 'executive');
+            const isExec = isPlanOnlyStaff(s);
             if (_a && _a !== 'off' && _a !== 'exec_off') work++;
             const _drag = (!isExec && _a && _a !== 'off') ? ' draggable="true"' : '';
-            const _grp = isExec ? 'executive' : 'care';
+            const _grp = isExec ? 'plan' : 'care';
             const _cur = isExec ? ' style="cursor:pointer"' : '';
             r += `<td class="staff-cell shift-cell ${m.colClass}" data-date="${m.dateStr}" data-staff="${s.id}"`
                + ` data-group="${_grp}" data-assignment="${_a || ''}"${_drag}${_cur}>`
@@ -1988,7 +2006,7 @@ function escapeHtml(text) {
 
 function isNurseOrPtStaff(staff) {
     // ドライバー・役員は介護の配置人数に数えない
-    if (staff.job_category === 'driver' || staff.job_category === 'executive') return true;
+    if (staff.job_category === 'driver' || isPlanOnlyStaff(staff)) return true;
     const qualificationCodes = new Set(staff.qualification_codes || []);
     if (qualificationCodes.has('nurse') || qualificationCodes.has('pt')) {
         return true;

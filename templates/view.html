@@ -90,8 +90,13 @@
 </main>
 
 <script>
-const CAN_EDIT_EXEC = {{ 'true' if can_edit_exec else 'false' }};
-const EXEC_KINDS = ['終日休み', '終日デイ', '在宅勤務', '本部勤務', 'デイ', 'デイ面接', '契約'];
+const PLAN_EDIT_CATEGORIES = {{ plan_edit_categories | tojson }};
+const PLAN_ONLY_CATEGORIES = ['executive', 'office'];
+// 区分ごとに選べる内容（事務は面接・契約を出さない）
+const PLAN_KINDS = {
+    executive: ['終日休み', '終日デイ', '在宅勤務', '本部勤務', 'デイ', 'デイ面接', '契約'],
+    office:    ['終日休み', '終日デイ', '在宅勤務', '本部勤務', 'デイ'],
+};
 const EXEC_NO_TIME_KINDS = ['終日休み', '終日デイ'];
 let execEdit = null;   // {date, staffId}
 
@@ -262,7 +267,7 @@ function cellHtml(data, sid, dateStr, assignment, visitSet, dow) {
                 || assignment === 'exec_off';
     // 役員は予定を入れた日だけ表示する（何も無い日は空欄）
     const staffOf = (data.staff_list || []).find(x => x.id === sid);
-    if (!assignment && staffOf && staffOf.job_category === 'executive') {
+    if (!assignment && staffOf && PLAN_ONLY_CATEGORIES.indexOf(staffOf.job_category) !== -1) {
         return '<span class="text-gray-300">-</span>';
     }
     if (off) {
@@ -361,7 +366,7 @@ function renderPerson(data, map, dates, visitSet) {
     const sid = state.personId;
     const staff = (data.staff_list || []).find(s => s.id === sid);
     if (!staff) { el('person-view').innerHTML = ''; return; }
-    const canEdit = CAN_EDIT_EXEC && staff.job_category === 'executive';
+    const canEdit = PLAN_EDIT_CATEGORIES.indexOf(staff.job_category) !== -1;
     let work = 0;
     const rows = dates.map(({ d, dateStr, dow }) => {
         const a = (map[dateStr] || {})[sid];
@@ -453,6 +458,8 @@ function execTimeOptions() {
 
 function openExecPlan(dateStr, staffId, current) {
     execEdit = { date: dateStr, staffId: staffId };
+    const _s = ((state.data || {}).staff_list || []).find(x => x.id === staffId);
+    const EXEC_KINDS = PLAN_KINDS[(_s && _s.job_category) === 'office' ? 'office' : 'executive'];
     const start = el('exec-start'), end = el('exec-end');
     if (!start.options.length) { start.innerHTML = execTimeOptions(); end.innerHTML = execTimeOptions(); }
     let kind = '終日休み', from = '', to = '';

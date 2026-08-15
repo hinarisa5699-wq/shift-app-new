@@ -3261,6 +3261,8 @@ def create_app():
                             ("early", ASSIGNMENT_LABELS["early"]),
                             ("late", ASSIGNMENT_LABELS["late"]),
                             ("nurse_short", ASSIGNMENT_LABELS["nurse_short"]),
+                            ("visit_am", "訪問(午前)のみ"),
+                            ("visit_pm", "訪問(午後)のみ"),
                             ("visit_am_day_p4", "訪問(午前)＋デイ(午後)"),
                             ("day_p3_visit_pm", "デイ(午前)＋訪問(午後)"),
                         )

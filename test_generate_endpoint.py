@@ -582,3 +582,26 @@ def test_early_and_am_visit_can_be_separated(tmp_path, monkeypatch):
     rows = [r for r in csv_after.split("\n") if early["date"].split("-")[2].lstrip("0") + "(" in r]
     # その日の早番からは訪問表記が外れ、兼務(訪問→デイ)側が訪問担当になる
     assert "兼務(訪問→デイ)" in csv_after
+
+
+def test_palette_has_standalone_visit_shifts(tmp_path, monkeypatch):
+    """パレットに「訪問(午前)のみ」「訪問(午後)のみ」があり、割り当てられる。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    data = client.get("/api/shifts/2026/9").get_json()
+
+    labels = [x["label"] for x in data["palette"]["care"]]
+    assert "訪問(午前)のみ" in labels and "訪問(午後)のみ" in labels
+
+    care_id = next(s["id"] for s in data["staff_list"] if s["department"] != "cooking")
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-07", "staff_id": care_id, "assignment": "visit_am"}],
+    })
+    assert res.status_code == 200 and res.get_json()["applied"] == 1
+    after = client.get("/api/shifts/2026/9").get_json()
+    assert any(x["date"] == "2026-09-07" and x["staff_id"] == care_id
+               and x["assignment"] == "visit_am" for x in after["shifts"])

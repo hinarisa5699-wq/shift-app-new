@@ -127,9 +127,13 @@
                     class="bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-bold py-2 px-5 rounded-lg shadow transition-colors text-sm">
                 変更を保存
             </button>
+            <button id="undo-edit-btn" onclick="undoLastEdit()" disabled
+                    class="bg-amber-100 hover:bg-amber-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed text-amber-800 font-bold py-2 px-4 rounded-lg text-sm">
+                ← 1つ前に戻す
+            </button>
             <button onclick="discardShiftEdits()"
                     class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-4 rounded-lg text-sm">
-                元に戻す
+                すべて取り消す
             </button>
         </div>
     </div>

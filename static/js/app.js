@@ -310,13 +310,90 @@ function toggleShiftFix(staffId, makeFixed) {
 /* ============================================
    シフトの手直し（画面で直接編集）
    ============================================ */
-let pendingEdits = {};        // "date|staff_id" -> assignment（"" は休み）
+let pendingEdits = {};        // "date|staff_id" -> {assignment?, visit_slot?}
 let currentShiftData = null;  // 直近に読み込んだ /api/shifts のデータ
+let editUndoStack = [];       // 「1つ前に戻す」用（1操作 = 1グループ）
+let editBaseline = {};        // 保存済みの内容 "date|staff_id" -> {assignment, visit_slot}
+let undoCollector = null;     // 1操作分の変更前の状態を集める
 
 function editKey(dateStr, staffId) { return `${dateStr}|${staffId}`; }
 
+function rebuildEditBaseline(data) {
+    editBaseline = {};
+    (data.shifts || []).forEach(x => {
+        editBaseline[editKey(x.date, x.staff_id)] = {
+            assignment: x.assignment || '',
+            visit_slot: x.visit_slot || null,
+        };
+    });
+    editUndoStack = [];
+    updatePendingBadge();
+}
+
+function cellStateOf(dateStr, staffId) {
+    const row = (currentShiftData.shifts || []).find(
+        x => x.date === dateStr && x.staff_id === staffId);
+    return {
+        assignment: row ? (row.assignment || '') : '',
+        visit_slot: row ? (row.visit_slot || null) : null,
+    };
+}
+
+// 変更前の状態を控える（1操作分をまとめて戻せるように）
+function recordUndo(dateStr, staffId) {
+    const entry = Object.assign({ key: editKey(dateStr, staffId), date: dateStr, staffId: staffId },
+                                cellStateOf(dateStr, staffId));
+    if (undoCollector) undoCollector.push(entry);
+    else editUndoStack.push([entry]);
+}
+
+function beginEditGroup(fn) {
+    undoCollector = [];
+    try { fn(); } finally {
+        if (undoCollector.length) editUndoStack.push(undoCollector);
+        undoCollector = null;
+        updatePendingBadge();
+    }
+}
+
+// 直前の1操作だけ元に戻す
+function undoLastEdit() {
+    const group = editUndoStack.pop();
+    if (!group || !group.length) { setEditStatus('戻せる操作がありません'); return; }
+    group.slice().reverse().forEach(e => {
+        const shifts = currentShiftData.shifts || [];
+        const idx = shifts.findIndex(x => x.date === e.date && x.staff_id === e.staffId);
+        if (!e.assignment) {
+            if (idx >= 0) shifts.splice(idx, 1);
+        } else if (idx >= 0) {
+            shifts[idx] = Object.assign({}, shifts[idx],
+                { assignment: e.assignment, visit_slot: e.visit_slot });
+        } else {
+            shifts.push({ date: e.date, staff_id: e.staffId,
+                          assignment: e.assignment, visit_slot: e.visit_slot });
+        }
+        syncPendingWithBaseline(e.key, e);
+    });
+    renderCalendar(currentShiftData, currentYear, currentMonth);
+    checkPublicHolidayLocally();
+    updatePendingBadge();
+    setEditStatus('1つ前の状態に戻しました', 'ok');
+}
+
+// 保存済みの内容と同じに戻ったら「未保存の変更」から外す
+function syncPendingWithBaseline(key, state) {
+    const base = editBaseline[key] || { assignment: '', visit_slot: null };
+    if ((state.assignment || '') === (base.assignment || '')
+        && (state.visit_slot || null) === (base.visit_slot || null)) {
+        delete pendingEdits[key];
+    } else {
+        pendingEdits[key] = { assignment: state.assignment || '', visit_slot: state.visit_slot || null };
+    }
+}
+
 function renderPalette(data) {
     currentShiftData = data;
+    rebuildEditBaseline(data);
     const pal = data.palette || {};
     const build = (id, items, title) => {
         const box = document.getElementById(id);
@@ -352,12 +429,15 @@ function updatePendingBadge() {
     const n = Object.keys(pendingEdits).length;
     const badge = document.getElementById('pending-count');
     const btn = document.getElementById('save-edits-btn');
+    const undoBtn = document.getElementById('undo-edit-btn');
     if (badge) badge.textContent = n ? `未保存の変更 ${n}件` : '';
     if (btn) btn.disabled = n === 0;
+    if (undoBtn) undoBtn.disabled = editUndoStack.length === 0;
 }
 
 function applyLocalEdit(dateStr, staffId, code) {
     if (!currentShiftData) return;
+    recordUndo(dateStr, staffId);
     const shifts = currentShiftData.shifts || [];
     const idx = shifts.findIndex(x => x.date === dateStr && x.staff_id === staffId);
     if (code === '' || code === 'off' || code === 'cook_off') {
@@ -369,17 +449,14 @@ function applyLocalEdit(dateStr, staffId, code) {
     } else {
         shifts.push({ date: dateStr, staff_id: staffId, assignment: code });
     }
-    const key = editKey(dateStr, staffId);
-    const prev = pendingEdits[key] || {};
-    pendingEdits[key] = Object.assign({}, prev, {
-        assignment: (code === 'cook_off') ? 'off' : code,
-    });
+    syncPendingWithBaseline(editKey(dateStr, staffId), cellStateOf(dateStr, staffId));
     afterLocalEdit();
 }
 
 // 訪問へ出る時間帯だけを変える（シフト本体はそのまま）
 function applyLocalVisitSlot(dateStr, staffId, slot) {
     if (!currentShiftData) return;
+    recordUndo(dateStr, staffId);
     const shifts = currentShiftData.shifts || [];
     const idx = shifts.findIndex(x => x.date === dateStr && x.staff_id === staffId);
     if (idx >= 0) {
@@ -391,9 +468,7 @@ function applyLocalVisitSlot(dateStr, staffId, slot) {
             assignment: slot === 'am' ? 'visit_am' : 'visit_pm', visit_slot: slot,
         });
     }
-    const key = editKey(dateStr, staffId);
-    const prev = pendingEdits[key] || {};
-    pendingEdits[key] = Object.assign({}, prev, { visit_slot: slot });
+    syncPendingWithBaseline(editKey(dateStr, staffId), cellStateOf(dateStr, staffId));
     afterLocalEdit();
 }
 
@@ -434,7 +509,8 @@ function checkPublicHolidayLocally() {
 function discardShiftEdits() {
     if (!Object.keys(pendingEdits).length) { setEditStatus('取り消す変更はありません'); return; }
     pendingEdits = {};
-    setEditStatus('変更を取り消しました（保存済みの内容に戻しました）', 'ok');
+    editUndoStack = [];
+    setEditStatus('変更をすべて取り消しました（保存済みの内容に戻しました）', 'ok');
     loadShifts(currentYear, currentMonth);
 }
 
@@ -457,6 +533,7 @@ function saveShiftEdits() {
         .then(res => {
             if (!res.ok) throw new Error(res.j.error || '保存に失敗しました');
             pendingEdits = {};
+            editUndoStack = [];
             setEditStatus(`保存しました（${res.j.applied}件）`, 'ok');
             loadShifts(currentYear, currentMonth);
         })
@@ -550,10 +627,12 @@ function initShiftDragAndDrop() {
             }
             if (info.staffId === toStaff) { window.__dragInfo = null; return; }
             const slot = info.slot || 'am';
-            // 元の人が明示の訪問担当だったら外す（早番の暗黙分は元から表示だけ）
-            if (info.explicit) applyLocalVisitSlot(info.date, info.staffId, null);
-            // 相手はいまのシフトのまま「訪問（午前/午後）」を付ける
-            applyLocalVisitSlot(toDate, toStaff, slot);
+            beginEditGroup(() => {
+                // 元の人が明示の訪問担当だったら外す（早番の暗黙分は表示だけ）
+                if (info.explicit) applyLocalVisitSlot(info.date, info.staffId, null);
+                // 相手はいまのシフトのまま「訪問（午前/午後）」を付ける
+                applyLocalVisitSlot(toDate, toStaff, slot);
+            });
             setEditStatus(
                 slot === 'am' ? '午前訪問を移しました（シフトはそのままで訪問（午前）が付きます）'
                               : '午後訪問を移しました', 'ok');
@@ -567,7 +646,12 @@ function initShiftDragAndDrop() {
                 return;
             }
             if (info.staffId === toStaff) { window.__dragInfo = null; return; }
-            applyLocalEdit(info.date, info.staffId, '');   // 移動元は休みにする
+            beginEditGroup(() => {
+                applyLocalEdit(info.date, info.staffId, '');   // 移動元は休みにする
+                applyLocalEdit(toDate, toStaff, code === 'off' ? '' : code);
+            });
+            window.__dragInfo = null;
+            return;
         }
         applyLocalEdit(toDate, toStaff, code === 'off' ? '' : code);
         window.__dragInfo = null;

@@ -3364,6 +3364,8 @@ def create_app():
                         "qualification_codes": staff_qual_codes.get(st.id, []),
                         "job_category": getattr(st, "job_category", "caregiver") or "caregiver",
                         "car_commute": st.car_commute or False,
+                        # 訪問に出られる職員か（手直し画面で訪問NGの人を弾くため）
+                        "can_visit": bool(st.can_visit),
                         # 画面で直接編集したときの公休チェック用
                         "public_holiday_target": _public_holiday_target(st, year, month),
                     }

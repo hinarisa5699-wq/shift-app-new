@@ -794,6 +794,17 @@ function initShiftDragAndDrop() {
             window.__dragInfo = null;
             return;
         }
+        // 訪問NG（訪問可がオフ）の職員には訪問を入れられない
+        const VISIT_CODES = ['visit_am', 'visit_pm', 'visit_am_day_p4', 'day_p3_visit_pm'];
+        if (info.type === 'visit' || VISIT_CODES.indexOf(code) !== -1) {
+            const toStaffInfo = ((currentShiftData || {}).staff_list || [])
+                .find(x => x.id === toStaff);
+            if (toStaffInfo && toStaffInfo.can_visit === false) {
+                setEditStatus(`${toStaffInfo.name}さんは訪問NGの設定です（職員設定で「訪問可」をONにしてください）`, 'error');
+                window.__dragInfo = null;
+                return;
+            }
+        }
         const isCookCode = code.indexOf('cooking_') === 0 || code === 'cook_off';
         if (code !== 'off' && isCookCode !== (toGroup === 'cooking')) {
             setEditStatus('介護・看護と調理のシフトは入れ替えられません', 'error');

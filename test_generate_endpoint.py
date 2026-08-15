@@ -1168,3 +1168,29 @@ def test_visit_slot_can_be_added_under_existing_shift(tmp_path, monkeypatch):
     line = next(l for l in csv_text.splitlines() if l.startswith(name))
     cell = line.split(",")[day]
     assert "デイ8:30-17:30" in cell and "訪問（午前）" in cell, cell
+
+
+def test_shifts_api_exposes_can_visit(tmp_path, monkeypatch):
+    """手直し画面で訪問NGの職員を弾けるよう、can_visit を返す。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    from models import db, Staff
+
+    with flask_app.app_context():
+        st = Staff.query.filter_by(name="介護B").first()
+        st.can_visit = False
+        db.session.commit()
+        no_visit_id = st.id
+
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    data = client.get("/api/shifts/2026/9").get_json()
+    by_id = {s["id"]: s for s in data["staff_list"]}
+    assert by_id[no_visit_id]["can_visit"] is False
+    assert any(s["can_visit"] for s in data["staff_list"]), "訪問可の職員も居るはず"
+
+    # 自動作成でも訪問は割り当てられない
+    visit_codes = {"visit_am", "visit_pm", "visit_am_day_p4", "day_p3_visit_pm"}
+    assert not [x for x in data["shifts"]
+                if x["staff_id"] == no_visit_id and x["assignment"] in visit_codes]

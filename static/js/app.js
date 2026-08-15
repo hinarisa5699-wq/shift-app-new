@@ -335,6 +335,19 @@ function renderPalette(data) {
     updatePendingBadge();
 }
 
+function setEditStatus(msg, kind) {
+    const el = document.getElementById('edit-status');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.className = 'text-sm font-bold ' + (
+        kind === 'error' ? 'text-red-600' : kind === 'ok' ? 'text-emerald-700' : 'text-gray-600'
+    );
+    if (msg && kind === 'ok') {
+        clearTimeout(window.__editStatusTimer);
+        window.__editStatusTimer = setTimeout(() => { el.textContent = ''; }, 6000);
+    }
+}
+
 function updatePendingBadge() {
     const n = Object.keys(pendingEdits).length;
     const badge = document.getElementById('pending-count');
@@ -391,9 +404,9 @@ function checkPublicHolidayLocally() {
 }
 
 function discardShiftEdits() {
-    if (!Object.keys(pendingEdits).length) return;
-    if (!confirm('保存していない変更を取り消して、保存済みの内容に戻します。よろしいですか？')) return;
+    if (!Object.keys(pendingEdits).length) { setEditStatus('取り消す変更はありません'); return; }
     pendingEdits = {};
+    setEditStatus('変更を取り消しました（保存済みの内容に戻しました）', 'ok');
     loadShifts(currentYear, currentMonth);
 }
 
@@ -413,10 +426,10 @@ function saveShiftEdits() {
         .then(res => {
             if (!res.ok) throw new Error(res.j.error || '保存に失敗しました');
             pendingEdits = {};
-            alert(`保存しました（${res.j.applied}件）。`);
+            setEditStatus(`保存しました（${res.j.applied}件）`, 'ok');
             loadShifts(currentYear, currentMonth);
         })
-        .catch(e => alert('保存に失敗しました: ' + e.message))
+        .catch(e => setEditStatus('保存に失敗しました: ' + e.message, 'error'))
         .finally(() => {
             if (btn) { btn.textContent = '変更を保存'; }
             updatePendingBadge();
@@ -473,13 +486,13 @@ function initShiftDragAndDrop() {
         const code = info.code;
         const isCookCode = code.indexOf('cooking_') === 0 || code === 'cook_off';
         if (code !== 'off' && isCookCode !== (toGroup === 'cooking')) {
-            alert('介護・看護と調理のシフトは入れ替えられません。');
+            setEditStatus('介護・看護と調理のシフトは入れ替えられません', 'error');
             window.__dragInfo = null;
             return;
         }
         if (info.type === 'cell') {
             if (info.date !== toDate) {
-                alert('別の日へは移動できません。同じ日の別の職員へドラッグしてください。');
+                setEditStatus('別の日へは移動できません。同じ日の別の職員へドラッグしてください', 'error');
                 window.__dragInfo = null;
                 return;
             }
@@ -506,9 +519,10 @@ function initShiftDragAndDrop() {
                     currentShiftData.oncall = currentShiftData.oncall || {};
                     currentShiftData.oncall[res.j.date] = res.j.name || '';
                 }
+                setEditStatus(`オンコールを変更しました（${res.j.date}: ${res.j.name || '未割当'}）`, 'ok');
             })
             .catch(err => {
-                alert('オンコールの変更に失敗しました: ' + err.message);
+                setEditStatus('オンコールの変更に失敗しました: ' + err.message, 'error');
                 loadShifts(currentYear, currentMonth);
             });
     });

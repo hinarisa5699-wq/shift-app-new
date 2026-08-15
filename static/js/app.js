@@ -54,8 +54,8 @@ const ASSIGNMENT_MAP = {
     exec_off:      { label: '休',              badgeClass: 'badge-off'      },
     day_pattern1:    { label: 'デイ8:30-17:30',  badgeClass: 'badge-day-full'  },
     day_pattern2:    { label: 'デイ9:00-16:00',  badgeClass: 'badge-day-p2'   },
-    day_pattern3:    { label: 'デイ午前のみ',     badgeClass: 'badge-day-am'   },
-    day_pattern4:    { label: 'デイ午後のみ',     badgeClass: 'badge-day-pm'   },
+    day_pattern3:    { label: 'デイ午前8:30-12:30', badgeClass: 'badge-day-am'   },
+    day_pattern4:    { label: 'デイ午後12:30-17:30', badgeClass: 'badge-day-pm' },
     early:           { label: '早番7:30-16:30',  badgeClass: 'badge-day-full' },
     late:            { label: '遅番9:30-18:30',  badgeClass: 'badge-day-p2'   },
     nurse_short:     { label: '看護9:30-13:30',  badgeClass: 'badge-visit-am' },
@@ -69,8 +69,8 @@ const ASSIGNMENT_MAP = {
     cooking_4:       { label: '④6-13',           badgeClass: 'badge-cook-4'    },
     cooking_5:        { label: '⑤9-15',           badgeClass: 'badge-cook-2'    },
     // 旧名の後方互換
-    day_am:          { label: 'デイ午前のみ',     badgeClass: 'badge-day-am'   },
-    day_pm:          { label: 'デイ午後のみ',     badgeClass: 'badge-day-pm'   },
+    day_am:          { label: 'デイ午前8:30-12:30', badgeClass: 'badge-day-am'   },
+    day_pm:          { label: 'デイ午後12:30-17:30', badgeClass: 'badge-day-pm' },
     day_am_visit_pm: { label: '兼務(デイ→訪問)',  badgeClass: 'badge-dual-a'   },
     visit_am_day_pm: { label: '兼務(訪問→デイ)',  badgeClass: 'badge-dual-b'   },
 };

@@ -1207,3 +1207,68 @@ def test_pages_bust_browser_cache_for_js(tmp_path, monkeypatch):
     assert version and version != "0"
     assert f"js/app.js?v={version}" in html, html[:0] or "app.js にバージョンが付いていない"
     assert f"css/style.css?v={version}" in html
+
+
+def test_making_a_cell_off_sticks_when_saved(tmp_path, monkeypatch):
+    """画面と同じ形（assignment="" と visit_slot を一緒に送る）で休みにできる。
+
+    2026-08: 画面からの保存は visit_slot も一緒に送るため、サーバー側が
+    「訪問だけの変更」と取り違えて休みが保存されず、元のシフトが復活していた。
+    """
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+
+    data = client.get("/api/shifts/2026/9").get_json()
+    src = next(x for x in data["shifts"]
+               if x["assignment"] not in ("off", "cook_off")
+               and not x["assignment"].startswith("cooking_"))
+
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": src["date"], "staff_id": src["staff_id"],
+                     "assignment": "", "visit_slot": None}],
+    })
+    assert res.status_code == 200, res.get_data(as_text=True)[:200]
+    assert res.get_json()["applied"] == 1
+
+    after = client.get("/api/shifts/2026/9").get_json()
+    assert not [x for x in after["shifts"]
+                if x["date"] == src["date"] and x["staff_id"] == src["staff_id"]], \
+        "休みにしたのにシフトが残っている"
+
+
+def test_moving_a_shift_from_the_screen_sticks(tmp_path, monkeypatch):
+    """画面と同じ形の移動（元は休み・先にシフト）が保存後も保たれる。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+
+    data = client.get("/api/shifts/2026/9").get_json()
+    src = next(x for x in data["shifts"]
+               if x["assignment"] not in ("off", "cook_off")
+               and not x["assignment"].startswith("cooking_"))
+    care_ids = [s["id"] for s in data["staff_list"] if s["department"] != "cooking"]
+    dst = next(i for i in care_ids if i != src["staff_id"]
+               and not any(x["date"] == src["date"] and x["staff_id"] == i
+                           for x in data["shifts"]))
+
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [
+            {"date": src["date"], "staff_id": src["staff_id"],
+             "assignment": "", "visit_slot": None},
+            {"date": src["date"], "staff_id": dst,
+             "assignment": src["assignment"], "visit_slot": None},
+        ],
+    })
+    assert res.status_code == 200
+    after = client.get("/api/shifts/2026/9").get_json()
+    same_day = [x for x in after["shifts"] if x["date"] == src["date"]]
+    assert not [x for x in same_day if x["staff_id"] == src["staff_id"]], "移動元が残っている"
+    assert [x for x in same_day if x["staff_id"] == dst
+            and x["assignment"] == src["assignment"]], "移動先に入っていない"

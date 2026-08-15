@@ -3571,7 +3571,10 @@ def create_app():
             row = by_key.get((sid, d))
 
             # 訪問へ出る時間帯だけの変更（シフト本体は変えない）
-            if "visit_slot" in ch and not code:
+            #   ※ assignment が入っている変更は本体の変更として扱う。
+            #     画面からは assignment="" (=休み) と visit_slot を一緒に送るため、
+            #     ここで取り違えると「休みにしたのに元に戻る」ことになる（2026-08 の不具合）。
+            if "visit_slot" in ch and "assignment" not in ch:
                 slot = ch.get("visit_slot")
                 # "none" = この日は訪問に行かない（早番の既定の訪問を外す）
                 slot = slot if slot in ("am", "pm", "none") else None

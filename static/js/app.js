@@ -894,7 +894,13 @@ function initShiftDragAndDrop() {
                     currentShiftData.oncall = currentShiftData.oncall || {};
                     currentShiftData.oncall[res.j.date] = res.j.name || '';
                 }
-                setEditStatus(`オンコールを変更しました（${res.j.date}: ${res.j.name || '未割当'}）`, 'ok');
+                setEditStatus(
+                    `オンコールを変更しました（${res.j.date}: ${res.j.name || '未割当'}）`
+                    + '　※オンコールは選んだ時点で保存されます', 'ok');
+                // 変えたところが分かるように、その場を少し光らせる
+                sel.style.outline = '2px solid #10b981';
+                sel.style.background = '#ecfdf5';
+                setTimeout(() => { sel.style.outline = ''; sel.style.background = ''; }, 1600);
             })
             .catch(err => {
                 setEditStatus('オンコールの変更に失敗しました: ' + err.message, 'error');

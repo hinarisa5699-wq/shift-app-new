@@ -2936,6 +2936,8 @@ def create_app():
                 exempt = (
                     bool(getattr(st, "oncall_when_off_ok", False))
                     or bool(getattr(st, "oncall_only", False))
+                    # 役員は勤務枠を持たないので「出勤者限定」の対象外
+                    or (getattr(st, "job_category", "") or "") == "executive"
                     or not _oncall_requires_work
                 )
                 if not exempt:

@@ -850,3 +850,35 @@ def test_executive_plan_survives_regeneration(tmp_path, monkeypatch):
     data = client.get("/api/shifts/2026/9").get_json()
     assert [x for x in data["shifts"]
             if x["staff_id"] == exec_id and x["assignment"] == "exec:本部勤務"]
+
+
+def test_executive_can_take_oncall(tmp_path, monkeypatch):
+    """役員は勤務に入らなくてもオンコール当番は持てる。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    exec_id = _add_executive(flask_app, name="役員オンコール")
+    from models import db, Staff, ShiftSettings
+
+    with flask_app.app_context():
+        st = Staff.query.get(exec_id)
+        st.has_phone_duty = True
+        # 他の職員は当番を持たない設定にして、役員だけが候補になるようにする
+        for other in Staff.query.filter(Staff.id != exec_id).all():
+            other.has_phone_duty = False
+        settings = ShiftSettings.query.first()
+        settings.phone_duty_enabled = True
+        settings.oncall_requires_work = True      # 出勤者限定でも役員は例外
+        settings.oncall_fairness_mode = "off"
+        db.session.commit()
+
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    res = client.post("/api/generate", json={"year": 2026, "month": 9})
+    assert res.status_code == 200, res.get_data(as_text=True)[:300]
+
+    data = client.get("/api/shifts/2026/9").get_json()
+    oncall = data.get("oncall", {})
+    assert oncall, "オンコールが1日も割り当てられていない"
+    assert any(v == "役員オンコール" for v in oncall.values()), oncall
+    # 勤務そのものは入っていない
+    assert not [x for x in data["shifts"] if x["staff_id"] == exec_id]

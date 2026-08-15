@@ -433,7 +433,11 @@ function updatePendingBadge() {
     const btn = document.getElementById('save-edits-btn');
     const undoBtn = document.getElementById('undo-edit-btn');
     if (badge) badge.textContent = n ? `未保存の変更 ${n}件` : '';
-    if (btn) btn.disabled = n === 0;
+    // 押せない（白い）ボタンで迷わないよう、いつでも押せるようにしておく
+    if (btn) {
+        btn.disabled = false;
+        btn.textContent = n ? `変更を保存（${n}件）` : '変更を保存';
+    }
     if (undoBtn) undoBtn.disabled = editUndoStack.length === 0;
 }
 
@@ -517,6 +521,10 @@ function discardShiftEdits() {
 }
 
 function saveShiftEdits() {
+    if (!Object.keys(pendingEdits).length) {
+        setEditStatus('変更はありません（表のマスをドラッグすると変えられます）', 'error');
+        return;
+    }
     const changes = Object.entries(pendingEdits).map(([k, v]) => {
         const parts = k.split('|');
         const ch = { date: parts[0], staff_id: Number(parts[1]) };
@@ -541,7 +549,7 @@ function saveShiftEdits() {
         })
         .catch(e => setEditStatus('保存に失敗しました: ' + e.message, 'error'))
         .finally(() => {
-            if (btn) { btn.textContent = '変更を保存'; }
+            if (btn) btn.disabled = false;
             updatePendingBadge();
         });
 }

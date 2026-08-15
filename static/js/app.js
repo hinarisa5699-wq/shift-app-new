@@ -547,6 +547,29 @@ function saveShiftEdits() {
 }
 
 // ドラッグ&ドロップ（表とパレットにイベント委譲で1度だけ登録）
+// 表を横に動かすスライドバー（表の上と、画面の下に貼り付くもの）を本体と合わせる
+function syncTableScrollbars() {
+    const main = document.getElementById('table-scroll');
+    const table = document.getElementById('calendar-table');
+    if (!main || !table) return;
+    const bars = ['table-scroll-top', 'table-scroll-sticky']
+        .map(id => document.getElementById(id)).filter(Boolean);
+    bars.forEach(b => {
+        if (b.firstElementChild) b.firstElementChild.style.width = table.scrollWidth + 'px';
+    });
+    const all = [main].concat(bars);
+    all.forEach(el => {
+        if (el.dataset.syncReady === '1') return;
+        el.dataset.syncReady = '1';
+        el.addEventListener('scroll', () => {
+            if (window.__scrollSyncing) return;
+            window.__scrollSyncing = true;
+            all.forEach(other => { if (other !== el) other.scrollLeft = el.scrollLeft; });
+            window.__scrollSyncing = false;
+        });
+    });
+}
+
 function initShiftDragAndDrop() {
     const table = document.getElementById('calendar-table');
     const bar = document.getElementById('edit-bar');
@@ -627,12 +650,10 @@ function initShiftDragAndDrop() {
                 window.__dragInfo = null;
                 return;
             }
-            if (info.date !== toDate) {
-                setEditStatus('別の日へは移動できません。同じ日の別の職員へドラッグしてください', 'error');
+            if (info.date === toDate && info.staffId === toStaff) {
                 window.__dragInfo = null;
                 return;
             }
-            if (info.staffId === toStaff) { window.__dragInfo = null; return; }
             const slot = info.slot || 'am';
             beginEditGroup(() => {
                 // 元の人が明示の訪問担当だったら外す（早番の暗黙分は表示だけ）
@@ -647,16 +668,15 @@ function initShiftDragAndDrop() {
             return;
         }
         if (info.type === 'cell') {
-            if (info.date !== toDate) {
-                setEditStatus('別の日へは移動できません。同じ日の別の職員へドラッグしてください', 'error');
+            if (info.date === toDate && info.staffId === toStaff) {
                 window.__dragInfo = null;
                 return;
             }
-            if (info.staffId === toStaff) { window.__dragInfo = null; return; }
             beginEditGroup(() => {
                 applyLocalEdit(info.date, info.staffId, '');   // 移動元は休みにする
                 applyLocalEdit(toDate, toStaff, code === 'off' ? '' : code);
             });
+            if (info.date !== toDate) setEditStatus('別の日へ移しました', 'ok');
             window.__dragInfo = null;
             return;
         }
@@ -1066,6 +1086,7 @@ function renderCalendar(data, year, month) {
 
     table.innerHTML = html;
     initShiftDragAndDrop();
+    syncTableScrollbars();
     table.className = 'calendar-table';
 }
 

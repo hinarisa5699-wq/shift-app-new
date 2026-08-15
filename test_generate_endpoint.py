@@ -768,3 +768,36 @@ def test_executive_day_off_is_not_counted_as_work(tmp_path, monkeypatch):
         "changes": [{"date": "2026-09-03", "staff_id": care_id, "assignment": "exec_off"}],
     })
     assert res.get_json()["applied"] == 0
+
+
+def test_cell_edit_can_move_to_another_day(tmp_path, monkeypatch):
+    """間違えて入れた日のシフトを、別の日へ移せる（ユーザー依頼 2026-08）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+
+    data = client.get("/api/shifts/2026/9").get_json()
+    src = next(x for x in data["shifts"]
+               if x["assignment"] not in ("off", "cook_off")
+               and not x["assignment"].startswith("cooking_"))
+    # 同じ職員の、シフトが入っていない別の日へ移す
+    used = {x["date"] for x in data["shifts"] if x["staff_id"] == src["staff_id"]}
+    other = next(f"2026-09-{d:02d}" for d in range(1, 31)
+                 if f"2026-09-{d:02d}" not in used)
+
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [
+            {"date": src["date"], "staff_id": src["staff_id"], "assignment": "off"},
+            {"date": other, "staff_id": src["staff_id"], "assignment": src["assignment"]},
+        ],
+    })
+    assert res.status_code == 200, res.get_data(as_text=True)[:300]
+    after = client.get("/api/shifts/2026/9").get_json()
+    assert not [x for x in after["shifts"]
+                if x["date"] == src["date"] and x["staff_id"] == src["staff_id"]]
+    assert [x for x in after["shifts"]
+            if x["date"] == other and x["staff_id"] == src["staff_id"]
+            and x["assignment"] == src["assignment"]]

@@ -369,7 +369,35 @@ function applyLocalEdit(dateStr, staffId, code) {
     } else {
         shifts.push({ date: dateStr, staff_id: staffId, assignment: code });
     }
-    pendingEdits[editKey(dateStr, staffId)] = (code === 'cook_off') ? 'off' : code;
+    const key = editKey(dateStr, staffId);
+    const prev = pendingEdits[key] || {};
+    pendingEdits[key] = Object.assign({}, prev, {
+        assignment: (code === 'cook_off') ? 'off' : code,
+    });
+    afterLocalEdit();
+}
+
+// 訪問へ出る時間帯だけを変える（シフト本体はそのまま）
+function applyLocalVisitSlot(dateStr, staffId, slot) {
+    if (!currentShiftData) return;
+    const shifts = currentShiftData.shifts || [];
+    const idx = shifts.findIndex(x => x.date === dateStr && x.staff_id === staffId);
+    if (idx >= 0) {
+        shifts[idx] = Object.assign({}, shifts[idx], { visit_slot: slot });
+    } else if (slot) {
+        // 休みの人に訪問だけを割り当てる
+        shifts.push({
+            date: dateStr, staff_id: staffId,
+            assignment: slot === 'am' ? 'visit_am' : 'visit_pm', visit_slot: slot,
+        });
+    }
+    const key = editKey(dateStr, staffId);
+    const prev = pendingEdits[key] || {};
+    pendingEdits[key] = Object.assign({}, prev, { visit_slot: slot });
+    afterLocalEdit();
+}
+
+function afterLocalEdit() {
     renderCalendar(currentShiftData, currentYear, currentMonth);
     checkPublicHolidayLocally();
     updatePendingBadge();
@@ -411,9 +439,12 @@ function discardShiftEdits() {
 }
 
 function saveShiftEdits() {
-    const changes = Object.entries(pendingEdits).map(([k, code]) => {
+    const changes = Object.entries(pendingEdits).map(([k, v]) => {
         const parts = k.split('|');
-        return { date: parts[0], staff_id: Number(parts[1]), assignment: code };
+        const ch = { date: parts[0], staff_id: Number(parts[1]) };
+        if (v.assignment !== undefined) ch.assignment = v.assignment;
+        if (v.visit_slot !== undefined) ch.visit_slot = v.visit_slot;
+        return ch;
     });
     if (!changes.length) return;
     const btn = document.getElementById('save-edits-btn');
@@ -457,10 +488,14 @@ function initShiftDragAndDrop() {
     table.addEventListener('dragstart', e => {
         const chip = e.target.closest('.visit-chip');
         if (chip) {
-            // 早番から「午前訪問」だけを切り離して別の職員へ渡す
+            // 「訪問（午前/午後）」の札だけを切り離して別の職員へ渡す
+            const cellTd = chip.closest('td.shift-cell');
             window.__dragInfo = {
-                type: 'visit', code: 'visit_am',
+                type: 'visit', code: 'visit_am', slot: chip.dataset.slot || 'am',
                 date: chip.dataset.date, staffId: Number(chip.dataset.staff), group: 'care',
+                explicit: !!(currentShiftData && (currentShiftData.shifts || []).some(
+                    x => x.date === chip.dataset.date
+                      && x.staff_id === Number(chip.dataset.staff) && x.visit_slot)),
             };
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('text/plain', 'visit_am');
@@ -514,11 +549,14 @@ function initShiftDragAndDrop() {
                 return;
             }
             if (info.staffId === toStaff) { window.__dragInfo = null; return; }
-            // すでに出勤している人なら「訪問(午前)＋デイ(午後)」、休みの人なら「訪問(午前)のみ」
-            const cur = td.dataset.assignment;
-            const newCode = cur ? 'visit_am_day_p4' : 'visit_am';
-            applyLocalEdit(toDate, toStaff, newCode);
-            setEditStatus('午前訪問を移しました（早番の人は通常の早番になります）', 'ok');
+            const slot = info.slot || 'am';
+            // 元の人が明示の訪問担当だったら外す（早番の暗黙分は元から表示だけ）
+            if (info.explicit) applyLocalVisitSlot(info.date, info.staffId, null);
+            // 相手はいまのシフトのまま「訪問（午前/午後）」を付ける
+            applyLocalVisitSlot(toDate, toStaff, slot);
+            setEditStatus(
+                slot === 'am' ? '午前訪問を移しました（シフトはそのままで訪問（午前）が付きます）'
+                              : '午後訪問を移しました', 'ok');
             window.__dragInfo = null;
             return;
         }
@@ -613,9 +651,14 @@ function renderCalendar(data, year, month) {
     const deskSlotMap = {};  // ③ {date: {staff_id: [slot_idx, ...]}}
     const bathMap = {};      // お風呂当番 {date: {staff_id: "中"/"外"}}
     const mealMap = {};      // 食事介助 {date: {staff_id: "12:00-13:00"}}
+    const visitMap = {};     // 訪問へ出る時間帯 {date: {staff_id: "am"/"pm"}}
     shifts.forEach(s => {
         if (!shiftMap[s.date]) shiftMap[s.date] = {};
         shiftMap[s.date][s.staff_id] = s.assignment;
+        if (s.visit_slot) {
+            if (!visitMap[s.date]) visitMap[s.date] = {};
+            visitMap[s.date][s.staff_id] = s.visit_slot;
+        }
         if (s.is_phone_duty) {
             if (!phoneDutyMap[s.date]) phoneDutyMap[s.date] = {};
             phoneDutyMap[s.date][s.staff_id] = true;
@@ -716,7 +759,9 @@ function renderCalendar(data, year, month) {
     // その日に「午前訪問」を明示的に割り当てられた職員がいるか
     function hasExplicitAmVisit(dateStr) {
         const day = shiftMap[dateStr] || {};
-        return Object.values(day).some(a => VISIT_AM_SET.has(a));
+        if (Object.values(day).some(a => VISIT_AM_SET.has(a))) return true;
+        const vs = visitMap[dateStr] || {};
+        return Object.values(vs).some(v => v === 'am');
     }
 
     // その日付が訪問の営業日か（2階・3階いずれかが訪問の曜日）
@@ -766,12 +811,22 @@ function renderCalendar(data, year, month) {
         // 訪問営業日の早番(7:30-16:30)は既定で午前が訪問。
         //   ただし、その日に別の職員へ午前訪問を割り当てたら早番からは外す
         //   （早番と訪問（午前）を分けて動かせるようにするため）。
-        const visitNote = (assignment === 'early' && isVisitDate(dateStr)
+        // 訪問へ出る時間帯（明示指定）。元のシフト表示の下に付ける。
+        const slot = visitMap[dateStr] && visitMap[dateStr][s.id];
+        const slotNote = slot
+            ? `<br><span class="badge visit-chip" draggable="true" data-date="${dateStr}"`
+              + ` data-staff="${s.id}" data-slot="${slot}"`
+              + ` title="この札を別の職員のマスへドラッグすると、訪問だけを移せます"`
+              + ` style="background:#dbeafe;color:#1d4ed8;cursor:grab">訪問（${slot === 'am' ? '午前' : '午後'}）</span>`
+            : '';
+        // 訪問営業日の早番は既定で午前が訪問（明示の担当がいない日だけ表示）
+        const visitNote = slotNote || ((assignment === 'early' && isVisitDate(dateStr)
                            && !hasExplicitAmVisit(dateStr))
             ? `<br><span class="badge visit-chip" draggable="true" data-date="${dateStr}"`
-              + ` data-staff="${s.id}" title="この札を別の職員のマスへドラッグすると、午前訪問だけを移せます"`
+              + ` data-staff="${s.id}" data-slot="am"`
+              + ` title="この札を別の職員のマスへドラッグすると、午前訪問だけを移せます"`
               + ` style="background:#dbeafe;color:#1d4ed8;cursor:grab">訪問（午前）</span>`
-            : '';
+            : '');
         return `${badge}${bathDisplay}${phoneBadge}${parkingBadge(dateStr, s.id)}${visitNote}${deskLabel}`;
     }
 
@@ -822,7 +877,10 @@ function renderCalendar(data, year, month) {
             let cnt = 0;
             careStaff.forEach(s => {
                 const a = shiftMap[m.dateStr] ? shiftMap[m.dateStr][s.id] : null;
-                if (a && set.has(a) && !(excludeNursePt && nursePtIds.has(s.id))) cnt++;
+                const slotV = visitMap[m.dateStr] && visitMap[m.dateStr][s.id];
+                if (label === '訪問午前' && slotV === 'am') cnt++;
+                else if (label === '訪問午後' && slotV === 'pm') cnt++;
+                else if (a && set.has(a) && !(excludeNursePt && nursePtIds.has(s.id))) cnt++;
                 else if (a === 'early' && earlyCountsOnVisitDay && m.isVisitDay
                          && !hasExplicitAmVisit(m.dateStr)) cnt++;
             });

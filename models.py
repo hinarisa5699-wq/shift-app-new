@@ -555,6 +555,10 @@ class GeneratedShift(db.Model):
     is_phone_duty = db.Column(db.Boolean, default=False)
     break_start = db.Column(db.String(5), nullable=True)  # ① 休憩開始時刻 e.g. "12:00"
     counselor_desk_slots = db.Column(db.Text, nullable=True)  # ③ JSON: [0,2] = 事務スロットインデックス（[0,1,2,3]=終日相談）
+    visit_slot = db.Column(db.String(5), nullable=True)
+    # 訪問へ出る時間帯: "am" / "pm" / None。シフト（デイ等）はそのままで
+    #   「その日の午前は訪問へ出る」と表示・集計するために持つ
+    #   （ユーザー依頼 2026-08:「元の表示の下へ訪問(午前)を付けたい」）。
     bath_role = db.Column(db.String(5), nullable=True)  # お風呂当番: "中" / "外" / None
     meal_assist = db.Column(db.String(20), nullable=True)  # 食事介助の担当時間帯 e.g. "12:00-13:00" / None
 
@@ -578,6 +582,7 @@ class GeneratedShift(db.Model):
             "break_start": self.break_start,
             "staff_name": self.staff.name if self.staff else None,
             "counselor_desk_slots": desk_slots,
+            "visit_slot": self.visit_slot,
             "bath_role": self.bath_role,
             "meal_assist": self.meal_assist,
         }

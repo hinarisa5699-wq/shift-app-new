@@ -605,3 +605,45 @@ def test_palette_has_standalone_visit_shifts(tmp_path, monkeypatch):
     after = client.get("/api/shifts/2026/9").get_json()
     assert any(x["date"] == "2026-09-07" and x["staff_id"] == care_id
                and x["assignment"] == "visit_am" for x in after["shifts"])
+
+
+def test_visit_slot_keeps_original_shift_label(tmp_path, monkeypatch):
+    """訪問（午前）を移しても、その人のシフト表示は元のまま＋訪問（午前）が付く。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    gen = client.post("/api/generate", json={"year": 2026, "month": 9}).get_json()
+    data = client.get("/api/shifts/2026/9").get_json()
+
+    # デイに入っている職員を1人選ぶ
+    target = next(x for x in data["shifts"] if x["assignment"] == "day_pattern1")
+
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": target["date"], "staff_id": target["staff_id"],
+                     "visit_slot": "am"}],
+    })
+    assert res.status_code == 200 and res.get_json()["applied"] == 1
+
+    after = client.get("/api/shifts/2026/9").get_json()
+    row = next(x for x in after["shifts"]
+               if x["date"] == target["date"] and x["staff_id"] == target["staff_id"])
+    assert row["assignment"] == "day_pattern1", "シフト本体が兼務に置き換わってしまった"
+    assert row["visit_slot"] == "am"
+
+    gen2 = after["generation_id"]
+    csv_text = client.get(f"/api/export/{gen2}/csv").get_data(as_text=True)
+    assert "デイ8:30-17:30 訪問（午前）" in csv_text.replace("\r", ""), \
+        "出力で『デイ…＋訪問（午前）』の形になっていない"
+
+    # 解除もできる
+    client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": target["date"], "staff_id": target["staff_id"],
+                     "visit_slot": None}],
+    })
+    after2 = client.get("/api/shifts/2026/9").get_json()
+    row2 = next(x for x in after2["shifts"]
+                if x["date"] == target["date"] and x["staff_id"] == target["staff_id"])
+    assert not row2["visit_slot"]

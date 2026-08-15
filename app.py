@@ -609,6 +609,9 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE generated_shift ADD COLUMN is_phone_duty BOOLEAN DEFAULT 0")
     if "counselor_desk_slots" not in columns:
         cursor.execute("ALTER TABLE generated_shift ADD COLUMN counselor_desk_slots TEXT")
+    if "visit_slot" not in columns:
+        # 訪問へ出る時間帯（am/pm）。シフト本体とは別に持つ
+        cursor.execute("ALTER TABLE generated_shift ADD COLUMN visit_slot VARCHAR(5)")
     if "break_start" not in columns:
         cursor.execute("ALTER TABLE generated_shift ADD COLUMN break_start VARCHAR(5)")
     if "bath_role" not in columns:
@@ -3403,6 +3406,27 @@ def create_app():
                 continue
             code = (ch.get("assignment") or "").strip()
             row = by_key.get((sid, d))
+
+            # 訪問へ出る時間帯だけの変更（シフト本体は変えない）
+            if "visit_slot" in ch and not code:
+                slot = ch.get("visit_slot")
+                slot = slot if slot in ("am", "pm") else None
+                if row is None:
+                    if slot is None:
+                        continue
+                    # 休みの人に訪問だけを割り当てる場合は訪問のシフトを作る
+                    row = GeneratedShift(
+                        generation_id=generation_id, date=d, staff_id=sid,
+                        assignment=("visit_am" if slot == "am" else "visit_pm"),
+                        visit_slot=slot,
+                    )
+                    db.session.add(row)
+                    by_key[(sid, d)] = row
+                else:
+                    row.visit_slot = slot
+                applied += 1
+                continue
+
             if code in ("", "off", "cook_off"):
                 if row is not None:
                     db.session.delete(row)
@@ -3415,16 +3439,20 @@ def create_app():
             is_cook_code = code.startswith("cooking_") or code in COOK_ASSIGNMENTS
             if is_cook_code != (st.staff_group == "cooking"):
                 continue
+            slot = ch.get("visit_slot")
+            slot = slot if slot in ("am", "pm") else None
             if row is None:
                 row = GeneratedShift(
                     generation_id=generation_id, date=d, staff_id=sid, assignment=code,
+                    visit_slot=slot,
                 )
                 db.session.add(row)
                 by_key[(sid, d)] = row
             else:
-                if row.assignment == code:
+                if row.assignment == code and row.visit_slot == slot:
                     continue
                 row.assignment = code
+                row.visit_slot = slot
                 # 手動変更時は自動で付いた役割・休憩をいったん外す（実態と食い違わせない）
                 row.bath_role = None
                 row.break_start = None
@@ -3604,6 +3632,7 @@ def create_app():
                 "is_phone_duty": s.is_phone_duty,
                 "break_start": s.break_start,
                 "bath_role": s.bath_role,
+                "visit_slot": s.visit_slot,
                 "meal_assist": s.meal_assist,
                 "parking_label": parking_lookup.get((s.date.isoformat(), s.staff_id)),
             }

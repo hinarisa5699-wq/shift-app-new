@@ -236,6 +236,9 @@ def _build_daily_data(shifts_data, staff_list, year, month):
     num_days = calendar.monthrange(year, month)[1]
     dates = [date(year, month, d) for d in range(1, num_days + 1)]
 
+    # 訪問へ出る時間帯は出力のたびに作り直す（前回の内容を残さない）
+    _VISIT_SLOTS.clear()
+
     assignment_map = {}
     phone_duty_map = {}
     desk_slot_map = {}  # ③ {date_str: {staff_id: [slot_idx, ...]}}
@@ -274,6 +277,11 @@ def _build_daily_data(shifts_data, staff_list, year, month):
         if meal:
             meal_map.setdefault(d_str, {})[sid] = meal
 
+        # 訪問へ出る時間帯（シフト本体とは別に持つ）
+        vslot = item.get("visit_slot")
+        if vslot:
+            _VISIT_SLOTS.setdefault(d_str, {})[sid] = vslot
+
     # ② 看護師/PTはデイ人数カウントから除外
     nurse_pt_ids = set()
     for st in staff_list:
@@ -298,6 +306,11 @@ def _build_daily_data(shifts_data, staff_list, year, month):
                 day_am += 1
             if asgn in _DAY_PM_SET and not is_nurse_pt:
                 day_pm += 1
+            _slot = _VISIT_SLOTS.get(d_str, {}).get(sid)
+            if _slot == "am":
+                visit_am += 1
+            elif _slot == "pm":
+                visit_pm += 1
             if asgn in _VISIT_AM_SET:
                 visit_am += 1
             elif (asgn == "early" and _is_visit_weekday(d)
@@ -375,10 +388,16 @@ def _off_cell_text(d_str, sid) -> str:
     return "希望休" if _is_day_off_request(d_str, sid) else "休"
 
 
+# 訪問へ出る時間帯 {date: {staff_id: "am"/"pm"}}（_build_daily_data で作る）
+_VISIT_SLOTS: dict = {}
+
+
 def _has_explicit_am_visit(d_str, assignment_map) -> bool:
     """その日に「午前訪問」を明示的に割り当てられた職員がいるか。"""
     day = (assignment_map or {}).get(d_str, {})
-    return any(a in _VISIT_AM_SET for a in day.values())
+    if any(a in _VISIT_AM_SET for a in day.values()):
+        return True
+    return any(v == "am" for v in _VISIT_SLOTS.get(d_str, {}).values())
 
 
 def _visit_suffix(d_str, asgn, assignment_map=None) -> str:
@@ -407,7 +426,12 @@ def _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map):
     """ケアスタッフ 1 セルの (assignment, 表示テキスト) を組み立てる。"""
     asgn = assignment_map.get(d_str, {}).get(sid, "")
     text = ASSIGNMENT_LABELS.get(asgn, "")
-    text += _visit_suffix(d_str, asgn, assignment_map)
+    slot = _VISIT_SLOTS.get(d_str, {}).get(sid)
+    if slot:
+        # シフトはそのままで「訪問（午前/午後）」を下に付ける
+        text += "\n訪問（{}）".format("午前" if slot == "am" else "午後")
+    else:
+        text += _visit_suffix(d_str, asgn, assignment_map)
 
     # お風呂当番（中/外）
     bath_role = bath_map.get(d_str, {}).get(sid)
@@ -949,9 +973,13 @@ def export_csv(
         asgn = assignment_map.get(d_str, {}).get(sid, "")
         label = ASSIGNMENT_LABELS.get(asgn, "")
         parts = [label] if label else []
-        visit_note = _visit_suffix(d_str, asgn, assignment_map).strip()
-        if visit_note:
-            parts.append(visit_note)
+        slot = _VISIT_SLOTS.get(d_str, {}).get(sid)
+        if slot:
+            parts.append("訪問（{}）".format("午前" if slot == "am" else "午後"))
+        else:
+            visit_note = _visit_suffix(d_str, asgn, assignment_map).strip()
+            if visit_note:
+                parts.append(visit_note)
         bath_role = bath_map.get(d_str, {}).get(sid)
         if bath_role:
             parts.append(f"{bath_role}介助")

@@ -652,27 +652,9 @@ function clearExecPlan() {
     closeExecModal();
 }
 
-// 表を横に動かすスライドバー（表の上と、画面の下に貼り付くもの）を本体と合わせる
+// 表のスクロール位置まわり（表の中で縦横にスクロールする）
 function syncTableScrollbars() {
-    const main = document.getElementById('table-scroll');
-    const table = document.getElementById('calendar-table');
-    if (!main || !table) return;
-    const bars = ['table-scroll-top', 'table-scroll-sticky']
-        .map(id => document.getElementById(id)).filter(Boolean);
-    bars.forEach(b => {
-        if (b.firstElementChild) b.firstElementChild.style.width = table.scrollWidth + 'px';
-    });
-    const all = [main].concat(bars);
-    all.forEach(el => {
-        if (el.dataset.syncReady === '1') return;
-        el.dataset.syncReady = '1';
-        el.addEventListener('scroll', () => {
-            if (window.__scrollSyncing) return;
-            window.__scrollSyncing = true;
-            all.forEach(other => { if (other !== el) other.scrollLeft = el.scrollLeft; });
-            window.__scrollSyncing = false;
-        });
-    });
+    // スライドバーは表そのものに付いている（追加のバーは置かない）
 }
 
 function initShiftDragAndDrop() {

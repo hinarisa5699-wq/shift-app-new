@@ -198,21 +198,12 @@
 <!-- カレンダー表示エリア -->
 <div id="calendar-container" class="hidden">
     <div class="bg-white rounded-xl shadow-md">
-        <!-- 表の上のスライドバー（介護・看護のすぐ上で横に動かせる） -->
-        <div id="table-scroll-top" class="overflow-x-auto rounded-t-xl" style="height:14px">
-            <div style="height:1px"></div>
-        </div>
         <!-- 表の中で縦横にスクロールする（職員名・日付/曜日をその場に固定するため） -->
         <div id="table-scroll" class="overflow-auto"
              style="max-height:calc(100vh - 220px);min-height:320px">
             <table id="calendar-table" class="min-w-full border-collapse">
                 <!-- JSで動的に構築 -->
             </table>
-        </div>
-        <!-- 画面の下に貼り付くスライドバー（どこを見ていても横に動かせる） -->
-        <div id="table-scroll-sticky" class="overflow-x-auto sticky bottom-0 bg-white border-t border-gray-200 rounded-b-xl"
-             style="height:16px;z-index:40">
-            <div style="height:1px"></div>
         </div>
     </div>
 </div>

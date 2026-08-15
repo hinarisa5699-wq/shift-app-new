@@ -1845,6 +1845,31 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
         if counselor_qual_ids and n_desk == 0:
             warn("counselor_unassigned", "相談員 未配置")
 
+    # 公休日数（職員ごとの目標との差）。画面で直接シフトを直したときに
+    #   「公休が足りない／多い」をその場で気づけるようにする（ユーザー依頼 2026-08）。
+    work_days = {}
+    for it in shifts_data:
+        a_code = it.get("assignment") or ""
+        if a_code in ("", "off", "cook_off"):
+            continue
+        work_days[it["staff_id"]] = work_days.get(it["staff_id"], 0) + 1
+    first_iso = date(year, month, 1).isoformat()
+    for st in staff_list:
+        target_off = int(st.get("public_holiday_target", 0) or 0)
+        if target_off <= 0:
+            continue
+        actual_off = num_days - work_days.get(st["id"], 0)
+        if actual_off != target_off:
+            diff = actual_off - target_off
+            warnings.append({
+                "date": first_iso,
+                "warning_type": "public_holiday_unmet",
+                "message": (
+                    f"公休日数: {st.get('name', '')} 目標{target_off}日 / "
+                    f"実際{actual_off}日（差{diff:+d}日）"
+                ),
+            })
+
     return warnings
 
 

@@ -347,7 +347,23 @@ function renderAll(data, map, dates, visitSet) {
 
 initSelectors();
 setMode('person');
-load();
+
+// 実際にシフトがある月を開く（今日の月に無ければ直近の月）
+(async () => {
+    try {
+        const r = await fetch('/api/shifts/available', { cache: 'no-store' });
+        if (r.ok) {
+            const j = await r.json();
+            if (j.default) {
+                state.year = j.default.year;
+                state.month = j.default.month;
+                el('year').value = state.year;
+                el('month').value = state.month;
+            }
+        }
+    } catch (e) { /* 取れなければ今日の月のまま */ }
+    await load();
+})();
 setInterval(load, 60000);   // 1分ごとに最新を取り込む
 </script>
 </body>

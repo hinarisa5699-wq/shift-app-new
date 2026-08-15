@@ -359,3 +359,157 @@ def test_retired_without_month_is_hidden_immediately(tmp_path, monkeypatch):
     client.post("/api/generate", json={"year": 2026, "month": 9})
     data = client.get("/api/shifts/2026/9").get_json()
     assert sid not in {x["id"] for x in data["staff_list"]}
+
+
+def test_cell_edit_moves_shift_and_recomputes(tmp_path, monkeypatch):
+    """画面で直接編集した内容を保存できる（移動＝元は休みになる）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+
+    data = client.get("/api/shifts/2026/9").get_json()
+    src = next(x for x in data["shifts"] if x["assignment"] not in ("off", "cook_off")
+               and not x["assignment"].startswith("cooking_"))
+    care_ids = [s["id"] for s in data["staff_list"] if s["department"] != "cooking"]
+    target = next(i for i in care_ids if i != src["staff_id"]
+                  and not any(x["date"] == src["date"] and x["staff_id"] == i
+                              for x in data["shifts"]))
+
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [
+            {"date": src["date"], "staff_id": src["staff_id"], "assignment": "off"},
+            {"date": src["date"], "staff_id": target, "assignment": src["assignment"]},
+        ],
+    })
+    assert res.status_code == 200, res.get_data(as_text=True)[:300]
+    assert res.get_json()["applied"] == 2
+
+    after = client.get("/api/shifts/2026/9").get_json()
+    moved = [x for x in after["shifts"] if x["date"] == src["date"]]
+    assert not [x for x in moved if x["staff_id"] == src["staff_id"]], "移動元が休みになっていない"
+    assert [x for x in moved if x["staff_id"] == target
+            and x["assignment"] == src["assignment"]], "移動先に入っていない"
+
+
+def test_cell_edit_rejects_cross_group_assignment(tmp_path, monkeypatch):
+    """調理職員に介護のシフトは入れられない（逆も同じ）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    data = client.get("/api/shifts/2026/9").get_json()
+    cook_id = next(s["id"] for s in data["staff_list"] if s["department"] == "cooking")
+
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-02", "staff_id": cook_id, "assignment": "early"}],
+    })
+    assert res.status_code == 200
+    assert res.get_json()["applied"] == 0
+
+    after = client.get("/api/shifts/2026/9").get_json()
+    assert not [x for x in after["shifts"]
+                if x["staff_id"] == cook_id and x["assignment"] == "early"]
+
+
+def test_cell_edit_blocked_when_confirmed(tmp_path, monkeypatch):
+    """確定済みの月は画面編集も止める（確定解除が必要）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    client.post("/api/shifts/2026/9/confirm")
+
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-02", "staff_id": 1, "assignment": "off"}],
+    })
+    assert res.status_code == 409
+
+
+def test_oncall_can_be_changed_by_hand(tmp_path, monkeypatch):
+    """オンコール担当を画面から選び直せる。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    data = client.get("/api/shifts/2026/9").get_json()
+    care = [s for s in data["staff_list"] if s["department"] != "cooking"]
+    pick = care[0]
+
+    res = client.post("/api/oncall", json={"date": "2026-09-02", "staff_id": pick["id"]})
+    assert res.status_code == 200, res.get_data(as_text=True)[:200]
+    assert res.get_json()["name"] == pick["name"]
+
+    after = client.get("/api/shifts/2026/9").get_json()
+    assert after["oncall"].get("2026-09-02") == pick["name"]
+
+    # 解除もできる
+    assert client.post("/api/oncall", json={"date": "2026-09-02"}).status_code == 200
+    after2 = client.get("/api/shifts/2026/9").get_json()
+    assert not after2["oncall"].get("2026-09-02")
+
+
+def test_public_holiday_warning_after_manual_edit(tmp_path, monkeypatch):
+    """手直しで公休が足りなくなったら警告が出る。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    data = client.get("/api/shifts/2026/9").get_json()
+    staff = next(s for s in data["staff_list"]
+                 if s["department"] != "cooking" and s.get("public_holiday_target"))
+
+    # その職員を全日デイに埋めて公休を0にする
+    days = [f"2026-09-{d:02d}" for d in range(1, 31)]
+    changes = [{"date": d, "staff_id": staff["id"], "assignment": "day_pattern1"} for d in days]
+    res = client.post("/api/shift/cells",
+                      json={"year": 2026, "month": 9, "changes": changes})
+    assert res.status_code == 200
+    msgs = [w["message"] for w in res.get_json()["warnings"]
+            if w["warning_type"] == "public_holiday_unmet"]
+    assert any(staff["name"] in m for m in msgs), msgs
+
+
+def test_available_months_and_default(tmp_path, monkeypatch):
+    """閲覧ページは「実際にシフトがある月」を開く（今日の月が無ければ直近）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+
+    # まだ何も生成していないときは default が無い
+    res = client.get("/api/shifts/available")
+    assert res.status_code == 200
+    assert res.get_json()["default"] is None
+
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    client.post("/api/generate", json={"year": 2026, "month": 10})
+    res2 = client.get("/api/shifts/available").get_json()
+    got = [{"year": m["year"], "month": m["month"]} for m in res2["months"]]
+    assert {"year": 2026, "month": 9} in got and {"year": 2026, "month": 10} in got
+    # 一番新しく作った月を開く（古い月が今日の月でも、そちらは開かない）
+    assert res2["default"] == {"year": 2026, "month": 10}
+
+
+def test_viewer_can_read_available_months(tmp_path, monkeypatch):
+    """閲覧アカウントでも「シフトのある月」を取得できる。"""
+    monkeypatch.setenv("SHIFT_STAFF_PASSWORD", "viewpass")
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    admin = flask_app.test_client()
+    _login(admin, "admin", "testpass")
+    admin.post("/api/generate", json={"year": 2026, "month": 9})
+
+    guest = flask_app.test_client()
+    _login(guest, "staff", "viewpass")
+    res = guest.get("/api/shifts/available")
+    assert res.status_code == 200
+    assert res.get_json()["default"] == {"year": 2026, "month": 9}

@@ -76,6 +76,48 @@ def _parse_retired_month(raw):
     return None
 
 
+def _public_holiday_target(st, year=None, month=None) -> int:
+    """職員の公休目標日数。自動算出ONなら平日日数ベース（生成時と同じ）。"""
+    settings_obj = ShiftSettings.query.first()
+    manual = int(getattr(st, "public_holiday_count", 0) or 0)
+    if not settings_obj or not getattr(settings_obj, "auto_public_holidays", False):
+        return manual
+    if not (year and month):
+        return manual
+    cal_days = calendar.monthrange(year, month)[1]
+    include_hol = bool(getattr(settings_obj, "auto_ph_include_holidays", False))
+    fulltime = sum(
+        1 for d in range(1, cal_days + 1)
+        if date(year, month, d).weekday() < 5
+        and not (include_hol and jpholiday.is_holiday(date(year, month, d)))
+    )
+    week_days = st.max_days_per_week or 5
+    shotei = max(0, fulltime - max(0, 5 - week_days) * 4)
+    # 固定休・勤務可能曜日・休業日で物理的に出られない分は差し引く
+    avail = {int(x) for x in (st.available_days or "").split(",") if x.strip()}
+    fixed = {int(x) for x in (st.fixed_days_off or "").split(",") if x.strip()}
+    closed_wd = {
+        int(x) for x in (settings_obj.closed_days or "").split(",") if x.strip()
+    }
+    closed_iso = {
+        x.strip() for x in (getattr(settings_obj, "closed_dates", "") or "").split(",")
+        if x.strip()
+    }
+    hol_ng = bool(getattr(st, "holiday_ng", False))
+    by_week = {}
+    for d in range(1, cal_days + 1):
+        dt = date(year, month, d)
+        if avail and dt.weekday() not in avail:
+            continue
+        if dt.weekday() in fixed or dt.weekday() in closed_wd or dt.isoformat() in closed_iso:
+            continue
+        if hol_ng and jpholiday.is_holiday(dt):
+            continue
+        by_week[dt.isocalendar()[1]] = by_week.get(dt.isocalendar()[1], 0) + 1
+    max_workable = sum(min(n, week_days or 7) for n in by_week.values())
+    return max(0, cal_days - min(shotei, max_workable))
+
+
 def _is_staff_active_in_month(st, year, month) -> bool:
     """その職員が対象年月のシフトに載るか（休職中・退職を判定）。
 
@@ -1064,8 +1106,9 @@ def _load_users():
 VIEWER_ROLE = "閲覧"
 VIEWER_USERNAME = "staff"
 _VIEWER_ENDPOINTS = {
-    "view_shift",        # 閲覧専用ページ
-    "api_shifts_get",    # 月のシフト取得（読み取り）
+    "view_shift",           # 閲覧専用ページ
+    "api_shifts_get",       # 月のシフト取得（読み取り）
+    "api_shifts_available", # シフトのある年月（読み取り）
     "logout",
     "login",
     "static",
@@ -3197,9 +3240,27 @@ def create_app():
                         "qualification_codes": staff_qual_codes.get(st.id, []),
                         "job_category": getattr(st, "job_category", "caregiver") or "caregiver",
                         "car_commute": st.car_commute or False,
+                        # 画面で直接編集したときの公休チェック用
+                        "public_holiday_target": _public_holiday_target(st, year, month),
                     }
                     for st in all_staff
                 ],
+                # 画面編集用の凡例（ここからドラッグしてシフトを追加する）
+                "palette": {
+                    "care": [
+                        {"code": code, "label": ASSIGNMENT_LABELS.get(code, code)}
+                        for code in (
+                            "day_pattern1", "day_pattern2", "day_pattern3", "day_pattern4",
+                            "early", "late", "nurse_short",
+                            "day_p3_visit_pm", "visit_am_day_p4",
+                        )
+                    ],
+                    "cooking": [
+                        {"code": p.code, "label": p.label}
+                        for p in ShiftPattern.query.filter_by(staff_group="cooking")
+                        .order_by(ShiftPattern.display_order).all()
+                    ],
+                },
                 # 調理シフト種類マスタのラベル（画面表示で新種類を正しく表示する用）
                 "cook_labels": {
                     p.code: p.label
@@ -3253,6 +3314,176 @@ def create_app():
 
         return jsonify({"status": "success", "staff_id": staff_id,
                         "year": year, "month": month, "fixed": fixed})
+
+    @app.route("/api/shifts/available", methods=["GET"])
+    def api_shifts_available():
+        """シフトがある年月の一覧と、最初に開くべき年月を返す。
+
+        ユーザー指摘（2026-08）:「閲覧アプリが、いつのメンバーか分からない古い月を
+        読み込んでいる」。閲覧ページが今日の月を決め打ちしていたため、まだ作成して
+        いない月や古い月を開いていた。実際にシフトがある月から選ぶようにする。
+        """
+        rows = db.session.query(GeneratedShift.date).distinct().all()
+        months = sorted({(r[0].year, r[0].month) for r in rows})
+        confirmed = {
+            (c.year, c.month) for c in ShiftConfirmation.query.all()
+        }
+        # 一番新しく作った月を開く。今日の月に古いシフトが残っていても、
+        #   最新の（＝いま運用している）シフトが最初に出るようにする。
+        default = months[-1] if months else None
+        return jsonify({
+            "months": [
+                {"year": y, "month": m, "confirmed": (y, m) in confirmed}
+                for (y, m) in months
+            ],
+            "default": ({"year": default[0], "month": default[1]} if default else None),
+        })
+
+    @app.route("/api/shift/cells", methods=["POST"])
+    def api_shift_cells_update():
+        """画面上で直接編集したシフトを保存する（1セル単位の一括反映）。
+
+        ユーザー依頼（2026-08）:「この画面で直接1つ1つシフト変更できるようにする」。
+        changes: [{"date": "YYYY-MM-DD", "staff_id": 1, "assignment": "early"}, ...]
+                 assignment が "off"/"" のセルは休み（行を削除）。
+        """
+        data = request.get_json(silent=True) or {}
+        year = safe_int(data.get("year"), 0)
+        month = safe_int(data.get("month"), 0)
+        changes = data.get("changes") or []
+        if not (2000 <= year <= 2100 and 1 <= month <= 12):
+            return jsonify({"error": "年月が正しくありません"}), 400
+        if not isinstance(changes, list):
+            return jsonify({"error": "changes の形式が正しくありません"}), 400
+
+        if ShiftConfirmation.query.filter_by(year=year, month=month).first():
+            return jsonify({
+                "error": "この月は確定済みのため変更できません。先に「確定解除」してください。",
+                "confirmed": True,
+            }), 409
+
+        first_day = date(year, month, 1)
+        last_day = date(year, month, calendar.monthrange(year, month)[1])
+        existing = GeneratedShift.query.filter(
+            GeneratedShift.date >= first_day, GeneratedShift.date <= last_day
+        ).all()
+        if not existing:
+            return jsonify({"error": "この月のシフトがありません。先に生成してください。"}), 400
+        generation_id = existing[0].generation_id
+        by_key = {(r.staff_id, r.date): r for r in existing}
+
+        valid_codes = set(CARE_ASSIGNMENTS) | set(COOK_ASSIGNMENTS) | {
+            p.code for p in ShiftPattern.query.filter_by(staff_group="cooking").all()
+        }
+        staff_by_id = {s.id: s for s in Staff.query.all()}
+
+        applied = 0
+        for ch in changes:
+            try:
+                d = datetime.strptime(str(ch.get("date")), "%Y-%m-%d").date()
+            except (TypeError, ValueError):
+                continue
+            if not (first_day <= d <= last_day):
+                continue
+            sid = safe_int(ch.get("staff_id"), None)
+            st = staff_by_id.get(sid)
+            if st is None:
+                continue
+            code = (ch.get("assignment") or "").strip()
+            row = by_key.get((sid, d))
+            if code in ("", "off", "cook_off"):
+                if row is not None:
+                    db.session.delete(row)
+                    by_key.pop((sid, d), None)
+                    applied += 1
+                continue
+            if code not in valid_codes:
+                continue
+            # 区分違いの割り当て（調理職員に介護シフト等）は受け付けない
+            is_cook_code = code.startswith("cooking_") or code in COOK_ASSIGNMENTS
+            if is_cook_code != (st.staff_group == "cooking"):
+                continue
+            if row is None:
+                row = GeneratedShift(
+                    generation_id=generation_id, date=d, staff_id=sid, assignment=code,
+                )
+                db.session.add(row)
+                by_key[(sid, d)] = row
+            else:
+                if row.assignment == code:
+                    continue
+                row.assignment = code
+                # 手動変更時は自動で付いた役割・休憩をいったん外す（実態と食い違わせない）
+                row.bath_role = None
+                row.break_start = None
+                row.counselor_desk_slots = None
+                row.meal_assist = None
+            applied += 1
+
+        db.session.flush()
+
+        # 変更後の内容で警告を再計算（人数不足・公休など）
+        rows = GeneratedShift.query.filter(
+            GeneratedShift.date >= first_day, GeneratedShift.date <= last_day
+        ).all()
+        shifts_data = [r.to_dict() for r in rows]
+        new_warnings = recompute_warnings_from_shifts(
+            shifts_data, _staff_list_for_validation(year, month),
+            _settings_for_validation(), year, month,
+        )
+        ShiftWarning.query.filter_by(generation_id=generation_id).delete()
+        for w in new_warnings:
+            db.session.add(ShiftWarning(
+                generation_id=generation_id, date=date.fromisoformat(w["date"]),
+                warning_type=w["warning_type"], message=w["message"],
+            ))
+        db.session.commit()
+        return jsonify({
+            "applied": applied,
+            "warning_count": len(new_warnings),
+            "warnings": new_warnings,
+        })
+
+    @app.route("/api/oncall", methods=["POST"])
+    def api_oncall_set():
+        """オンコール担当を手で入れ替える（date, staff_id）。staff_id 未指定で解除。"""
+        data = request.get_json(silent=True) or {}
+        try:
+            d = datetime.strptime(str(data.get("date")), "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return jsonify({"error": "日付が正しくありません"}), 400
+        if ShiftConfirmation.query.filter_by(year=d.year, month=d.month).first():
+            return jsonify({"error": "この月は確定済みのため変更できません。", "confirmed": True}), 409
+
+        first_day = date(d.year, d.month, 1)
+        last_day = date(d.year, d.month, calendar.monthrange(d.year, d.month)[1])
+        gen_row = GeneratedShift.query.filter(
+            GeneratedShift.date >= first_day, GeneratedShift.date <= last_day
+        ).first()
+        if gen_row is None:
+            return jsonify({"error": "この月のシフトがありません。"}), 400
+        generation_id = gen_row.generation_id
+
+        sid = safe_int(data.get("staff_id"), None)
+        existing = OncallAssignment.query.filter_by(
+            generation_id=generation_id, date=d
+        ).first()
+        if sid is None:
+            if existing is not None:
+                db.session.delete(existing)
+            db.session.commit()
+            return jsonify({"date": d.isoformat(), "staff_id": None, "name": ""})
+        st = Staff.query.get(sid)
+        if st is None:
+            return jsonify({"error": "職員が見つかりません"}), 400
+        if existing is None:
+            db.session.add(OncallAssignment(
+                generation_id=generation_id, date=d, staff_id=sid,
+            ))
+        else:
+            existing.staff_id = sid
+        db.session.commit()
+        return jsonify({"date": d.isoformat(), "staff_id": sid, "name": st.name})
 
     @app.route("/api/shifts/<int:year>/<int:month>/confirm", methods=["POST"])
     def api_shift_confirm(year, month):
@@ -3718,7 +3949,8 @@ def create_app():
             {"id": s.id, "name": s.name,
              "qualification_codes": qc.get(s.id, []),
              "qualifications": qn.get(s.id, []),
-             "job_category": getattr(s, "job_category", "caregiver") or "caregiver"}
+             "job_category": getattr(s, "job_category", "caregiver") or "caregiver",
+             "public_holiday_target": _public_holiday_target(s, year, month)}
             for s in rows
         ]
 

@@ -163,8 +163,8 @@ function loadShifts(year, month) {
                 renderConfirmation(data.confirmation);
                 showElement('calendar-container');
                 showElement('export-buttons');
-                showElement('excel-to-pdf-box');
-                showElement('shift-reflect-box');
+                showElement('edit-bar');
+                renderPalette(data);
                 hideElement('no-data-message');
             } else if (hasWarnings) {
                 // W-13: シフト0件でも警告があれば表示
@@ -173,12 +173,14 @@ function loadShifts(year, month) {
                 renderConfirmation(null);
                 hideElement('calendar-container');
                 hideElement('export-buttons');
+                hideElement('edit-bar');
                 hideElement('no-data-message');
             } else {
                 currentGenerationId = null;
                 renderConfirmation(null);
                 hideElement('calendar-container');
                 hideElement('export-buttons');
+                hideElement('edit-bar');
                 hideElement('warnings-container');
                 showElement('no-data-message');
             }
@@ -305,9 +307,217 @@ function toggleShiftFix(staffId, makeFixed) {
         .catch(() => { alert('固定の切り替えに失敗しました。'); loadShifts(y, m); });
 }
 
+/* ============================================
+   シフトの手直し（画面で直接編集）
+   ============================================ */
+let pendingEdits = {};        // "date|staff_id" -> assignment（"" は休み）
+let currentShiftData = null;  // 直近に読み込んだ /api/shifts のデータ
+
+function editKey(dateStr, staffId) { return `${dateStr}|${staffId}`; }
+
+function renderPalette(data) {
+    currentShiftData = data;
+    const pal = data.palette || {};
+    const build = (id, items, title) => {
+        const box = document.getElementById(id);
+        if (!box) return;
+        if (!items || !items.length) { box.innerHTML = ''; return; }
+        box.innerHTML = `<span class="text-xs font-bold text-gray-500 mr-1">${title}</span>`
+            + items.map(it =>
+                `<span class="palette-chip badge ${(ASSIGNMENT_MAP[it.code] || {}).badgeClass || 'badge-off'}"`
+                + ` draggable="true" data-code="${it.code}" style="cursor:grab">${escapeHtml(it.label)}</span>`
+            ).join('')
+            + `<span class="palette-chip badge badge-off" draggable="true" data-code="off"`
+            + ` style="cursor:grab;border:1px dashed #9ca3af">休み</span>`;
+    };
+    build('palette-care', pal.care, '介護・看護:');
+    build('palette-cook', pal.cooking, '調理:');
+    updatePendingBadge();
+}
+
+function updatePendingBadge() {
+    const n = Object.keys(pendingEdits).length;
+    const badge = document.getElementById('pending-count');
+    const btn = document.getElementById('save-edits-btn');
+    if (badge) badge.textContent = n ? `未保存の変更 ${n}件` : '';
+    if (btn) btn.disabled = n === 0;
+}
+
+function applyLocalEdit(dateStr, staffId, code) {
+    if (!currentShiftData) return;
+    const shifts = currentShiftData.shifts || [];
+    const idx = shifts.findIndex(x => x.date === dateStr && x.staff_id === staffId);
+    if (code === '' || code === 'off' || code === 'cook_off') {
+        if (idx >= 0) shifts.splice(idx, 1);
+    } else if (idx >= 0) {
+        shifts[idx] = Object.assign({}, shifts[idx], {
+            assignment: code, bath_role: null, break_start: null, counselor_desk_slots: null,
+        });
+    } else {
+        shifts.push({ date: dateStr, staff_id: staffId, assignment: code });
+    }
+    pendingEdits[editKey(dateStr, staffId)] = (code === 'cook_off') ? 'off' : code;
+    renderCalendar(currentShiftData, currentYear, currentMonth);
+    checkPublicHolidayLocally();
+    updatePendingBadge();
+}
+
+// 公休（休みの日数）が目標とずれていたら、その場で警告として出す
+function checkPublicHolidayLocally() {
+    if (!currentShiftData) return;
+    const days = new Date(currentYear, currentMonth, 0).getDate();
+    const work = {};
+    (currentShiftData.shifts || []).forEach(x => {
+        if (x.assignment && x.assignment !== 'off' && x.assignment !== 'cook_off') {
+            work[x.staff_id] = (work[x.staff_id] || 0) + 1;
+        }
+    });
+    const extra = [];
+    (currentShiftData.staff_list || []).forEach(s => {
+        const target = s.public_holiday_target || 0;
+        if (!target) return;
+        const off = days - (work[s.id] || 0);
+        if (off !== target) {
+            const diff = off - target;
+            extra.push({
+                date: `${currentYear}-${String(currentMonth).padStart(2, '0')}-01`,
+                warning_type: 'public_holiday_unmet',
+                message: `公休日数: ${s.name} 目標${target}日 / 実際${off}日（差${diff > 0 ? '+' : ''}${diff}日）`,
+            });
+        }
+    });
+    const base = (currentShiftData.warnings || []).filter(w => w.warning_type !== 'public_holiday_unmet');
+    renderWarnings(base.concat(extra));
+}
+
+function discardShiftEdits() {
+    if (!Object.keys(pendingEdits).length) return;
+    if (!confirm('保存していない変更を取り消して、保存済みの内容に戻します。よろしいですか？')) return;
+    pendingEdits = {};
+    loadShifts(currentYear, currentMonth);
+}
+
+function saveShiftEdits() {
+    const changes = Object.entries(pendingEdits).map(([k, code]) => {
+        const parts = k.split('|');
+        return { date: parts[0], staff_id: Number(parts[1]), assignment: code };
+    });
+    if (!changes.length) return;
+    const btn = document.getElementById('save-edits-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
+    fetchWithCsrf('/api/shift/cells', {
+        method: 'POST',
+        body: JSON.stringify({ year: currentYear, month: currentMonth, changes: changes }),
+    })
+        .then(r => r.json().then(j => ({ ok: r.ok, j: j })))
+        .then(res => {
+            if (!res.ok) throw new Error(res.j.error || '保存に失敗しました');
+            pendingEdits = {};
+            alert(`保存しました（${res.j.applied}件）。`);
+            loadShifts(currentYear, currentMonth);
+        })
+        .catch(e => alert('保存に失敗しました: ' + e.message))
+        .finally(() => {
+            if (btn) { btn.textContent = '変更を保存'; }
+            updatePendingBadge();
+        });
+}
+
+// ドラッグ&ドロップ（表とパレットにイベント委譲で1度だけ登録）
+function initShiftDragAndDrop() {
+    const table = document.getElementById('calendar-table');
+    const bar = document.getElementById('edit-bar');
+    if (!table || table.dataset.dndReady === '1') return;
+    table.dataset.dndReady = '1';
+
+    if (bar && bar.dataset.dndReady !== '1') {
+        bar.dataset.dndReady = '1';
+        bar.addEventListener('dragstart', e => {
+            const chip = e.target.closest('.palette-chip');
+            if (!chip) return;
+            window.__dragInfo = { type: 'palette', code: chip.dataset.code };
+            e.dataTransfer.effectAllowed = 'copy';
+            e.dataTransfer.setData('text/plain', chip.dataset.code);
+        });
+    }
+
+    table.addEventListener('dragstart', e => {
+        const td = e.target.closest('td.shift-cell');
+        if (!td || !td.dataset.assignment) return;
+        window.__dragInfo = {
+            type: 'cell', code: td.dataset.assignment, date: td.dataset.date,
+            staffId: Number(td.dataset.staff), group: td.dataset.group,
+        };
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', td.dataset.assignment);
+    });
+    table.addEventListener('dragover', e => {
+        const td = e.target.closest('td.shift-cell');
+        if (!td || !window.__dragInfo) return;
+        e.preventDefault();
+        td.style.outline = '2px dashed #10b981';
+    });
+    table.addEventListener('dragleave', e => {
+        const td = e.target.closest('td.shift-cell');
+        if (td) td.style.outline = '';
+    });
+    table.addEventListener('drop', e => {
+        const td = e.target.closest('td.shift-cell');
+        const info = window.__dragInfo;
+        if (!td || !info) return;
+        e.preventDefault();
+        td.style.outline = '';
+        const toDate = td.dataset.date;
+        const toStaff = Number(td.dataset.staff);
+        const toGroup = td.dataset.group;
+        const code = info.code;
+        const isCookCode = code.indexOf('cooking_') === 0 || code === 'cook_off';
+        if (code !== 'off' && isCookCode !== (toGroup === 'cooking')) {
+            alert('介護・看護と調理のシフトは入れ替えられません。');
+            window.__dragInfo = null;
+            return;
+        }
+        if (info.type === 'cell') {
+            if (info.date !== toDate) {
+                alert('別の日へは移動できません。同じ日の別の職員へドラッグしてください。');
+                window.__dragInfo = null;
+                return;
+            }
+            if (info.staffId === toStaff) { window.__dragInfo = null; return; }
+            applyLocalEdit(info.date, info.staffId, '');   // 移動元は休みにする
+        }
+        applyLocalEdit(toDate, toStaff, code === 'off' ? '' : code);
+        window.__dragInfo = null;
+    });
+
+    // オンコール担当の入れ替え（プルダウン）
+    table.addEventListener('change', e => {
+        const sel = e.target.closest('.oncall-select');
+        if (!sel) return;
+        const value = sel.value ? Number(sel.value) : null;
+        fetchWithCsrf('/api/oncall', {
+            method: 'POST',
+            body: JSON.stringify({ date: sel.dataset.date, staff_id: value }),
+        })
+            .then(r => r.json().then(j => ({ ok: r.ok, j: j })))
+            .then(res => {
+                if (!res.ok) throw new Error(res.j.error || '変更に失敗しました');
+                if (currentShiftData) {
+                    currentShiftData.oncall = currentShiftData.oncall || {};
+                    currentShiftData.oncall[res.j.date] = res.j.name || '';
+                }
+            })
+            .catch(err => {
+                alert('オンコールの変更に失敗しました: ' + err.message);
+                loadShifts(currentYear, currentMonth);
+            });
+    });
+}
+
 function renderCalendar(data, year, month) {
     const table = document.getElementById('calendar-table');
     if (!table) return;
+    currentShiftData = data;
 
     // 調理シフト種類マスタのラベルを取り込む（新種類の表示用。既存①〜⑤は上書きしない）
     if (data.cook_labels) {
@@ -531,7 +741,10 @@ function renderCalendar(data, year, month) {
         dayMeta.forEach(m => {
             const assignment = shiftMap[m.dateStr] ? shiftMap[m.dateStr][s.id] : null;
             if (assignment && assignment !== 'off') work++;
-            r += `<td class="staff-cell ${m.colClass}">${careCellHtml(m.dateStr, s)}</td>`;
+            const _a = shiftMap[m.dateStr] ? shiftMap[m.dateStr][s.id] : null;
+            const _drag = (_a && _a !== 'off') ? ' draggable="true"' : '';
+            r += `<td class="staff-cell shift-cell ${m.colClass}" data-date="${m.dateStr}" data-staff="${s.id}"`
+               + ` data-group="care" data-assignment="${_a || ''}"${_drag}>${careCellHtml(m.dateStr, s)}</td>`;
         });
         r += `<td class="date-cell" style="font-weight:bold">${work}</td></tr>`;
         html += r;
@@ -564,10 +777,16 @@ function renderCalendar(data, year, month) {
     // オンコール行
     {
         let r = `<tr><td class="staff-name-cell" style="text-align:left;font-weight:700;background:#eef2ff;position:sticky;left:0;z-index:5">オンコール</td>`;
+        const oncallCandidates = (data.staff_list || []).filter(s => s.department !== 'cooking');
         dayMeta.forEach(m => {
-            const n = oncallMap[m.dateStr];
-            const cell = n ? `<span class="badge badge-phone">${escapeHtml(n)}</span>` : '<span class="text-gray-300">-</span>';
-            r += `<td class="staff-cell ${m.colClass}" style="font-size:11px">${cell}</td>`;
+            const n = oncallMap[m.dateStr] || '';
+            const opts = ['<option value="">-</option>'].concat(
+                oncallCandidates.map(s =>
+                    `<option value="${s.id}" ${s.name === n ? 'selected' : ''}>${escapeHtml(s.name)}</option>`)
+            ).join('');
+            r += `<td class="staff-cell ${m.colClass}" style="font-size:11px">`
+               + `<select class="oncall-select" data-date="${m.dateStr}"`
+               + ` style="max-width:92px;font-size:10px;border:1px solid #e5e7eb;border-radius:4px;padding:1px 2px">${opts}</select></td>`;
         });
         r += '<td class="date-cell"></td></tr>';
         html += r;
@@ -595,7 +814,9 @@ function renderCalendar(data, year, month) {
                 } else {
                     cell = offCellHtml(m.dateStr, s);
                 }
-                r += `<td class="staff-cell ${m.colClass}">${cell}</td>`;
+                const _drag = (a && a !== 'cook_off') ? ' draggable="true"' : '';
+                r += `<td class="staff-cell shift-cell ${m.colClass}" data-date="${m.dateStr}" data-staff="${s.id}"`
+                   + ` data-group="cooking" data-assignment="${a || ''}"${_drag}>${cell}</td>`;
             });
             r += `<td class="date-cell" style="font-weight:bold">${work}</td></tr>`;
             html += r;
@@ -619,6 +840,7 @@ function renderCalendar(data, year, month) {
     html += '</tbody>';
 
     table.innerHTML = html;
+    initShiftDragAndDrop();
     table.className = 'calendar-table';
 }
 

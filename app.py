@@ -63,6 +63,44 @@ from export import (
 )
 
 
+def _parse_retired_month(raw):
+    """退職月の入力（"YYYY-MM" / "YYYY-MM-DD"）を date に変換。空欄は None。"""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt).date().replace(day=1)
+        except ValueError:
+            continue
+    return None
+
+
+def _is_staff_active_in_month(st, year, month) -> bool:
+    """その職員が対象年月のシフトに載るか（休職中・退職を判定）。
+
+    退職月が入っていれば「その月まで」は表示する（ユーザー依頼 2026-08:
+    「退職月を入れて、退職前は見れるように」）。退職チェックのみで月が空なら常に対象外。
+    """
+    if getattr(st, "on_leave", False):
+        return False
+    if not getattr(st, "retired", False):
+        return True
+    rd = getattr(st, "retired_date", None)
+    if rd is None:
+        return False
+    return (rd.year, rd.month) >= (int(year), int(month))
+
+
+def _active_staff_for_month(year, month, base_query=None):
+    """対象年月に在籍している職員の一覧（id順）。"""
+    q = base_query if base_query is not None else Staff.query
+    return [
+        st for st in q.order_by(Staff.id).all()
+        if _is_staff_active_in_month(st, year, month)
+    ]
+
+
 def _parse_wd_counts(raw):
     """曜日ごとの人数設定 "3,3,,3,,2,0" を [int|None]×7 に変換（空/未設定は None）。"""
     out = [None] * 7
@@ -348,6 +386,9 @@ def _run_migrations(app):
     if "retired" not in columns:
         # 退職（在籍していない）。履歴は残したまま対象外にする
         cursor.execute("ALTER TABLE staff ADD COLUMN retired BOOLEAN NOT NULL DEFAULT 0")
+    if "retired_date" not in columns:
+        # 退職月（この月まではシフト表に出す）
+        cursor.execute("ALTER TABLE staff ADD COLUMN retired_date DATE")
     if "oncall_only" not in columns:
         # オンコールのみ当番（出勤シフトは割り当てない）
         cursor.execute("ALTER TABLE staff ADD COLUMN oncall_only BOOLEAN NOT NULL DEFAULT 0")
@@ -1476,6 +1517,7 @@ def create_app():
             holiday_ng="holiday_ng" in request.form,
             on_leave="on_leave" in request.form,
             retired="retired" in request.form,
+            retired_date=_parse_retired_month(request.form.get("retired_date", "")),
             oncall_only="oncall_only" in request.form if is_care else False,
             oncall_when_off_ok="oncall_when_off_ok" in request.form if is_care else False,
             public_holiday_count=max(0, safe_int(request.form.get("public_holiday_count"), 0)),
@@ -1583,6 +1625,7 @@ def create_app():
         staff.holiday_ng = "holiday_ng" in request.form
         staff.on_leave = "on_leave" in request.form
         staff.retired = "retired" in request.form
+        staff.retired_date = _parse_retired_month(request.form.get("retired_date", ""))
         staff.public_holiday_count = max(0, safe_int(request.form.get("public_holiday_count"), 0))
         # 駐車場（依頼文24）— 車通勤は care/cooking どちらも対象
         staff.car_commute = "car_commute" in request.form
@@ -2495,7 +2538,7 @@ def create_app():
             }), 409
 
         # 休職中の職員は生成対象から除外（オンコールも含め一切割り当てない）。
-        staffs = Staff.query.filter_by(on_leave=False, retired=False).all()
+        staffs = _active_staff_for_month(year, month)
         if not staffs:
             return jsonify({"error": "職員が登録されていません"}), 400
 
@@ -2769,11 +2812,12 @@ def create_app():
 
             oncall_eligible = []
             # 「オンコールのみ当番」の職員は電話当番チェックの有無に関わらず対象に含める
-            oncall_candidates = Staff.query.filter(
-                Staff.on_leave == False,  # noqa: E712
-                Staff.retired == False,  # noqa: E712
-                db.or_(Staff.has_phone_duty == True, Staff.oncall_only == True),  # noqa: E712
-            ).order_by(Staff.id).all()
+            oncall_candidates = _active_staff_for_month(
+                year, month,
+                Staff.query.filter(
+                    db.or_(Staff.has_phone_duty == True, Staff.oncall_only == True),  # noqa: E712
+                ),
+            )
             # オンコールは「その日出勤している職員」に割り当てる（電話を持ち帰るため）。
             #   ユーザー依頼（2026-08）:「オンコールは出勤してる職員しか電話を
             #   持って帰れない」「日曜日は例外。オンコール担当は土曜出勤が持って帰る」。
@@ -3060,7 +3104,7 @@ def create_app():
         generation_id = shifts[0].generation_id if shifts else None
 
         # 職員一覧（department情報付き）。休職中はカレンダー表示・印刷の対象外。
-        all_staff = Staff.query.filter_by(on_leave=False, retired=False).order_by(Staff.id).all()
+        all_staff = _active_staff_for_month(year, month)
 
         # ⑧ 祝日リスト
         holidays = {}
@@ -3276,18 +3320,18 @@ def create_app():
             ),
         )
 
-        # 休職中の職員は印刷一覧に載せない（roster からも各シフト行からも除外）。
-        staffs = Staff.query.filter_by(on_leave=False, retired=False).order_by(Staff.id).all()
-        on_leave_ids = {
-            st.id for st in Staff.query.filter(
-                db.or_(Staff.on_leave == True, Staff.retired == True)  # noqa: E712
-            ).all()
-        }
         warnings = ShiftWarning.query.filter_by(generation_id=generation_id).all()
 
         first_date = shifts[0].date
         year = first_date.year
         month = first_date.month
+
+        # 休職中・（その月より前に）退職した職員は印刷一覧に載せない。
+        staffs = _active_staff_for_month(year, month)
+        _active_ids = {st.id for st in staffs}
+        on_leave_ids = {
+            st.id for st in Staff.query.all() if st.id not in _active_ids
+        }
 
         # 休み希望（この月）: 出力の休みセルを「希望休」と表示するため登録する
         _first_day = date(year, month, 1)
@@ -3564,17 +3608,21 @@ def create_app():
         os.makedirs(d, exist_ok=True)
         return d
 
-    def _group_staff_rows(group):
+    def _group_staff_rows(group, year=None, month=None):
         # 休職中は出力（Excel/PDF/CSV）に出さないため、反映の「期待職員セット」からも除外する。
         # これを含めると休職者が出力に無いことを「ファイルに不足」と誤検知し構造不一致になる（依頼文44-c）。
-        staffs = Staff.query.filter_by(on_leave=False, retired=False).order_by(Staff.id).all()
+        # 退職者も同様（退職月までは在籍扱いなので、対象月で判定する）。
+        if year and month:
+            staffs = _active_staff_for_month(year, month)
+        else:
+            staffs = Staff.query.filter_by(on_leave=False, retired=False).order_by(Staff.id).all()
         if group == "cooking":
             return [s for s in staffs if s.staff_group == "cooking"]
         return [s for s in staffs if s.staff_group != "cooking"]
 
     def _validate_upload_structure(parsed, group):
         """ファイルの職員行が DB の当該グループ職員と一致するか検査（構造崩れ＝反映拒否）。"""
-        db_staff = _group_staff_rows(group)
+        db_staff = _group_staff_rows(group, parsed.get("year"), parsed.get("month"))
         db_names = [s.name for s in db_staff]
         file_names = parsed["staff_names"]
         seen = {}
@@ -3660,14 +3708,18 @@ def create_app():
             "placement_rules": placement,
         }
 
-    def _staff_list_for_validation():
+    def _staff_list_for_validation(year=None, month=None):
         qm, qn, qc = _build_staff_qualification_maps()
+        rows = (
+            _active_staff_for_month(year, month) if (year and month)
+            else Staff.query.filter_by(on_leave=False, retired=False).all()
+        )
         return [
             {"id": s.id, "name": s.name,
              "qualification_codes": qc.get(s.id, []),
              "qualifications": qn.get(s.id, []),
              "job_category": getattr(s, "job_category", "caregiver") or "caregiver"}
-            for s in Staff.query.filter_by(on_leave=False, retired=False).all()
+            for s in rows
         ]
 
     @app.route("/api/shift/upload-preview", methods=["POST"])
@@ -3827,7 +3879,8 @@ def create_app():
         ).all()
         shifts_data = [r.to_dict() for r in all_rows]
         new_warnings = recompute_warnings_from_shifts(
-            shifts_data, _staff_list_for_validation(), _settings_for_validation(), year, month
+            shifts_data, _staff_list_for_validation(year, month),
+            _settings_for_validation(), year, month
         )
         ShiftWarning.query.filter_by(generation_id=gen_id).delete()
         for w in new_warnings:

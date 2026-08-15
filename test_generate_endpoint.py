@@ -310,3 +310,52 @@ def test_staff_list_hides_inactive_by_default(tmp_path, monkeypatch):
 
     html2 = client.get("/staff?show_inactive=1").get_data(as_text=True)
     assert "介護C" in html2 and "介護D" in html2
+
+
+def test_retired_month_keeps_past_months_visible(tmp_path, monkeypatch):
+    """退職月を入れると、その月までは表示され、翌月から外れる。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    from models import db, Staff
+    import datetime
+
+    with flask_app.app_context():
+        s = Staff.query.filter_by(name="介護D").first()
+        s.retired = True
+        s.retired_date = datetime.date(2026, 9, 1)   # 2026年9月末で退職
+        db.session.commit()
+        sid = s.id
+
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+
+    # 退職月（9月）は在籍扱い → 一覧に出るしシフトも付く
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    sept = client.get("/api/shifts/2026/9").get_json()
+    assert sid in {x["id"] for x in sept["staff_list"]}, "退職月なのに表示されない"
+
+    # 翌月（10月）は対象外
+    client.post("/api/generate", json={"year": 2026, "month": 10})
+    oct_ = client.get("/api/shifts/2026/10").get_json()
+    assert sid not in {x["id"] for x in oct_["staff_list"]}, "退職の翌月なのに表示されている"
+    assert not [x for x in oct_["shifts"] if x["staff_id"] == sid]
+
+
+def test_retired_without_month_is_hidden_immediately(tmp_path, monkeypatch):
+    """退職月が空欄なら、これまでどおりすぐ対象外になる。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    from models import db, Staff
+
+    with flask_app.app_context():
+        s = Staff.query.filter_by(name="介護D").first()
+        s.retired = True
+        s.retired_date = None
+        db.session.commit()
+        sid = s.id
+
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    data = client.get("/api/shifts/2026/9").get_json()
+    assert sid not in {x["id"] for x in data["staff_list"]}

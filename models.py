@@ -60,6 +60,10 @@ class Staff(db.Model):
     #   "only"  = 登録した日しか出勤しない（従来動作・スポット勤務者向け）
     #   "extra" = 通常のシフト作成に加えて、登録した日は必ず出勤する（振替出勤向け）
     retired = db.Column(db.Boolean, default=False, nullable=False)
+    retired_date = db.Column(db.Date, nullable=True)
+    # 退職月（その月までのシフトには表示し、翌月から対象外にする）。
+    #   空欄のまま retired=True なら、その時点から一切表示しない。
+    #   ユーザー依頼 2026-08:「退職月を入れて、退職前は見れるように」。
     # True = 退職（在籍していない）。シフト生成・オンコール・閲覧画面・印刷の対象外。
     #   過去のシフト履歴は残すため、職員データ自体は削除しない
     #   （ユーザー依頼 2026-08:「シフト閲覧にやめた人がいっぱい出る」）。
@@ -136,6 +140,7 @@ class Staff(db.Model):
             "holiday_ng": self.holiday_ng or False,
             "on_leave": self.on_leave or False,
             "retired": self.retired or False,
+            "retired_date": self.retired_date.isoformat() if self.retired_date else None,
             "oncall_only": self.oncall_only or False,
             "workable_dates_mode": self.workable_dates_mode or "only",
             "oncall_when_off_ok": self.oncall_when_off_ok or False,

@@ -3,21 +3,38 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>シフト閲覧</title>
+    <title>Alohaシフト</title>
+    <link rel="icon" href="{{ url_for('static', filename='icons/favicon.ico') }}" sizes="any">
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='icons/favicon-32.png') }}" sizes="32x32">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
+    <meta name="theme-color" content="#0ea5b7">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Alohaシフト">
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
+        body { background: linear-gradient(180deg, #ecfeff 0%, #f0fdfa 40%, #fff7ed 100%); min-height: 100vh; }
         .cell { font-size: 11px; line-height: 1.35; }
         .sticky-name { position: sticky; left: 0; background: #fff; z-index: 5; }
-        .sat { background: #eff6ff; }
-        .sun { background: #fef2f2; }
+        .sat { background: #ecfeff; }
+        .sun { background: #fff1f2; }
         .hol { background: #fef3c7; }
+        .aloha-header { background: linear-gradient(135deg, #0ea5b7 0%, #22c1a5 55%, #fb923c 130%); }
+        .card { border-radius: 1rem; box-shadow: 0 8px 20px -12px rgba(13,148,136,.45); }
     </style>
 </head>
-<body class="bg-gray-50">
-<header class="bg-primary-700 text-white shadow" style="background:#1d4ed8">
+<body>
+<header class="aloha-header text-white shadow-lg">
     <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
-        <div class="text-lg font-bold">シフト表</div>
         <div class="flex items-center gap-2">
+            <img src="{{ url_for('static', filename='icons/icon-192.png') }}" alt=""
+                 class="w-9 h-9 rounded-xl shadow ring-1 ring-white/40">
+            <div>
+                <div class="text-lg font-bold leading-tight">Alohaシフト</div>
+                <div class="text-[11px] opacity-90 leading-tight">シフト表</div>
+            </div>
+        </div>
+        <div class="flex items-center gap-3">
             <span id="updated" class="text-xs opacity-90"></span>
             <a href="{{ url_for('logout') }}" class="text-sm underline">ログアウト</a>
         </div>
@@ -25,25 +42,25 @@
 </header>
 
 <main class="max-w-6xl mx-auto px-3 py-4">
-    <div class="bg-white rounded-xl shadow p-3 mb-3">
+    <div class="bg-white card p-3 mb-3">
         <div class="flex flex-wrap items-center gap-2">
             <button id="prev" class="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 font-bold">◀</button>
             <select id="year" class="px-3 py-2 border border-gray-300 rounded-lg text-base"></select>
             <select id="month" class="px-3 py-2 border border-gray-300 rounded-lg text-base"></select>
             <button id="next" class="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 font-bold">▶</button>
-            <button id="reload" class="px-3 py-2 rounded-lg bg-blue-600 text-white font-bold">最新に更新</button>
+            <button id="reload" class="px-3 py-2 rounded-lg bg-teal-600 text-white font-bold">最新に更新</button>
             <span id="status" class="text-sm px-2 py-1 rounded-full"></span>
         </div>
         <div class="mt-3 flex flex-wrap items-center gap-2">
             <div class="inline-flex rounded-lg overflow-hidden border border-gray-300">
-                <button id="tab-person" class="px-4 py-2 text-sm font-bold bg-blue-600 text-white">個人</button>
+                <button id="tab-person" class="px-4 py-2 text-sm font-bold bg-teal-600 text-white">個人</button>
                 <button id="tab-all" class="px-4 py-2 text-sm font-bold bg-white text-gray-700">全体</button>
             </div>
             <select id="person" class="px-3 py-2 border border-gray-300 rounded-lg text-base flex-1 min-w-[10rem]"></select>
         </div>
     </div>
 
-    <div id="week-bar" class="hidden bg-white rounded-xl shadow p-2 mb-3">
+    <div id="week-bar" class="hidden bg-white card p-2 mb-3">
         <div class="flex items-center gap-2">
             <button id="week-prev" class="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 font-bold">◀</button>
             <div id="week-label" class="flex-1 text-center font-bold text-gray-800"></div>
@@ -52,15 +69,15 @@
         </div>
     </div>
 
-    <div id="empty" class="hidden bg-white rounded-xl shadow p-8 text-center text-gray-500">
+    <div id="empty" class="hidden bg-white card p-8 text-center text-gray-500">
         この月のシフトはまだ作成されていません。
     </div>
 
     <!-- 個人ビュー -->
-    <div id="person-view" class="bg-white rounded-xl shadow overflow-hidden"></div>
+    <div id="person-view" class="bg-white card overflow-hidden"></div>
 
     <!-- 全体ビュー -->
-    <div id="all-view" class="hidden bg-white rounded-xl shadow overflow-auto"></div>
+    <div id="all-view" class="hidden bg-white card overflow-auto"></div>
 
     <p class="text-xs text-gray-400 mt-4">
         この画面は閲覧専用です。内容は自動作成システムと同じデータをそのまま表示しています（1分ごとに自動更新）。
@@ -161,8 +178,8 @@ function shiftMonth(delta) {
 
 function setMode(mode) {
     state.mode = mode;
-    el('tab-person').className = 'px-4 py-2 text-sm font-bold ' + (mode === 'person' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700');
-    el('tab-all').className = 'px-4 py-2 text-sm font-bold ' + (mode === 'all' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700');
+    el('tab-person').className = 'px-4 py-2 text-sm font-bold ' + (mode === 'person' ? 'bg-teal-600 text-white' : 'bg-white text-gray-700');
+    el('tab-all').className = 'px-4 py-2 text-sm font-bold ' + (mode === 'all' ? 'bg-teal-600 text-white' : 'bg-white text-gray-700');
     el('person').style.display = mode === 'person' ? '' : 'none';
     render();
 }

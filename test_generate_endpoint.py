@@ -1194,3 +1194,16 @@ def test_shifts_api_exposes_can_visit(tmp_path, monkeypatch):
     visit_codes = {"visit_am", "visit_pm", "visit_am_day_p4", "day_p3_visit_pm"}
     assert not [x for x in data["shifts"]
                 if x["staff_id"] == no_visit_id and x["assignment"] in visit_codes]
+
+
+def test_pages_bust_browser_cache_for_js(tmp_path, monkeypatch):
+    """JS/CSS のURLに更新印が付く（ブラウザが古い画面を使い続けないように）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    html = client.get("/calendar").get_data(as_text=True)
+    version = flask_app.config["ASSET_VERSION"]
+    assert version and version != "0"
+    assert f"js/app.js?v={version}" in html, html[:0] or "app.js にバージョンが付いていない"
+    assert f"css/style.css?v={version}" in html

@@ -1250,6 +1250,24 @@ def create_app():
     app.config["TEMPLATES_AUTO_RELOAD"] = True
     app.jinja_env.auto_reload = True
 
+    # 画面のJS/CSSを更新したとき、ブラウザが古いものを使い続けないように
+    #   ファイルの更新時刻をURLに付ける（ユーザー依頼 2026-08:「直ってない」の原因）
+    def _asset_version() -> str:
+        stamp = 0
+        for rel in ("js/app.js", "css/style.css"):
+            try:
+                stamp = max(stamp, int(os.path.getmtime(
+                    os.path.join(app.static_folder, rel))))
+            except OSError:
+                pass
+        return str(stamp)
+
+    app.config["ASSET_VERSION"] = _asset_version()
+
+    @app.context_processor
+    def _inject_asset_version():
+        return {"asset_version": app.config["ASSET_VERSION"]}
+
     # SQLAlchemy 初期化
     db.init_app(app)
 

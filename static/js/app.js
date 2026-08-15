@@ -980,7 +980,7 @@ function renderCalendar(data, year, month) {
             const _a = shiftMap[m.dateStr] ? shiftMap[m.dateStr][s.id] : null;
             const isExec = (s.job_category === 'executive');
             if (_a && _a !== 'off' && _a !== 'exec_off') work++;
-            const _drag = (!isOffice && _a && _a !== 'off') ? ' draggable="true"' : '';
+            const _drag = (!isExec && _a && _a !== 'off') ? ' draggable="true"' : '';
             const _grp = isExec ? 'executive' : 'care';
             const _cur = isExec ? ' style="cursor:pointer"' : '';
             r += `<td class="staff-cell shift-cell ${m.colClass}" data-date="${m.dateStr}" data-staff="${s.id}"`

@@ -1079,3 +1079,80 @@ def test_office_account_edits_only_office_plans(tmp_path, monkeypatch):
     })
     assert ng.status_code == 403
     assert client.post("/api/generate", json={"year": 2026, "month": 9}).status_code == 403
+
+
+def test_visit_can_be_removed_from_early_shift(tmp_path, monkeypatch):
+    """早番に自動で付く「訪問（午前）」をゴミ箱で外せる（visit_slot="none"）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    from models import db, ShiftSettings
+
+    with flask_app.app_context():
+        s = ShiftSettings.query.first()
+        s.min_visit_am = 1
+        db.session.commit()
+
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    gen = client.post("/api/generate", json={"year": 2026, "month": 9}).get_json()
+    csv_before = client.get(
+        f"/api/export/{gen['generation_id']}/csv").get_data(as_text=True)
+    assert "訪問（午前）" in csv_before
+
+    data = client.get("/api/shifts/2026/9").get_json()
+    early = next(x for x in data["shifts"] if x["assignment"] == "early")
+
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": early["date"], "staff_id": early["staff_id"],
+                     "visit_slot": "none"}],
+    })
+    assert res.status_code == 200, res.get_data(as_text=True)[:200]
+
+    after = client.get("/api/shifts/2026/9").get_json()
+    row = next(x for x in after["shifts"]
+               if x["date"] == early["date"] and x["staff_id"] == early["staff_id"])
+    assert row["visit_slot"] == "none"
+    assert row["assignment"] == "early", "シフト自体は早番のまま"
+
+    # 出力でもその日その人には訪問が付かない
+    csv_after = client.get(
+        f"/api/export/{after['generation_id']}/csv").get_data(as_text=True)
+    day = int(early["date"].split("-")[2])
+    staff_name = next(s["name"] for s in after["staff_list"]
+                      if s["id"] == early["staff_id"])
+    line = next(l for l in csv_after.splitlines() if l.startswith(staff_name))
+    cell = line.split(",")[day]
+    assert "早番" in cell and "訪問" not in cell, cell
+
+
+def test_visit_slot_can_be_added_under_existing_shift(tmp_path, monkeypatch):
+    """デイのシフトはそのままで「訪問（午前）」だけを足せる。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+
+    data = client.get("/api/shifts/2026/9").get_json()
+    target = next(x for x in data["shifts"] if x["assignment"] == "day_pattern1")
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": target["date"], "staff_id": target["staff_id"],
+                     "visit_slot": "am"}],
+    })
+    assert res.status_code == 200
+
+    after = client.get("/api/shifts/2026/9").get_json()
+    row = next(x for x in after["shifts"]
+               if x["date"] == target["date"] and x["staff_id"] == target["staff_id"])
+    assert row["assignment"] == "day_pattern1", "元のシフトが消えている"
+    assert row["visit_slot"] == "am"
+
+    csv_text = client.get(
+        f"/api/export/{after['generation_id']}/csv").get_data(as_text=True)
+    day = int(target["date"].split("-")[2])
+    name = next(s["name"] for s in after["staff_list"] if s["id"] == target["staff_id"])
+    line = next(l for l in csv_text.splitlines() if l.startswith(name))
+    cell = line.split(",")[day]
+    assert "デイ8:30-17:30" in cell and "訪問（午前）" in cell, cell

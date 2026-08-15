@@ -3553,9 +3553,10 @@ def create_app():
             # 訪問へ出る時間帯だけの変更（シフト本体は変えない）
             if "visit_slot" in ch and not code:
                 slot = ch.get("visit_slot")
-                slot = slot if slot in ("am", "pm") else None
+                # "none" = この日は訪問に行かない（早番の既定の訪問を外す）
+                slot = slot if slot in ("am", "pm", "none") else None
                 if row is None:
-                    if slot is None:
+                    if slot in (None, "none"):
                         continue
                     # 休みの人に訪問だけを割り当てる場合は訪問のシフトを作る
                     row = GeneratedShift(
@@ -3591,7 +3592,7 @@ def create_app():
             if not is_exec and is_cook_code != (st.staff_group == "cooking"):
                 continue
             slot = ch.get("visit_slot")
-            slot = slot if slot in ("am", "pm") else None
+            slot = slot if slot in ("am", "pm", "none") else None
             if row is None:
                 row = GeneratedShift(
                     generation_id=generation_id, date=d, staff_id=sid, assignment=code,

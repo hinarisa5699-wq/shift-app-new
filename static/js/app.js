@@ -463,7 +463,7 @@ function applyLocalVisitSlot(dateStr, staffId, slot) {
     const idx = shifts.findIndex(x => x.date === dateStr && x.staff_id === staffId);
     if (idx >= 0) {
         shifts[idx] = Object.assign({}, shifts[idx], { visit_slot: slot });
-    } else if (slot) {
+    } else if (slot && slot !== 'none') {
         // 休みの人に訪問だけを割り当てる
         shifts.push({
             date: dateStr, staff_id: staffId,
@@ -721,12 +721,9 @@ function initShiftDragAndDrop() {
             if (!info || info.type === 'palette') { window.__dragInfo = null; return; }
             e.preventDefault();
             if (info.type === 'visit') {
-                if (info.explicit) {
-                    applyLocalVisitSlot(info.date, info.staffId, null);
-                    setEditStatus('訪問を消しました', 'ok');
-                } else {
-                    setEditStatus('この訪問は早番に付いているものです。早番ごと動かしてください', 'error');
-                }
+                // 早番に自動で付いている訪問も「行かない」にして消す
+                applyLocalVisitSlot(info.date, info.staffId, info.explicit ? null : 'none');
+                setEditStatus('訪問を消しました', 'ok');
             } else {
                 applyLocalEdit(info.date, info.staffId, '');
                 setEditStatus('シフトを消しました（休みになります）', 'ok');
@@ -836,6 +833,18 @@ function initShiftDragAndDrop() {
                 applyLocalEdit(toDate, toStaff, code === 'off' ? '' : code);
             });
             if (info.date !== toDate) setEditStatus('別の日へ移しました', 'ok');
+            window.__dragInfo = null;
+            return;
+        }
+        const nowCode = td.dataset.assignment || '';
+        if ((code === 'visit_am' || code === 'visit_pm')
+            && nowCode && nowCode !== 'off'
+            && nowCode !== 'visit_am' && nowCode !== 'visit_pm') {
+            // いまのシフトはそのままで、下に「訪問（午前/午後）」を付ける
+            applyLocalVisitSlot(toDate, toStaff, code === 'visit_am' ? 'am' : 'pm');
+            setEditStatus(code === 'visit_am'
+                ? 'いまのシフトの下に「訪問（午前）」を付けました'
+                : 'いまのシフトの下に「訪問（午後）」を付けました', 'ok');
             window.__dragInfo = null;
             return;
         }
@@ -1099,6 +1108,8 @@ function renderCalendar(data, year, month) {
         //   （早番と訪問（午前）を分けて動かせるようにするため）。
         // 訪問へ出る時間帯（明示指定）。元のシフト表示の下に付ける。
         const slot = visitMap[dateStr] && visitMap[dateStr][s.id];
+        if (slot === 'none') return `${badge}${bathDisplay}${phoneBadge}`
+                                  + `${parkingBadge(dateStr, s.id)}${deskLabel}`;
         const slotNote = slot
             ? `<br><span class="badge visit-chip" draggable="true" data-date="${dateStr}"`
               + ` data-staff="${s.id}" data-slot="${slot}"`

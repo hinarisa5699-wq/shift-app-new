@@ -436,7 +436,9 @@ def _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map):
     asgn = assignment_map.get(d_str, {}).get(sid, "")
     text = _assignment_label(asgn)
     slot = _VISIT_SLOTS.get(d_str, {}).get(sid)
-    if slot:
+    if slot == "none":
+        pass                      # この日は訪問に行かない（早番の既定を外した）
+    elif slot:
         # シフトはそのままで「訪問（午前/午後）」を下に付ける
         text += "\n訪問（{}）".format("午前" if slot == "am" else "午後")
     else:
@@ -983,7 +985,9 @@ def export_csv(
         label = _assignment_label(asgn)
         parts = [label] if label else []
         slot = _VISIT_SLOTS.get(d_str, {}).get(sid)
-        if slot:
+        if slot == "none":
+            pass                  # この日は訪問に行かない
+        elif slot:
             parts.append("訪問（{}）".format("午前" if slot == "am" else "午後"))
         else:
             visit_note = _visit_suffix(d_str, asgn, assignment_map).strip()

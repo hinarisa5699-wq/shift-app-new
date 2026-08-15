@@ -455,6 +455,18 @@ function initShiftDragAndDrop() {
     }
 
     table.addEventListener('dragstart', e => {
+        const chip = e.target.closest('.visit-chip');
+        if (chip) {
+            // 早番から「午前訪問」だけを切り離して別の職員へ渡す
+            window.__dragInfo = {
+                type: 'visit', code: 'visit_am',
+                date: chip.dataset.date, staffId: Number(chip.dataset.staff), group: 'care',
+            };
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', 'visit_am');
+            e.stopPropagation();
+            return;
+        }
         const td = e.target.closest('td.shift-cell');
         if (!td || !td.dataset.assignment) return;
         window.__dragInfo = {
@@ -487,6 +499,26 @@ function initShiftDragAndDrop() {
         const isCookCode = code.indexOf('cooking_') === 0 || code === 'cook_off';
         if (code !== 'off' && isCookCode !== (toGroup === 'cooking')) {
             setEditStatus('介護・看護と調理のシフトは入れ替えられません', 'error');
+            window.__dragInfo = null;
+            return;
+        }
+        if (info.type === 'visit') {
+            if (toGroup === 'cooking') {
+                setEditStatus('訪問は介護・看護の職員にだけ割り当てられます', 'error');
+                window.__dragInfo = null;
+                return;
+            }
+            if (info.date !== toDate) {
+                setEditStatus('別の日へは移動できません。同じ日の別の職員へドラッグしてください', 'error');
+                window.__dragInfo = null;
+                return;
+            }
+            if (info.staffId === toStaff) { window.__dragInfo = null; return; }
+            // すでに出勤している人なら「訪問(午前)＋デイ(午後)」、休みの人なら「訪問(午前)のみ」
+            const cur = td.dataset.assignment;
+            const newCode = cur ? 'visit_am_day_p4' : 'visit_am';
+            applyLocalEdit(toDate, toStaff, newCode);
+            setEditStatus('午前訪問を移しました（早番の人は通常の早番になります）', 'ok');
             window.__dragInfo = null;
             return;
         }
@@ -736,7 +768,9 @@ function renderCalendar(data, year, month) {
         //   （早番と訪問（午前）を分けて動かせるようにするため）。
         const visitNote = (assignment === 'early' && isVisitDate(dateStr)
                            && !hasExplicitAmVisit(dateStr))
-            ? '<br><span class="badge" style="background:#dbeafe;color:#1d4ed8">訪問（午前）</span>'
+            ? `<br><span class="badge visit-chip" draggable="true" data-date="${dateStr}"`
+              + ` data-staff="${s.id}" title="この札を別の職員のマスへドラッグすると、午前訪問だけを移せます"`
+              + ` style="background:#dbeafe;color:#1d4ed8;cursor:grab">訪問（午前）</span>`
             : '';
         return `${badge}${bathDisplay}${phoneBadge}${parkingBadge(dateStr, s.id)}${visitNote}${deskLabel}`;
     }

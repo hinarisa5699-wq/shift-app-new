@@ -247,6 +247,8 @@ def _normalize_staff_group(value: str) -> str:
 # 役員のセルに入れる「休み」。自動作成では勤務を入れないので、
 #   休みだけをこのコードで記録する（ユーザー依頼 2026-08）。
 EXEC_OFF_CODE = "exec_off"
+# 役員の予定（例: "exec:9:00-12:00 デイ面接"）。表にはこの文字をそのまま出す。
+EXEC_PLAN_PREFIX = "exec:"
 
 # --- 区分(job_category) / 役割(role) の選択肢とラベル ---
 JOB_CATEGORIES = [
@@ -3043,8 +3045,14 @@ def create_app():
                 GeneratedShift.date >= first_day,
                 GeneratedShift.date <= last_day,
             )
-            if fixed_ids:
-                gs_del = gs_del.filter(~GeneratedShift.staff_id.in_(fixed_ids))
+            # 役員の予定は手入力なので、再生成でも消さない
+            exec_ids = {
+                st.id for st in Staff.query.all()
+                if (getattr(st, "job_category", "") or "") == "executive"
+            }
+            keep_ids = set(fixed_ids) | exec_ids
+            if keep_ids:
+                gs_del = gs_del.filter(~GeneratedShift.staff_id.in_(keep_ids))
             gs_del.delete(synchronize_session=False)
             ShiftWarning.query.filter(
                 ShiftWarning.date >= first_day,
@@ -3464,12 +3472,16 @@ def create_app():
                     by_key.pop((sid, d), None)
                     applied += 1
                 continue
-            if code not in valid_codes:
+            is_exec_code = (code == EXEC_OFF_CODE or code.startswith(EXEC_PLAN_PREFIX))
+            if code not in valid_codes and not is_exec_code:
                 continue
             is_exec = (getattr(st, "job_category", "") or "") == "executive"
-            if is_exec != (code == EXEC_OFF_CODE):
-                # 役員は「休み」だけ、役員以外に役員の休みは入れられない
+            if is_exec != is_exec_code:
+                # 役員は役員の予定だけ、役員以外に役員の予定は入れられない
                 continue
+            if is_exec_code:
+                # 手入力なので長さと改行を整える
+                code = " ".join(code.split()).strip()[:30]
             # 区分違いの割り当て（調理職員に介護シフト等）は受け付けない
             is_cook_code = code.startswith("cooking_") or code in COOK_ASSIGNMENTS
             if not is_exec and is_cook_code != (st.staff_group == "cooking"):

@@ -801,3 +801,52 @@ def test_cell_edit_can_move_to_another_day(tmp_path, monkeypatch):
     assert [x for x in after["shifts"]
             if x["date"] == other and x["staff_id"] == src["staff_id"]
             and x["assignment"] == src["assignment"]]
+
+
+def test_executive_plan_can_be_entered_and_shown(tmp_path, monkeypatch):
+    """役員の予定（時間つき）を入れて、出力にもそのまま出る。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    exec_id = _add_executive(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [
+            {"date": "2026-09-01", "staff_id": exec_id, "assignment": "exec:9:00-12:00 デイ面接"},
+            {"date": "2026-09-02", "staff_id": exec_id, "assignment": "exec:在宅勤務"},
+        ],
+    })
+    assert res.status_code == 200
+    assert res.get_json()["applied"] == 2
+
+    data = client.get("/api/shifts/2026/9").get_json()
+    got = {x["date"]: x["assignment"] for x in data["shifts"] if x["staff_id"] == exec_id}
+    assert got["2026-09-01"] == "exec:9:00-12:00 デイ面接"
+    assert got["2026-09-02"] == "exec:在宅勤務"
+
+    csv_text = client.get(f"/api/export/{data['generation_id']}/csv").get_data(as_text=True)
+    row = next(l for l in csv_text.split("\n") if l.startswith("役員I"))
+    assert "9:00-12:00 デイ面接" in row, row[:120]
+    assert "在宅勤務" in row
+
+
+def test_executive_plan_survives_regeneration(tmp_path, monkeypatch):
+    """再生成しても役員の予定は残る（手で入れたものなので消さない）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    exec_id = _add_executive(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-04", "staff_id": exec_id, "assignment": "exec:本部勤務"}],
+    })
+
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    data = client.get("/api/shifts/2026/9").get_json()
+    assert [x for x in data["shifts"]
+            if x["staff_id"] == exec_id and x["assignment"] == "exec:本部勤務"]

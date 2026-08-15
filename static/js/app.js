@@ -547,6 +547,93 @@ function saveShiftEdits() {
 }
 
 // ドラッグ&ドロップ（表とパレットにイベント委譲で1度だけ登録）
+/* --- 役員の予定（クリックで選ぶ） --- */
+let execTarget = null;   // {date, staffId}
+
+const EXEC_NO_TIME_KINDS = ['終日休み', '終日デイ'];
+
+function execTimeOptions() {
+    const opts = ['<option value="">指定なし</option>'];
+    for (let h = 6; h <= 21; h++) {
+        for (const m of ['00', '30']) {
+            const t = `${h}:${m}`;
+            opts.push(`<option value="${t}">${t}</option>`);
+        }
+    }
+    return opts.join('');
+}
+
+function openExecModal(dateStr, staffId, current) {
+    execTarget = { date: dateStr, staffId: staffId };
+    const modal = document.getElementById('exec-modal');
+    if (!modal) return;
+    const start = document.getElementById('exec-start');
+    const end = document.getElementById('exec-end');
+    if (!start.options.length) { start.innerHTML = execTimeOptions(); end.innerHTML = execTimeOptions(); }
+
+    // いま入っている内容を初期値にする（例: "exec:9:00-12:00 デイ面接"）
+    let kind = '終日休み', from = '', to = '';
+    if (current === 'exec_off') {
+        kind = '終日休み';
+    } else if (current && current.indexOf('exec:') === 0) {
+        const text = current.slice(5);
+        const m = text.match(/^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})\s*(.*)$/);
+        if (m) { from = m[1]; to = m[2]; kind = m[3] || 'デイ'; }
+        else { kind = text; }
+    }
+    const sel = document.getElementById('exec-kind');
+    const known = Array.from(sel.options).some(o => o.value === kind);
+    sel.value = known ? kind : 'その他';
+    document.getElementById('exec-free').value = known ? '' : kind;
+    start.value = from;
+    end.value = to;
+    document.getElementById('exec-modal-when').textContent = dateStr.replace(/^\d+-/, '').replace('-', '/');
+    onExecKindChange();
+    modal.classList.remove('hidden');
+}
+
+function onExecKindChange() {
+    const kind = document.getElementById('exec-kind').value;
+    const freeRow = document.getElementById('exec-free-row');
+    const timeRow = document.getElementById('exec-time-row');
+    freeRow.classList.toggle('hidden', kind !== 'その他');
+    timeRow.classList.toggle('hidden', EXEC_NO_TIME_KINDS.indexOf(kind) !== -1);
+}
+
+function closeExecModal() {
+    const modal = document.getElementById('exec-modal');
+    if (modal) modal.classList.add('hidden');
+    execTarget = null;
+}
+
+function applyExecPlan() {
+    if (!execTarget) return;
+    let kind = document.getElementById('exec-kind').value;
+    if (kind === 'その他') {
+        kind = (document.getElementById('exec-free').value || '').trim();
+        if (!kind) { setEditStatus('内容を入力してください', 'error'); return; }
+    }
+    let code;
+    if (kind === '終日休み') {
+        code = 'exec_off';
+    } else {
+        const from = document.getElementById('exec-start').value;
+        const to = document.getElementById('exec-end').value;
+        const withTime = (EXEC_NO_TIME_KINDS.indexOf(kind) === -1) && from && to;
+        code = 'exec:' + (withTime ? `${from}-${to} ${kind}` : kind);
+    }
+    applyLocalEdit(execTarget.date, execTarget.staffId, code.slice(0, 30));
+    setEditStatus('予定を入れました（保存を押すと確定します）', 'ok');
+    closeExecModal();
+}
+
+function clearExecPlan() {
+    if (!execTarget) return;
+    applyLocalEdit(execTarget.date, execTarget.staffId, '');
+    setEditStatus('予定を消しました', 'ok');
+    closeExecModal();
+}
+
 // 表を横に動かすスライドバー（表の上と、画面の下に貼り付くもの）を本体と合わせる
 function syncTableScrollbars() {
     const main = document.getElementById('table-scroll');
@@ -575,6 +662,43 @@ function initShiftDragAndDrop() {
     const bar = document.getElementById('edit-bar');
     if (!table || table.dataset.dndReady === '1') return;
     table.dataset.dndReady = '1';
+
+    const trash = document.getElementById('trash-box');
+    if (trash && trash.dataset.dndReady !== '1') {
+        trash.dataset.dndReady = '1';
+        trash.addEventListener('dragover', e => {
+            if (!window.__dragInfo || window.__dragInfo.type === 'palette') return;
+            e.preventDefault();
+            trash.style.background = '#fee2e2';
+            trash.style.borderColor = '#ef4444';
+            trash.style.color = '#b91c1c';
+        });
+        trash.addEventListener('dragleave', () => {
+            trash.style.background = '';
+            trash.style.borderColor = '';
+            trash.style.color = '';
+        });
+        trash.addEventListener('drop', e => {
+            const info = window.__dragInfo;
+            trash.style.background = '';
+            trash.style.borderColor = '';
+            trash.style.color = '';
+            if (!info || info.type === 'palette') { window.__dragInfo = null; return; }
+            e.preventDefault();
+            if (info.type === 'visit') {
+                if (info.explicit) {
+                    applyLocalVisitSlot(info.date, info.staffId, null);
+                    setEditStatus('訪問を消しました', 'ok');
+                } else {
+                    setEditStatus('この訪問は早番に付いているものです。早番ごと動かしてください', 'error');
+                }
+            } else {
+                applyLocalEdit(info.date, info.staffId, '');
+                setEditStatus('シフトを消しました（休みになります）', 'ok');
+            }
+            window.__dragInfo = null;
+        });
+    }
 
     if (bar && bar.dataset.dndReady !== '1') {
         bar.dataset.dndReady = '1';
@@ -684,13 +808,11 @@ function initShiftDragAndDrop() {
         window.__dragInfo = null;
     });
 
-    // 役員: セルをクリックで「休」を付けたり外したりする
+    // 役員: セルをクリックすると予定を選ぶ画面が出る
     table.addEventListener('click', e => {
         const td = e.target.closest('td.shift-cell');
         if (!td || td.dataset.group !== 'executive') return;
-        const isOff = td.dataset.assignment === 'exec_off';
-        applyLocalEdit(td.dataset.date, Number(td.dataset.staff), isOff ? '' : 'exec_off');
-        setEditStatus(isOff ? '休みを外しました' : '休みにしました', 'ok');
+        openExecModal(td.dataset.date, Number(td.dataset.staff), td.dataset.assignment || '');
     });
 
     // オンコール担当の入れ替え（プルダウン）
@@ -905,10 +1027,13 @@ function renderCalendar(data, year, month) {
     function careCellHtml(dateStr, s) {
         const assignment = shiftMap[dateStr] ? shiftMap[dateStr][s.id] : null;
         if (s.job_category === 'executive') {
-            // 役員は自動作成の対象外。クリックで「休」を付けたり外したりする
-            return assignment === 'exec_off'
-                ? '<span class="badge badge-off">休</span>'
-                : '<span style="color:#d1d5db;font-size:10px">＋</span>';
+            // 役員は自動作成の対象外。クリックで予定を選んで入れる
+            if (assignment === 'exec_off') return '<span class="badge badge-off">休</span>';
+            if (assignment && assignment.indexOf('exec:') === 0) {
+                return `<span class="badge" style="background:#fef3c7;color:#92400e">`
+                     + `${escapeHtml(assignment.slice(5))}</span>`;
+            }
+            return '<span style="color:#d1d5db;font-size:10px">＋</span>';
         }
         if (!assignment || assignment === 'off') {
             return offCellHtml(dateStr, s);

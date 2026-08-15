@@ -424,10 +424,17 @@ def _visit_suffix(d_str, asgn, assignment_map=None) -> str:
 
 
 
+def _assignment_label(code) -> str:
+    """コード → 表示名。役員の予定（exec:〜）は入力された文字をそのまま出す。"""
+    if isinstance(code, str) and code.startswith("exec:"):
+        return code[5:]
+    return ASSIGNMENT_LABELS.get(code, "")
+
+
 def _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map):
     """ケアスタッフ 1 セルの (assignment, 表示テキスト) を組み立てる。"""
     asgn = assignment_map.get(d_str, {}).get(sid, "")
-    text = ASSIGNMENT_LABELS.get(asgn, "")
+    text = _assignment_label(asgn)
     slot = _VISIT_SLOTS.get(d_str, {}).get(sid)
     if slot:
         # シフトはそのままで「訪問（午前/午後）」を下に付ける
@@ -973,7 +980,7 @@ def export_csv(
 
     def _care_cell(d_str, sid):
         asgn = assignment_map.get(d_str, {}).get(sid, "")
-        label = ASSIGNMENT_LABELS.get(asgn, "")
+        label = _assignment_label(asgn)
         parts = [label] if label else []
         slot = _VISIT_SLOTS.get(d_str, {}).get(sid)
         if slot:

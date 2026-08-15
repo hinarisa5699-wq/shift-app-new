@@ -261,7 +261,8 @@ function cellHtml(data, sid, dateStr, assignment, visitSet, dow) {
             : '<span class="text-gray-400">休</span>';
     }
     const cookLabels = data.cook_labels || {};
-    let label = LABELS[assignment] || cookLabels[assignment] || assignment;
+    let label = assignment.indexOf('exec:') === 0 ? assignment.slice(5)
+                : (LABELS[assignment] || cookLabels[assignment] || assignment);
     let extra = '';
     const slot = visitSlotOf(data, dateStr, sid);
     if (slot) {

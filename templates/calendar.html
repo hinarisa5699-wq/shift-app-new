@@ -141,7 +141,58 @@
         </div>
     </div>
     <div id="palette-care" class="flex flex-wrap items-center gap-2 mb-2"></div>
-    <div id="palette-cook" class="flex flex-wrap items-center gap-2"></div>
+    <div id="palette-cook" class="flex flex-wrap items-center gap-2 mb-2"></div>
+    <div id="trash-box"
+         class="inline-flex items-center gap-2 px-4 py-2 rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 text-gray-500 text-sm font-bold">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+        </svg>
+        ゴミ箱（ここへドラッグすると消えます）
+    </div>
+</div>
+
+<!-- 役員の予定を選ぶ画面 -->
+<div id="exec-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center" style="background:rgba(0,0,0,.4)">
+    <div class="bg-white rounded-xl shadow-xl p-5 w-11/12 max-w-sm">
+        <div class="flex items-center justify-between mb-3">
+            <span class="text-lg font-bold text-gray-800">役員の予定</span>
+            <span id="exec-modal-when" class="text-sm text-gray-500"></span>
+        </div>
+        <label class="block text-sm font-bold text-gray-600 mb-1">内容</label>
+        <select id="exec-kind" onchange="onExecKindChange()"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg mb-3 text-base">
+            <option value="終日休み">終日休み</option>
+            <option value="終日デイ">終日デイ</option>
+            <option value="在宅勤務">在宅勤務</option>
+            <option value="本部勤務">本部勤務</option>
+            <option value="デイ">デイ</option>
+            <option value="デイ面接">デイ面接</option>
+            <option value="契約">契約</option>
+            <option value="その他">その他（自分で入力）</option>
+        </select>
+        <div id="exec-free-row" class="hidden mb-3">
+            <label class="block text-sm font-bold text-gray-600 mb-1">内容を入力</label>
+            <input id="exec-free" type="text" maxlength="12"
+                   class="w-full px-3 py-2 border border-gray-300 rounded-lg text-base" placeholder="例: 会議">
+        </div>
+        <div id="exec-time-row" class="mb-4">
+            <label class="block text-sm font-bold text-gray-600 mb-1">時間（いらないときは「指定なし」）</label>
+            <div class="flex items-center gap-2">
+                <select id="exec-start" class="flex-1 px-2 py-2 border border-gray-300 rounded-lg text-base"></select>
+                <span class="text-gray-500">〜</span>
+                <select id="exec-end" class="flex-1 px-2 py-2 border border-gray-300 rounded-lg text-base"></select>
+            </div>
+        </div>
+        <div class="flex items-center gap-2">
+            <button onclick="applyExecPlan()"
+                    class="flex-1 bg-primary-600 hover:bg-primary-700 text-white font-bold py-2 rounded-lg">決定</button>
+            <button onclick="clearExecPlan()"
+                    class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-4 rounded-lg">空にする</button>
+            <button onclick="closeExecModal()"
+                    class="bg-white border border-gray-300 hover:bg-gray-50 text-gray-600 font-bold py-2 px-4 rounded-lg">やめる</button>
+        </div>
+    </div>
 </div>
 
 <!-- カレンダー表示エリア -->

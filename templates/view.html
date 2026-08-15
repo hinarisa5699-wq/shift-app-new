@@ -109,7 +109,7 @@ const LABELS = {
 const DOW = ['月', '火', '水', '木', '金', '土', '日'];
 let state = {
     year: {{ default_year }}, month: {{ default_month }},
-    mode: 'person', personId: null, data: null,
+    mode: 'person', personId: null, data: null, group: 'care',
     weekIndex: 0, range: 'week',   // range: 'week' = 1画面1週間 / 'month' = 月全体
 };
 
@@ -134,7 +134,12 @@ function initSelectors() {
     el('tab-person').onclick = () => setMode('person');
     el('tab-care').onclick = () => setMode('care');
     el('tab-cook').onclick = () => setMode('cook');
-    el('person').onchange = () => { state.personId = +el('person').value; render(); };
+    el('person').onchange = () => {
+        state.personId = +el('person').value;
+        const st = ((state.data && state.data.staff_list) || []).find(s => s.id === state.personId);
+        if (st) state.group = (st.department === 'cooking') ? 'cooking' : 'care';
+        render();
+    };
     el('week-prev').onclick = () => { state.weekIndex = Math.max(0, state.weekIndex - 1); state.weekPinned = true; render(); };
     el('week-next').onclick = () => { state.weekIndex = state.weekIndex + 1; state.weekPinned = true; render(); };
     el('week-toggle').onclick = () => {
@@ -172,6 +177,22 @@ function splitWeeks(dates) {
     return weeks;
 }
 
+// いま見ている区分（介護・看護／調理）の職員を選ぶ
+function selectFirstOfGroup() {
+    const list = (state.data && state.data.staff_list) || [];
+    if (!list.length) return;
+    const inGroup = s => (state.group === 'cooking')
+        ? s.department === 'cooking' : s.department !== 'cooking';
+    const cur = list.find(s => s.id === state.personId);
+    if (cur && inGroup(cur)) return;      // すでにその区分の人を選んでいる
+    const first = list.find(inGroup);
+    if (first) {
+        state.personId = first.id;
+        const sel = el('person');
+        if (sel) sel.value = String(first.id);
+    }
+}
+
 function shiftMonth(delta) {
     let m = state.month + delta, y = state.year;
     if (m < 1) { m = 12; y--; } else if (m > 12) { m = 1; y++; }
@@ -182,6 +203,10 @@ function shiftMonth(delta) {
 }
 
 function setMode(mode) {
+    if (mode === 'care' || mode === 'cook') {
+        state.group = (mode === 'cook') ? 'cooking' : 'care';
+    }
+    if (mode === 'person') selectFirstOfGroup();
     state.mode = mode;
     const on = 'px-4 py-2 text-sm font-bold bg-teal-600 text-white';
     const off = 'px-4 py-2 text-sm font-bold bg-white text-gray-700';
@@ -262,9 +287,15 @@ function render() {
 
     const staffList = data.staff_list || [];
     const sel = el('person');
-    if (sel.dataset.filled !== String(staffList.length) + ':' + staffList.map(s => s.id).join(',')) {
-        sel.innerHTML = staffList.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
-        sel.dataset.filled = String(staffList.length) + ':' + staffList.map(s => s.id).join(',');
+    const sig = String(staffList.length) + ':' + staffList.map(s => s.id).join(',');
+    if (sel.dataset.filled !== sig) {
+        const care = staffList.filter(s => s.department !== 'cooking');
+        const cook = staffList.filter(s => s.department === 'cooking');
+        const opts = g => g.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+        sel.innerHTML =
+            (care.length ? `<optgroup label="介護・看護">${opts(care)}</optgroup>` : '')
+            + (cook.length ? `<optgroup label="調理">${opts(cook)}</optgroup>` : '');
+        sel.dataset.filled = sig;
         if (!state.personId && staffList.length) state.personId = staffList[0].id;
         sel.value = state.personId;
     }

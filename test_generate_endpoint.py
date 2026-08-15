@@ -513,3 +513,72 @@ def test_viewer_can_read_available_months(tmp_path, monkeypatch):
     res = guest.get("/api/shifts/available")
     assert res.status_code == 200
     assert res.get_json()["default"] == {"year": 2026, "month": 9}
+
+
+def test_oncall_only_staff_has_no_public_holiday_target(tmp_path, monkeypatch):
+    """オンコールのみ当番の職員には公休目標を課さない（誤警告を出さない）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    from models import db, Staff
+
+    with flask_app.app_context():
+        s = Staff.query.filter_by(name="介護D").first()
+        s.oncall_only = True
+        s.has_phone_duty = True
+        db.session.commit()
+        sid = s.id
+
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    data = client.get("/api/shifts/2026/9").get_json()
+    target = next(x["public_holiday_target"] for x in data["staff_list"] if x["id"] == sid)
+    assert target == 0, "オンコールのみ職員に公休目標が付いている"
+
+    res = client.post("/api/shift/cells", json={"year": 2026, "month": 9, "changes": []})
+    msgs = [w["message"] for w in res.get_json()["warnings"]
+            if w["warning_type"] == "public_holiday_unmet"]
+    assert not [m for m in msgs if "介護D" in m], msgs
+
+
+def test_early_and_am_visit_can_be_separated(tmp_path, monkeypatch):
+    """早番と訪問（午前）を別の職員に分けられる（表示・集計も分かれる）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    from models import db, ShiftSettings
+
+    with flask_app.app_context():
+        st = ShiftSettings.query.first()
+        st.min_visit_am = 1
+        db.session.commit()
+
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    gen = client.post("/api/generate", json={"year": 2026, "month": 9}).get_json()
+    data = client.get("/api/shifts/2026/9").get_json()
+
+    # 訪問営業日（月）の早番を探す
+    early = next(x for x in data["shifts"]
+                 if x["assignment"] == "early" and x["date"] in
+                 [f"2026-09-{d:02d}" for d in (7, 14, 21, 28)])
+    care_ids = [s["id"] for s in data["staff_list"] if s["department"] != "cooking"]
+    other = next(i for i in care_ids if i != early["staff_id"]
+                 and not any(x["date"] == early["date"] and x["staff_id"] == i
+                             for x in data["shifts"]))
+
+    csv_before = client.get(f"/api/export/{gen['generation_id']}/csv").get_data(as_text=True)
+    assert "訪問（午前）" in csv_before, "早番が訪問を兼ねている表示が出ていない"
+
+    # 別の職員に「訪問(午前)＋デイ(午後)」を割り当てる
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": early["date"], "staff_id": other,
+                     "assignment": "visit_am_day_p4"}],
+    })
+    assert res.status_code == 200 and res.get_json()["applied"] == 1
+
+    gen2 = client.get("/api/shifts/2026/9").get_json()["generation_id"]
+    csv_after = client.get(f"/api/export/{gen2}/csv").get_data(as_text=True)
+    rows = [r for r in csv_after.split("\n") if early["date"].split("-")[2].lstrip("0") + "(" in r]
+    # その日の早番からは訪問表記が外れ、兼務(訪問→デイ)側が訪問担当になる
+    assert "兼務(訪問→デイ)" in csv_after

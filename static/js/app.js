@@ -681,6 +681,12 @@ function renderCalendar(data, year, month) {
         return `<tr><td colspan="${totalCols}" style="background:#1f2937;color:#fff;font-weight:700;text-align:left;padding:6px 10px">${title}</td></tr>`;
     }
 
+    // その日に「午前訪問」を明示的に割り当てられた職員がいるか
+    function hasExplicitAmVisit(dateStr) {
+        const day = shiftMap[dateStr] || {};
+        return Object.values(day).some(a => VISIT_AM_SET.has(a));
+    }
+
     // その日付が訪問の営業日か（2階・3階いずれかが訪問の曜日）
     function isVisitDate(dateStr) {
         const parts = String(dateStr).split('-').map(Number);
@@ -725,8 +731,11 @@ function renderCalendar(data, year, month) {
         const badge = info
             ? `<span class="badge ${info.badgeClass}">${info.label}</span>`
             : `<span class="badge badge-off">${escapeHtml(assignment)}</span>`;
-        // 訪問営業日の早番(7:30-16:30)は午前が訪問。訪問と分かる表記を付ける
-        const visitNote = (assignment === 'early' && isVisitDate(dateStr))
+        // 訪問営業日の早番(7:30-16:30)は既定で午前が訪問。
+        //   ただし、その日に別の職員へ午前訪問を割り当てたら早番からは外す
+        //   （早番と訪問（午前）を分けて動かせるようにするため）。
+        const visitNote = (assignment === 'early' && isVisitDate(dateStr)
+                           && !hasExplicitAmVisit(dateStr))
             ? '<br><span class="badge" style="background:#dbeafe;color:#1d4ed8">訪問（午前）</span>'
             : '';
         return `${badge}${bathDisplay}${phoneBadge}${parkingBadge(dateStr, s.id)}${visitNote}${deskLabel}`;
@@ -780,7 +789,8 @@ function renderCalendar(data, year, month) {
             careStaff.forEach(s => {
                 const a = shiftMap[m.dateStr] ? shiftMap[m.dateStr][s.id] : null;
                 if (a && set.has(a) && !(excludeNursePt && nursePtIds.has(s.id))) cnt++;
-                else if (a === 'early' && earlyCountsOnVisitDay && m.isVisitDay) cnt++;
+                else if (a === 'early' && earlyCountsOnVisitDay && m.isVisitDay
+                         && !hasExplicitAmVisit(m.dateStr)) cnt++;
             });
             const warn = (data.warnings || []).some(w => w.date === m.dateStr && w.warning_type === warnType);
             r += `<td class="staff-cell ${warn ? 'summary-warning' : m.colClass}" style="font-weight:600">${cnt}</td>`;

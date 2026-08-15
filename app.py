@@ -78,6 +78,9 @@ def _parse_retired_month(raw):
 
 def _public_holiday_target(st, year=None, month=None) -> int:
     """職員の公休目標日数。自動算出ONなら平日日数ベース（生成時と同じ）。"""
+    if getattr(st, "oncall_only", False):
+        # オンコールのみ当番の職員は出勤枠を持たないので公休の目標も課さない
+        return 0
     settings_obj = ShiftSettings.query.first()
     manual = int(getattr(st, "public_holiday_count", 0) or 0)
     if not settings_obj or not getattr(settings_obj, "auto_public_holidays", False):
@@ -3247,12 +3250,19 @@ def create_app():
                 ],
                 # 画面編集用の凡例（ここからドラッグしてシフトを追加する）
                 "palette": {
+                    # 早番と訪問（午前）を分けて動かせるよう、訪問の枠は分かりやすい名前にする
                     "care": [
-                        {"code": code, "label": ASSIGNMENT_LABELS.get(code, code)}
-                        for code in (
-                            "day_pattern1", "day_pattern2", "day_pattern3", "day_pattern4",
-                            "early", "late", "nurse_short",
-                            "day_p3_visit_pm", "visit_am_day_p4",
+                        {"code": code, "label": label}
+                        for code, label in (
+                            ("day_pattern1", ASSIGNMENT_LABELS["day_pattern1"]),
+                            ("day_pattern2", ASSIGNMENT_LABELS["day_pattern2"]),
+                            ("day_pattern3", ASSIGNMENT_LABELS["day_pattern3"]),
+                            ("day_pattern4", ASSIGNMENT_LABELS["day_pattern4"]),
+                            ("early", ASSIGNMENT_LABELS["early"]),
+                            ("late", ASSIGNMENT_LABELS["late"]),
+                            ("nurse_short", ASSIGNMENT_LABELS["nurse_short"]),
+                            ("visit_am_day_p4", "訪問(午前)＋デイ(午後)"),
+                            ("day_p3_visit_pm", "デイ(午前)＋訪問(午後)"),
                         )
                     ],
                     "cooking": [

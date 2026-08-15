@@ -205,6 +205,12 @@ function visitDays(data) {
     return set;
 }
 
+// その日に「午前訪問」を明示的に割り当てられた職員がいるか
+function hasExplicitAmVisit(data, dateStr) {
+    const AM = ['visit_am', 'visit_am_day_p4', 'visit_am_day_pm'];
+    return (data.shifts || []).some(x => x.date === dateStr && AM.indexOf(x.assignment) !== -1);
+}
+
 function cellHtml(data, sid, dateStr, assignment, visitSet, dow) {
     const off = !assignment || assignment === 'off' || assignment === 'cook_off';
     if (off) {
@@ -216,7 +222,7 @@ function cellHtml(data, sid, dateStr, assignment, visitSet, dow) {
     const cookLabels = data.cook_labels || {};
     let label = LABELS[assignment] || cookLabels[assignment] || assignment;
     let extra = '';
-    if (assignment === 'early' && visitSet.has(dow)) {
+    if (assignment === 'early' && visitSet.has(dow) && !hasExplicitAmVisit(data, dateStr)) {
         extra += '<br><span class="text-blue-700 font-bold">訪問（午前）</span>';
     }
     return `<span class="font-medium text-gray-800">${esc(label)}</span>${extra}`;

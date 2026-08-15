@@ -300,10 +300,11 @@ def _build_daily_data(shifts_data, staff_list, year, month):
                 day_pm += 1
             if asgn in _VISIT_AM_SET:
                 visit_am += 1
-            elif asgn == "early" and _is_visit_weekday(d):
-                # 訪問営業日の早番(7:30-16:30)は「午前訪問＋午後デイ」。
-                #   シフト自動作成側も早番を午前訪問の担い手として数えているため、
-                #   集計行でも訪問午前に算入する（従来は0名と表示され誤解の元だった）。
+            elif (asgn == "early" and _is_visit_weekday(d)
+                    and not _has_explicit_am_visit(d_str, assignment_map)):
+                # 訪問営業日の早番(7:30-16:30)は既定で「午前訪問＋午後デイ」。
+                #   別の職員に午前訪問を割り当てた日は、そちらを訪問として数える
+                #   （ユーザー依頼: 早番と訪問（午前）は分離して動かせるように）。
                 visit_am += 1
             if asgn in _VISIT_PM_SET:
                 visit_pm += 1
@@ -374,12 +375,19 @@ def _off_cell_text(d_str, sid) -> str:
     return "希望休" if _is_day_off_request(d_str, sid) else "休"
 
 
-def _visit_suffix(d_str, asgn) -> str:
+def _has_explicit_am_visit(d_str, assignment_map) -> bool:
+    """その日に「午前訪問」を明示的に割り当てられた職員がいるか。"""
+    day = (assignment_map or {}).get(d_str, {})
+    return any(a in _VISIT_AM_SET for a in day.values())
+
+
+def _visit_suffix(d_str, asgn, assignment_map=None) -> str:
     """訪問へ出る勤務に付ける「訪問」表記。
 
-    ユーザー依頼（2026-08）:「訪問の日は訪問スタッフに訪問の文字を表示させて」。
-    訪問営業日の早番(7:30-16:30)は午前が訪問なので、セルにも訪問と分かる表記を付ける。
-    兼務(デイ→訪問 / 訪問→デイ)や単独訪問はラベル自体に「訪問」が入っている。
+    ユーザー依頼（2026-08）:「訪問の日は訪問スタッフに訪問の文字を表示させて」
+    「早番7:30-16:30 と 訪問（午前）は分離で動かせるようにしたい」。
+    訪問営業日の早番は既定では午前が訪問だが、その日に別の職員へ午前訪問
+    （兼務(訪問→デイ) など）を割り当てたら、早番からは訪問表記を外す。
     """
     if asgn != "early":
         return ""
@@ -387,14 +395,19 @@ def _visit_suffix(d_str, asgn) -> str:
         d = date.fromisoformat(d_str)
     except (TypeError, ValueError):
         return ""
-    return "\n訪問（午前）" if _is_visit_weekday(d) else ""
+    if not _is_visit_weekday(d):
+        return ""
+    if _has_explicit_am_visit(d_str, assignment_map):
+        return ""      # 訪問担当が別にいる日は、早番は通常の早番として表示
+    return "\n訪問（午前）"
+
 
 
 def _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map):
     """ケアスタッフ 1 セルの (assignment, 表示テキスト) を組み立てる。"""
     asgn = assignment_map.get(d_str, {}).get(sid, "")
     text = ASSIGNMENT_LABELS.get(asgn, "")
-    text += _visit_suffix(d_str, asgn)
+    text += _visit_suffix(d_str, asgn, assignment_map)
 
     # お風呂当番（中/外）
     bath_role = bath_map.get(d_str, {}).get(sid)
@@ -936,7 +949,7 @@ def export_csv(
         asgn = assignment_map.get(d_str, {}).get(sid, "")
         label = ASSIGNMENT_LABELS.get(asgn, "")
         parts = [label] if label else []
-        visit_note = _visit_suffix(d_str, asgn).strip()
+        visit_note = _visit_suffix(d_str, asgn, assignment_map).strip()
         if visit_note:
             parts.append(visit_note)
         bath_role = bath_map.get(d_str, {}).get(sid)
@@ -1797,8 +1810,9 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
         day_pm = sum(1 for it in items if it["assignment"] in _DAY_PM_SET and it["staff_id"] not in nurse_pt_ids)
         is_visit_day = dt.weekday() in visit_days
         v_am = sum(1 for it in items if it["assignment"] in _VISIT_AM_SET)
-        if is_visit_day:
-            # 訪問営業日の早番は「午前訪問＋午後デイ」＝訪問午前の担い手として数える
+        if is_visit_day and v_am == 0:
+            # 訪問営業日の早番は既定で「午前訪問＋午後デイ」。
+            #   明示の訪問担当がいる日はそちらだけを数える。
             v_am += sum(1 for it in items if it["assignment"] == "early")
         v_pm = sum(1 for it in items if it["assignment"] in _VISIT_PM_SET)
         n_mid = sum(1 for it in items if it.get("bath_role") == "中")

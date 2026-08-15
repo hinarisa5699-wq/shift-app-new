@@ -16,6 +16,9 @@
         body { background: linear-gradient(180deg, #ecfeff 0%, #f0fdfa 40%, #fff7ed 100%); min-height: 100vh; }
         .cell { font-size: 11px; line-height: 1.35; }
         .sticky-name { position: sticky; left: 0; background: #fff; z-index: 5; }
+        /* 横スクロール（スマホでも最後の曜日まで見られるように） */
+        #all-view { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+        #all-view table { width: max-content; min-width: 100%; }
         .sat { background: #ecfeff; }
         .sun { background: #fff1f2; }
         .hol { background: #fef3c7; }
@@ -54,7 +57,8 @@
         <div class="mt-3 flex flex-wrap items-center gap-2">
             <div class="inline-flex rounded-lg overflow-hidden border border-gray-300">
                 <button id="tab-person" class="px-4 py-2 text-sm font-bold bg-teal-600 text-white">個人</button>
-                <button id="tab-all" class="px-4 py-2 text-sm font-bold bg-white text-gray-700">全体</button>
+                <button id="tab-care" class="px-4 py-2 text-sm font-bold bg-white text-gray-700">介護・看護</button>
+                <button id="tab-cook" class="px-4 py-2 text-sm font-bold bg-white text-gray-700">調理</button>
             </div>
             <select id="person" class="px-3 py-2 border border-gray-300 rounded-lg text-base flex-1 min-w-[10rem]"></select>
         </div>
@@ -128,7 +132,8 @@ function initSelectors() {
     el('next').onclick = () => shiftMonth(1);
     el('reload').onclick = () => load();
     el('tab-person').onclick = () => setMode('person');
-    el('tab-all').onclick = () => setMode('all');
+    el('tab-care').onclick = () => setMode('care');
+    el('tab-cook').onclick = () => setMode('cook');
     el('person').onchange = () => { state.personId = +el('person').value; render(); };
     el('week-prev').onclick = () => { state.weekIndex = Math.max(0, state.weekIndex - 1); state.weekPinned = true; render(); };
     el('week-next').onclick = () => { state.weekIndex = state.weekIndex + 1; state.weekPinned = true; render(); };
@@ -178,8 +183,11 @@ function shiftMonth(delta) {
 
 function setMode(mode) {
     state.mode = mode;
-    el('tab-person').className = 'px-4 py-2 text-sm font-bold ' + (mode === 'person' ? 'bg-teal-600 text-white' : 'bg-white text-gray-700');
-    el('tab-all').className = 'px-4 py-2 text-sm font-bold ' + (mode === 'all' ? 'bg-teal-600 text-white' : 'bg-white text-gray-700');
+    const on = 'px-4 py-2 text-sm font-bold bg-teal-600 text-white';
+    const off = 'px-4 py-2 text-sm font-bold bg-white text-gray-700';
+    el('tab-person').className = mode === 'person' ? on : off;
+    el('tab-care').className = mode === 'care' ? on : off;
+    el('tab-cook').className = mode === 'cook' ? on : off;
     el('person').style.display = mode === 'person' ? '' : 'none';
     render();
 }
@@ -255,7 +263,7 @@ function render() {
     const hasShifts = (data.shifts || []).length > 0;
     el('empty').classList.toggle('hidden', hasShifts);
     el('person-view').classList.toggle('hidden', !hasShifts || state.mode !== 'person');
-    el('all-view').classList.toggle('hidden', !hasShifts || state.mode !== 'all');
+    el('all-view').classList.toggle('hidden', !hasShifts || state.mode === 'person');
     if (!hasShifts) { el('person-view').innerHTML = ''; el('all-view').innerHTML = ''; return; }
 
     // date -> staff_id -> assignment
@@ -292,7 +300,7 @@ function render() {
 
     const shown = useWeek ? weeks[state.weekIndex] : dates;
     if (state.mode === 'person') renderPerson(data, map, shown, visitSet);
-    else renderAll(data, map, shown, visitSet);
+    else renderAll(data, map, shown, visitSet, state.mode === 'cook' ? 'cooking' : 'care');
 }
 
 function renderPerson(data, map, dates, visitSet) {
@@ -324,8 +332,11 @@ function renderPerson(data, map, dates, visitSet) {
         <table class="w-full text-base">${rows}</table>`;
 }
 
-function renderAll(data, map, dates, visitSet) {
-    const staffList = data.staff_list || [];
+function renderAll(data, map, dates, visitSet, group) {
+    const all = data.staff_list || [];
+    const staffList = group === 'cooking'
+        ? all.filter(s => s.department === 'cooking')
+        : all.filter(s => s.department !== 'cooking');
     const head = dates.map(({ d, dateStr, dow }) =>
         `<th class="px-1 py-1 border border-gray-200 ${dayClass(data, dateStr, dow)} cell whitespace-nowrap">
             ${state.month}/${d}<br>${DOW[dow]}
@@ -339,7 +350,8 @@ function renderAll(data, map, dates, visitSet) {
         }).join('');
         return `<tr><th class="px-2 py-1 border border-gray-200 sticky-name text-left cell whitespace-nowrap">${esc(s.name)}</th>${tds}</tr>`;
     }).join('');
-    const oncallRow = `<tr><th class="px-2 py-1 border border-gray-200 sticky-name text-left cell">オンコール</th>` +
+    const oncallRow = group === 'cooking' ? '' :
+        `<tr><th class="px-2 py-1 border border-gray-200 sticky-name text-left cell">オンコール</th>` +
         dates.map(({ dateStr, dow }) => {
             const n = (data.oncall || {})[dateStr] || '';
             return `<td class="px-1 py-1 border border-gray-200 cell text-center ${dayClass(data, dateStr, dow)}">${esc(n)}</td>`;

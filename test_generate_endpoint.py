@@ -647,3 +647,31 @@ def test_visit_slot_keeps_original_shift_label(tmp_path, monkeypatch):
     row2 = next(x for x in after2["shifts"]
                 if x["date"] == target["date"] and x["staff_id"] == target["staff_id"])
     assert not row2["visit_slot"]
+
+
+def test_whitelist_staff_gets_scheduled_on_registered_days(tmp_path, monkeypatch):
+    """出勤可能日だけ登録した職員は、その日に入る（0日にならない）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    from models import db, Staff, StaffWorkableDate
+    import datetime
+
+    with flask_app.app_context():
+        s = Staff.query.filter_by(name="介護D").first()
+        s.workable_dates_mode = "only"
+        db.session.add(StaffWorkableDate(staff_id=s.id, date=datetime.date(2026, 9, 5)))
+        db.session.add(StaffWorkableDate(staff_id=s.id, date=datetime.date(2026, 9, 26)))
+        db.session.commit()
+        sid = s.id
+
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    data = client.get("/api/shifts/2026/9").get_json()
+
+    days = sorted(x["date"] for x in data["shifts"]
+                  if x["staff_id"] == sid and x["assignment"] != "off")
+    assert days == ["2026-09-05", "2026-09-26"], f"登録日に入っていない: {days}"
+
+    target = next(x["public_holiday_target"] for x in data["staff_list"] if x["id"] == sid)
+    assert target == 28, f"公休目標が登録日数に合っていない: {target}"

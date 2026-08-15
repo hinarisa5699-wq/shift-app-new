@@ -96,6 +96,17 @@ def _public_holiday_target(st, year=None, month=None) -> int:
     )
     week_days = st.max_days_per_week or 5
     shotei = max(0, fulltime - max(0, 5 - week_days) * 4)
+    # 出勤可能日(whitelist)を登録している職員は、その月の登録日数が出勤日数の上限
+    if (getattr(st, "workable_dates_mode", "only") or "only") == "only":
+        _first = date(year, month, 1)
+        _last = date(year, month, cal_days)
+        _wl = StaffWorkableDate.query.filter(
+            StaffWorkableDate.staff_id == st.id,
+            StaffWorkableDate.date >= _first,
+            StaffWorkableDate.date <= _last,
+        ).count()
+        if _wl:
+            shotei = min(shotei, _wl)
     # 固定休・勤務可能曜日・休業日で物理的に出られない分は差し引く
     avail = {int(x) for x in (st.available_days or "").split(",") if x.strip()}
     fixed = {int(x) for x in (st.fixed_days_off or "").split(",") if x.strip()}
@@ -2716,12 +2727,12 @@ def create_app():
             return sum(min(n, week_cap) for n in by_week.values())
 
         def _effective_public_holidays(s):
-            """auto_ph_enabled時は正社員基準＋短時間補正の公休日数を返す（手入力より優先）。"""
-            # 出勤可能日(whitelist)を登録した“スポット/希望日のみ”勤務者は、月の勤務日数が
-            # 登録日に限定されるため公休目標の概念が当てはまらない。目標0=対象外にして
-            # 「公休が多すぎ」等の誤警告を出さない（自動・手入力どちらのモードでも対象外）。
-            if workable_dates_map.get(s.id):
-                return 0
+            """auto_ph_enabled時は正社員基準＋短時間補正の公休日数を返す（手入力より優先）。
+
+            出勤可能日(whitelist)を登録した職員は、その登録日数を出勤日数の上限とみなす
+            （ユーザー指摘 2026-08:「土山さんは5日と26日しか出ない設定なのに入っていない」。
+            以前は目標を0＝対象外にしていたため、ソルバーが入れなくても良いと判断していた）。
+            """
             if not auto_ph_enabled:
                 return getattr(s, "public_holiday_count", 0) or 0
             week_days = s.max_days_per_week or 5
@@ -2730,6 +2741,10 @@ def create_app():
             shotei_work_days = max(0, _fulltime_shotei - reduction)
             # 固定休・勤務可能曜日・休業日で物理的に出られない分は目標から差し引く
             shotei_work_days = min(shotei_work_days, _max_workable_days(s))
+            # 出勤可能日(whitelist)を登録している職員はその日数が上限
+            _wl = workable_dates_map.get(s.id)
+            if _wl:
+                shotei_work_days = min(shotei_work_days, len(_wl))
             return max(0, _calendar_days - shotei_work_days)
 
         # ORM → dict 変換（部門別に分割）

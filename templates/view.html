@@ -285,8 +285,6 @@ function cellHtml(data, sid, dateStr, assignment, visitSet, dow) {
         // 何も付けない
     } else if (slot) {
         extra += `<br><span class="text-blue-700 font-bold">訪問（${slot === 'am' ? '午前' : '午後'}）</span>`;
-    } else if (assignment === 'early' && visitSet.has(dow) && !hasExplicitAmVisit(data, dateStr)) {
-        extra += '<br><span class="text-blue-700 font-bold">訪問（午前）</span>';
     }
     return `<span class="font-medium text-gray-800">${esc(label)}</span>${extra}`;
 }

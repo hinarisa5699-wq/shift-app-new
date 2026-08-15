@@ -315,12 +315,6 @@ def _build_daily_data(shifts_data, staff_list, year, month):
                 visit_pm += 1
             if asgn in _VISIT_AM_SET:
                 visit_am += 1
-            elif (asgn == "early" and _is_visit_weekday(d)
-                    and not _has_explicit_am_visit(d_str, assignment_map)):
-                # 訪問営業日の早番(7:30-16:30)は既定で「午前訪問＋午後デイ」。
-                #   別の職員に午前訪問を割り当てた日は、そちらを訪問として数える
-                #   （ユーザー依頼: 早番と訪問（午前）は分離して動かせるように）。
-                visit_am += 1
             if asgn in _VISIT_PM_SET:
                 visit_pm += 1
             if asgn in _DUAL_SET:
@@ -405,22 +399,10 @@ def _has_explicit_am_visit(d_str, assignment_map) -> bool:
 def _visit_suffix(d_str, asgn, assignment_map=None) -> str:
     """訪問へ出る勤務に付ける「訪問」表記。
 
-    ユーザー依頼（2026-08）:「訪問の日は訪問スタッフに訪問の文字を表示させて」
-    「早番7:30-16:30 と 訪問（午前）は分離で動かせるようにしたい」。
-    訪問営業日の早番は既定では午前が訪問だが、その日に別の職員へ午前訪問
-    （兼務(訪問→デイ) など）を割り当てたら、早番からは訪問表記を外す。
+    ユーザー依頼（2026-08）:「早番が訪問でなくてもいい（ルール変更）」。
+    早番に自動で「訪問（午前）」を付けるのはやめ、割り当てた人にだけ出す。
     """
-    if asgn != "early":
-        return ""
-    try:
-        d = date.fromisoformat(d_str)
-    except (TypeError, ValueError):
-        return ""
-    if not _is_visit_weekday(d):
-        return ""
-    if _has_explicit_am_visit(d_str, assignment_map):
-        return ""      # 訪問担当が別にいる日は、早番は通常の早番として表示
-    return "\n訪問（午前）"
+    return ""
 
 
 
@@ -1851,10 +1833,10 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
         day_pm = sum(1 for it in items if it["assignment"] in _DAY_PM_SET and it["staff_id"] not in nurse_pt_ids)
         is_visit_day = dt.weekday() in visit_days
         v_am = sum(1 for it in items if it["assignment"] in _VISIT_AM_SET)
-        if is_visit_day and v_am == 0:
-            # 訪問営業日の早番は既定で「午前訪問＋午後デイ」。
-            #   明示の訪問担当がいる日はそちらだけを数える。
-            v_am += sum(1 for it in items if it["assignment"] == "early")
+        # 早番は訪問に数えない（ユーザー依頼 2026-08:「早番が訪問でなくてもいい」）
+        v_am += sum(1 for it in items
+                    if (it.get("visit_slot") or "") == "am"
+                    and it["assignment"] not in _VISIT_AM_SET)
         v_pm = sum(1 for it in items if it["assignment"] in _VISIT_PM_SET)
         n_mid = sum(1 for it in items if it.get("bath_role") == "中")
         n_out = sum(1 for it in items if it.get("bath_role") == "外")

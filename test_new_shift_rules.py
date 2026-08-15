@@ -181,8 +181,8 @@ def test_visit_is_always_dual_and_exactly_one(month=7):
         early = sum(1 for it in items if it["assignment"] == "early")
         if wd in visit_op:
             checked += 1
-            assert am + early == 1, \
-                f"{d}: 訪問午前は早番か兼務Bで合計1名のはず (兼務B={am}/早番={early})"
+            assert am == 1, \
+                f"{d}: 訪問午前は兼務Bで1名のはず (兼務B={am}/早番={early})"
             assert pm == 1, f"{d}: PM訪問兼務は1名のはず (={pm})"
             for it in items:
                 # visit_am_day_p4(午前訪問→午後デイ)は従来どおり休憩12:30。

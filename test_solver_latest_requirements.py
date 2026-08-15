@@ -343,4 +343,9 @@ def test_care_headcount_over_limit_warns_but_generates():
         can_visit=True,
     )
     assert shifts is not None
-    assert any(w["warning_type"] == "over_staffed_care" for w in warnings)
+    # 上限に収まらない分は「人数超過」か「訪問が埋まらない」の警告として出る。
+    #   早番は訪問に数えないルールに変えたため（2026-08）、上限を守って
+    #   訪問が不足する形になることもある。どちらでも生成は続く。
+    assert any(w["warning_type"] in (
+        "over_staffed_care", "understaffed_visit_am", "understaffed_visit_pm",
+    ) for w in warnings), [w["warning_type"] for w in warnings]

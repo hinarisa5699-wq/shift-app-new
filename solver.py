@@ -2420,15 +2420,9 @@ def _solve_care(
                     model.add(x[s, d_idx, a] == 0)
 
     # ==================================================================
-    # 早番(early): 訪問営業日は「AM訪問＋PMデイ」なので can_visit 必須。
-    #   訪問非営業日は「終日デイ」なので can_visit 不問。
-    #   → 訪問営業日に限り、can_visit=False の職員は early 不可。
+    # 早番(early): 終日デイ。訪問には自動で出ないので can_visit は不問。
+    #   （ユーザー依頼 2026-08:「早番が訪問でなくてもいい」）
     # ==================================================================
-    for s in staff_ids:
-        if not staff_by_id[s]["can_visit"]:
-            for d_idx, dt in enumerate(all_dates):
-                if _is_visit_day(d_idx):
-                    model.add(x[s, d_idx, "early"] == 0)
     # 早番・遅番は休業日には置かない（休業日は全員 off だが明示）
     for d_idx in closed_day_indices:
         for s in staff_ids:
@@ -2640,11 +2634,10 @@ def _solve_care(
         day_am_count = sum(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in DAY_AM_ASSIGNMENTS
         )
-        # 早番は訪問非営業日（祝日含む）のみ「終日デイ」＝午前もデイにカウント（営業日はAM訪問のため除外）
-        if not _is_visit_day(d_idx):
-            day_am_count = day_am_count + sum(
-                x[s, d_idx, "early"] for s in non_nurse_pt_staff
-            )
+        # 早番は終日デイ（訪問には自動で出ない）。ユーザー依頼 2026-08 のルール変更。
+        day_am_count = day_am_count + sum(
+            x[s, d_idx, "early"] for s in non_nurse_pt_staff
+        )
         day_pm_count = sum(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in DAY_PM_ASSIGNMENTS
         )
@@ -2704,9 +2697,11 @@ def _solve_care(
             continue
         if not _is_visit_day(d_idx):
             continue
+        # ユーザー依頼 2026-08:「早番が訪問でなくてもいい（ルール変更）」。
+        #   早番は訪問に数えず、訪問は訪問の枠で割り当てる。
         visit_am_count = sum(
             x[s, d_idx, a] for s in staff_ids for a in VISIT_AM_ASSIGNMENTS
-        ) + sum(x[s, d_idx, "early"] for s in staff_ids)
+        )
         if use_slack:
             model.add(visit_am_count + slack_visit_am[d_idx] >= min_visit_am)
         else:
@@ -2748,11 +2743,10 @@ def _solve_care(
         count_11 = sum(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in PRESENT_AT_11
         )
-        # 早番は訪問非営業日（祝日含む）のみ午前も事業所在籍（営業日はAM訪問で外出）
-        if not _is_visit_day(d_idx):
-            _early_present_am = sum(x[s, d_idx, "early"] for s in non_nurse_pt_staff)
-            count_9 = count_9 + _early_present_am
-            count_11 = count_11 + _early_present_am
+        # 早番は午前から事業所にいる（訪問には自動で出ない）
+        _early_present_am = sum(x[s, d_idx, "early"] for s in non_nurse_pt_staff)
+        count_9 = count_9 + _early_present_am
+        count_11 = count_11 + _early_present_am
         count_13 = sum(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in PRESENT_AT_13
         )
@@ -3242,7 +3236,7 @@ def _solve_care(
                 x[s, d_idx, a]
                 for d_idx in range(num_days)
                 for a in VISIT_ASSIGNMENTS
-            ) + sum(x[s, d_idx, "early"] for d_idx in visit_day_indices)
+            )
         max_visit = model.new_int_var(0, num_days, "care_max_visit")
         min_visit = model.new_int_var(0, num_days, "care_min_visit")
         for s in visit_capable_ids:

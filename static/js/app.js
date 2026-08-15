@@ -1116,14 +1116,8 @@ function renderCalendar(data, year, month) {
               + ` title="この札を別の職員のマスへドラッグすると、訪問だけを移せます"`
               + ` style="background:#dbeafe;color:#1d4ed8;cursor:grab">訪問（${slot === 'am' ? '午前' : '午後'}）</span>`
             : '';
-        // 訪問営業日の早番は既定で午前が訪問（明示の担当がいない日だけ表示）
-        const visitNote = slotNote || ((assignment === 'early' && isVisitDate(dateStr)
-                           && !hasExplicitAmVisit(dateStr))
-            ? `<br><span class="badge visit-chip" draggable="true" data-date="${dateStr}"`
-              + ` data-staff="${s.id}" data-slot="am"`
-              + ` title="この札を別の職員のマスへドラッグすると、午前訪問だけを移せます"`
-              + ` style="background:#dbeafe;color:#1d4ed8;cursor:grab">訪問（午前）</span>`
-            : '');
+        // 早番に自動で訪問（午前）は付けない（ユーザー依頼 2026-08 のルール変更）
+        const visitNote = slotNote;
         return `${badge}${bathDisplay}${phoneBadge}${parkingBadge(dateStr, s.id)}${visitNote}${deskLabel}`;
     }
 
@@ -1166,8 +1160,7 @@ function renderCalendar(data, year, month) {
     const careSummaryRows = [
         ['デイ午前', DAY_AM_SET, 'understaffed_day_am', true],
         ['デイ午後', DAY_PM_SET, 'understaffed_day_pm', true],
-        // 訪問営業日の早番(7:30-16:30)は午前訪問＋午後デイ。自動作成側と同じく訪問午前に数える
-        ['訪問午前', VISIT_AM_SET, 'understaffed_visit_am', false, true],
+        ['訪問午前', VISIT_AM_SET, 'understaffed_visit_am', false],
         ['訪問午後', VISIT_PM_SET, 'understaffed_visit_pm', false],
         ['兼務者数', DUAL_SET, 'dual_shortage', false],
     ];
@@ -1181,8 +1174,6 @@ function renderCalendar(data, year, month) {
                 if (label === '訪問午前' && slotV === 'am') cnt++;
                 else if (label === '訪問午後' && slotV === 'pm') cnt++;
                 else if (a && set.has(a) && !(excludeNursePt && nursePtIds.has(s.id))) cnt++;
-                else if (a === 'early' && earlyCountsOnVisitDay && m.isVisitDay
-                         && !hasExplicitAmVisit(m.dateStr)) cnt++;
             });
             const warn = (data.warnings || []).some(w => w.date === m.dateStr && w.warning_type === warnType);
             r += `<td class="staff-cell ${warn ? 'summary-warning' : m.colClass}" style="font-weight:600">${cnt}</td>`;

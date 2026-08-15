@@ -158,7 +158,7 @@ def test_export_marks_requested_day_off(tmp_path, monkeypatch):
 
 
 def test_export_marks_visit_on_early_shift(tmp_path, monkeypatch):
-    """訪問営業日の早番セルに「訪問」の文字が出る（CSV出力で確認）。"""
+    """訪問（午前）は割り当てた人にだけ出る（早番には自動で付かない）。"""
     flask_app = _make_app(tmp_path, monkeypatch)
     _seed(flask_app)
     from models import db, ShiftSettings
@@ -176,7 +176,13 @@ def test_export_marks_visit_on_early_shift(tmp_path, monkeypatch):
     res = client.get(f"/api/export/{gen['generation_id']}/csv")
     assert res.status_code == 200
     text = res.get_data(as_text=True)
-    assert "訪問（午前）" in text, "訪問日の早番に『訪問』表記が出ていない"
+    # 早番のセルには訪問が付かない（ユーザー依頼 2026-08 のルール変更）
+    early_cells = [c for line in text.splitlines() for c in line.split(",")
+                   if c.startswith("早番")]
+    assert early_cells, "早番が1つも出ていない"
+    assert not [c for c in early_cells if "訪問" in c], early_cells[:3]
+    # 訪問は訪問の枠で割り当てられている
+    assert "訪問午前のみ" in text or "兼務(訪問→デイ)" in text
 
 
 def _login(client, user, pw):
@@ -567,7 +573,7 @@ def test_early_and_am_visit_can_be_separated(tmp_path, monkeypatch):
                              for x in data["shifts"]))
 
     csv_before = client.get(f"/api/export/{gen['generation_id']}/csv").get_data(as_text=True)
-    assert "訪問（午前）" in csv_before, "早番が訪問を兼ねている表示が出ていない"
+    assert "早番7:30-16:30" in csv_before
 
     # 別の職員に「訪問(午前)＋デイ(午後)」を割り当てる
     res = client.post("/api/shift/cells", json={
@@ -1094,13 +1100,19 @@ def test_visit_can_be_removed_from_early_shift(tmp_path, monkeypatch):
 
     client = flask_app.test_client()
     _login(client, "admin", "testpass")
-    gen = client.post("/api/generate", json={"year": 2026, "month": 9}).get_json()
-    csv_before = client.get(
-        f"/api/export/{gen['generation_id']}/csv").get_data(as_text=True)
-    assert "訪問（午前）" in csv_before
+    client.post("/api/generate", json={"year": 2026, "month": 9})
 
     data = client.get("/api/shifts/2026/9").get_json()
     early = next(x for x in data["shifts"] if x["assignment"] == "early")
+    # 早番の人に訪問（午前）を付けてから、ゴミ箱で外す
+    client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": early["date"], "staff_id": early["staff_id"],
+                     "visit_slot": "am"}],
+    })
+    mid = client.get("/api/shifts/2026/9").get_json()
+    assert [x for x in mid["shifts"] if x["date"] == early["date"]
+            and x["staff_id"] == early["staff_id"] and x["visit_slot"] == "am"]
 
     res = client.post("/api/shift/cells", json={
         "year": 2026, "month": 9,

@@ -1,9 +1,7 @@
-"""訪問営業日の早番(7:30-16:30)は「訪問介護午前」の1名として数える。
+"""早番(7:30-16:30)は訪問に自動で出ない（ユーザー依頼 2026-08 のルール変更）。
 
-早番は訪問営業日は「AM訪問＋PMデイ」だが、従来はその午前をデイ午前にも訪問午前にも
-数えていなかったため、訪問可の職員が同じ日に「早番」と「兼務B(visit_am_day_p4)」で
-2名必要になっていた。本番8月シフトでは訪問可の人数が足りず、
-「月曜=訪問介護午前 1名不足」「金曜=早番 未配置」が交互に出ていた。
+以前は「訪問営業日の早番＝午前訪問」として数えていたが、実態と合わないため
+早番は終日デイ扱いにし、訪問は訪問の枠（visit_am / 兼務B）で割り当てる。
 """
 import datetime
 
@@ -36,13 +34,9 @@ def _settings():
     }
 
 
-def test_early_fills_visit_am_on_visit_days():
-    """訪問可が2名しか居なくても、訪問午前と早番の両方が埋まる。
-
-    早番が訪問午前を兼ねるので、訪問営業日に必要な訪問可の人数は
-    「早番1＋PM訪問兼務1」の2名で足りる（従来は兼務Bの分も含めて3名必要だった）。
-    """
-    care = [_staff(1, True), _staff(2, True)] + [_staff(i, False) for i in range(3, 9)]
+def test_early_is_not_counted_as_am_visit():
+    """訪問午前は訪問の枠で割り当てる。早番は訪問に数えない。"""
+    care = [_staff(i, True) for i in range(1, 4)] + [_staff(i, False) for i in range(4, 10)]
     shifts, warnings = generate_shift(YEAR, MONTH, care, [], [], _settings())
 
     unmet = [
@@ -59,6 +53,6 @@ def test_early_fills_visit_am_on_visit_days():
         if datetime.date.fromisoformat(d).weekday() not in VISIT_DAYS:
             continue
         checked += 1
-        am = assigns.count("visit_am_day_p4") + assigns.count("early")
-        assert am == 1, f"{d}: 訪問午前は早番か兼務Bで合計1名のはず (={am})"
+        am = assigns.count("visit_am") + assigns.count("visit_am_day_p4")
+        assert am == 1, f"{d}: 訪問午前は訪問の枠でちょうど1名のはず (={am})"
     assert checked > 0, "訪問営業日が検査されていない"

@@ -665,44 +665,63 @@ function clearExecPlan() {
     closeExecModal();
 }
 
-// 表を横に動かすスライドバー（表の上と、介護看護と調理の間）を本体と合わせる
-//   ※表は描き直すたびに中身が作り直されるので、その都度いまある要素を探す
-function currentScrollBars() {
+// 表を横に動かすスライダー（表の上と、介護看護と調理の間）。
+//   ブラウザ標準のスクロールバーは環境によって自動で隠れてしまうため、
+//   いつでも見える自前のスライダーを描いて本体と連動させる。
+function tableSliders() {
+    return Array.from(document.querySelectorAll('.proxy-slider'));
+}
+
+function updateTableSliders() {
     const main = document.getElementById('table-scroll');
-    const bars = Array.from(document.querySelectorAll('.proxy-scroll'));
-    const top = document.getElementById('table-scroll-top');
-    if (top) bars.push(top);
-    return main ? [main].concat(bars) : bars;
+    if (!main) return;
+    const max = Math.max(1, main.scrollWidth - main.clientWidth);
+    tableSliders().forEach(sl => {
+        sl.style.width = main.clientWidth + 'px';
+        const thumb = sl.querySelector('.slider-thumb');
+        if (!thumb) return;
+        const track = sl.clientWidth;
+        const w = Math.max(48, Math.round(track * (main.clientWidth / main.scrollWidth)));
+        thumb.style.width = w + 'px';
+        thumb.style.left = Math.round((main.scrollLeft / max) * (track - w)) + 'px';
+    });
 }
 
 function syncTableScrollbars() {
     const main = document.getElementById('table-scroll');
     const table = document.getElementById('calendar-table');
     if (!main || !table) return;
-    const bars = currentScrollBars();
-    bars.forEach(b => {
-        if (b === main) return;
-        b.style.width = main.clientWidth + 'px';
-        if (b.firstElementChild) b.firstElementChild.style.width = table.scrollWidth + 'px';
-    });
-    bars.forEach(el => {
-        if (el.dataset.syncReady === '1') return;
-        el.dataset.syncReady = '1';
-        el.addEventListener('scroll', () => {
-            if (window.__scrollSyncing) return;
-            window.__scrollSyncing = true;
-            currentScrollBars().forEach(other => {
-                if (other !== el) other.scrollLeft = el.scrollLeft;
-            });
-            window.__scrollSyncing = false;
+
+    tableSliders().forEach(sl => {
+        if (sl.dataset.sliderReady === '1') return;
+        sl.dataset.sliderReady = '1';
+        const jumpTo = clientX => {
+            const rect = sl.getBoundingClientRect();
+            const thumb = sl.querySelector('.slider-thumb');
+            const w = thumb ? thumb.offsetWidth : 48;
+            const x = Math.min(Math.max(clientX - rect.left - w / 2, 0), rect.width - w);
+            const max = Math.max(1, main.scrollWidth - main.clientWidth);
+            main.scrollLeft = (x / Math.max(1, rect.width - w)) * max;
+        };
+        sl.addEventListener('pointerdown', e => {
+            sl.setPointerCapture(e.pointerId);
+            sl.dataset.dragging = '1';
+            jumpTo(e.clientX);
+            e.preventDefault();
         });
+        sl.addEventListener('pointermove', e => {
+            if (sl.dataset.dragging === '1') jumpTo(e.clientX);
+        });
+        ['pointerup', 'pointercancel'].forEach(ev =>
+            sl.addEventListener(ev, () => { sl.dataset.dragging = ''; }));
     });
-    // いまの位置に合わせておく（描き直した直後のズレを防ぐ）
-    bars.forEach(b => { if (b !== main) b.scrollLeft = main.scrollLeft; });
-    if (!window.__scrollResizeReady) {
-        window.__scrollResizeReady = true;
-        window.addEventListener('resize', () => syncTableScrollbars());
+
+    if (main.dataset.sliderReady !== '1') {
+        main.dataset.sliderReady = '1';
+        main.addEventListener('scroll', updateTableSliders);
+        window.addEventListener('resize', updateTableSliders);
     }
+    updateTableSliders();
 }
 
 function initShiftDragAndDrop() {
@@ -1232,8 +1251,11 @@ function renderCalendar(data, year, month) {
     // --- 調理スタッフセクション ---
     if (hasCooking) {
         // 介護・看護と調理の間にも横スライドバーを置く（ユーザー依頼 2026-08）
-        html += `<tr><td colspan="${totalCols}" style="position:sticky;left:0;padding:6px 0;border:none;background:#fff">`
-             + `<div class="proxy-scroll" style="overflow-x:scroll"><div style="height:1px"></div></div></td></tr>`;
+        // ※スライダーは「中の要素」を左に固定する。セル(td)は表と同じ幅のため、
+        //   セル自体を sticky にしても動かせず、横スクロールで流れてしまう。
+        html += `<tr><td colspan="${totalCols}" style="padding:6px 0;border:none;background:#fff">`
+             + `<div class="proxy-slider" style="position:sticky;left:0">`
+             + `<div class="slider-thumb"></div></div></td></tr>`;
         html += sectionTitleRow('調理スタッフ');
         html += headerRowHtml();
 

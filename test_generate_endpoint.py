@@ -1316,11 +1316,34 @@ def test_calendar_has_two_edit_bars_and_scrollbars(tmp_path, monkeypatch):
     assert html.count('class="trash-box') == 2, "ゴミ箱が2か所に無い"
     assert html.count('class="palette-care') == 2
     assert html.count('class="palette-cook') == 2
-    assert 'id="table-scroll-top"' in html, "表の上のスライドバーが無い"
+    assert 'class="proxy-slider"' in html, "表の上のスライダーが無い"
     assert 'id="table-scroll"' in html
     assert "凡例" not in html.split("シフトの手直し")[-1], "凡例が残っている"
 
     js = client.get("/static/js/app.js").get_data(as_text=True)
-    assert "proxy-scroll" in js, "介護看護と調理の間のスライドバーが無い"
+    assert "proxy-slider" in js, "介護看護と調理の間のスライダーが無い"
     css = client.get("/static/css/style.css").get_data(as_text=True)
     assert "::-webkit-scrollbar" in css, "スライドバーを常に見せる指定が無い"
+
+
+def test_horizontal_sliders_are_always_drawn(tmp_path, monkeypatch):
+    """横スライダーは自前で描く（ブラウザ設定で隠れないように）。
+
+    2026-08: 「真ん中のスライドバーが消える」「9/6にすると消える」への対応。
+    セルではなく中の要素を左に固定しないと、横スクロールで流れてしまう。
+    """
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+
+    html = client.get("/calendar").get_data(as_text=True)
+    assert html.count('class="proxy-slider"') >= 1, "表の上のスライダーが無い"
+
+    js = client.get("/static/js/app.js").get_data(as_text=True)
+    assert 'class="proxy-slider" style="position:sticky;left:0"' in js, \
+        "中間スライダーが左に固定されていない（横スクロールで流れる）"
+    assert "slider-thumb" in js and "updateTableSliders" in js
+
+    css = client.get("/static/css/style.css").get_data(as_text=True)
+    assert ".proxy-slider" in css and ".slider-thumb" in css

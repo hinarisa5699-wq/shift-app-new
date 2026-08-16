@@ -1272,3 +1272,30 @@ def test_moving_a_shift_from_the_screen_sticks(tmp_path, monkeypatch):
     assert not [x for x in same_day if x["staff_id"] == src["staff_id"]], "移動元が残っている"
     assert [x for x in same_day if x["staff_id"] == dst
             and x["assignment"] == src["assignment"]], "移動先に入っていない"
+
+
+def test_settings_password_works_even_when_env_password_exists(tmp_path, monkeypatch):
+    """環境変数の役員パスワードがあっても、設定画面で決めたパスワードで入れる。
+
+    2026-08: 環境変数が優先され、設定画面でパスワードを変えてもログインできなかった。
+    """
+    monkeypatch.setenv("SHIFT_YAKUIN_PASSWORD", "envpass")
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    _set_exec_password(flask_app, "settingspass")
+
+    # 環境変数のパスワードでも入れる（従来どおり）
+    c1 = flask_app.test_client()
+    assert _login(c1, "yakuin", "envpass").status_code in (301, 302)
+
+    # 設定画面で決めたパスワードでも入れる
+    c2 = flask_app.test_client()
+    res = _login(c2, "yakuin", "settingspass")
+    assert res.status_code in (301, 302), res.status_code
+    assert "/view" in res.headers.get("Location", "")
+    assert c2.get("/view").status_code == 200
+
+    # まちがったパスワードは入れない
+    c3 = flask_app.test_client()
+    _login(c3, "yakuin", "wrongpass")
+    assert c3.get("/view").status_code in (301, 302)

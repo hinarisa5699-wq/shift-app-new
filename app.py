@@ -1319,26 +1319,29 @@ def create_app():
         if request.method == "POST":
             username = (request.form.get("username") or "").strip()
             password = request.form.get("password") or ""
-            user = app.config["USERS"].get(username)
-            if not user and username == OFFICE_USERNAME:
-                # 条件設定画面から決めた事務用パスワードでログインする
+            # 環境変数のパスワードと、条件設定画面で決めたパスワードの両方を試す。
+            #   （2026-08: 環境変数が優先されて、設定画面で変えたパスワードでは
+            #     入れなくなっていた）
+            candidates = []
+            _env_user = app.config["USERS"].get(username)
+            if _env_user:
+                candidates.append(_env_user)
+            _from_settings = {
+                OFFICE_USERNAME: ("office_password_hash", OFFICE_VIEW_ROLE),
+                EXEC_USERNAME: ("exec_password_hash", EXEC_VIEW_ROLE),
+                VIEWER_USERNAME: ("viewer_password_hash", VIEWER_ROLE),
+            }.get(username)
+            if _from_settings:
+                _col, _role = _from_settings
                 _st = ShiftSettings.query.first()
-                _hash = getattr(_st, "office_password_hash", "") or ""
+                _hash = getattr(_st, _col, "") or ""
                 if _hash:
-                    user = {"hash": _hash, "role": OFFICE_VIEW_ROLE}
-            if not user and username == EXEC_USERNAME:
-                # 条件設定画面から決めた役員用パスワードでログインする
-                _st = ShiftSettings.query.first()
-                _hash = getattr(_st, "exec_password_hash", "") or ""
-                if _hash:
-                    user = {"hash": _hash, "role": EXEC_VIEW_ROLE}
-            if not user and username == VIEWER_USERNAME:
-                # 環境変数を使わず、条件設定画面から決めた閲覧パスワードでログインする
-                _st = ShiftSettings.query.first()
-                _hash = getattr(_st, "viewer_password_hash", "") or ""
-                if _hash:
-                    user = {"hash": _hash, "role": VIEWER_ROLE}
-            if user and check_password_hash(user["hash"], password):
+                    candidates.append({"hash": _hash, "role": _role})
+            user = next(
+                (c for c in candidates if check_password_hash(c["hash"], password)),
+                None,
+            )
+            if user:
                 session["user"] = username
                 session["role"] = user["role"]
                 _view_only = (user["role"] == VIEWER_ROLE

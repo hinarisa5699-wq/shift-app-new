@@ -214,3 +214,40 @@
         margin: 5mm;
     }
 }
+
+
+/* 横スライドバーは常に見えるようにする（OSの設定で自動的に隠れないように）
+   ユーザー依頼 2026-08:「デプロイのたびスクロールが消えるの困る」 */
+#table-scroll,
+#table-scroll-top,
+.proxy-scroll {
+    scrollbar-width: auto;              /* Firefox */
+    scrollbar-color: #94a3b8 #eef2f7;
+}
+#table-scroll::-webkit-scrollbar,
+#table-scroll-top::-webkit-scrollbar,
+.proxy-scroll::-webkit-scrollbar {
+    -webkit-appearance: none;
+    height: 14px;
+    width: 14px;
+}
+#table-scroll::-webkit-scrollbar-track,
+#table-scroll-top::-webkit-scrollbar-track,
+.proxy-scroll::-webkit-scrollbar-track {
+    background: #eef2f7;
+    border-radius: 7px;
+}
+#table-scroll::-webkit-scrollbar-thumb,
+#table-scroll-top::-webkit-scrollbar-thumb,
+.proxy-scroll::-webkit-scrollbar-thumb {
+    background: #94a3b8;
+    border-radius: 7px;
+    border: 3px solid #eef2f7;
+}
+#table-scroll::-webkit-scrollbar-thumb:hover,
+#table-scroll-top::-webkit-scrollbar-thumb:hover,
+.proxy-scroll::-webkit-scrollbar-thumb:hover {
+    background: #64748b;
+}
+/* 表の上・中間のスライドバーは高さを確保しておく（潰れて見えなくならないように） */
+#table-scroll-top, .proxy-scroll { height: 16px; }

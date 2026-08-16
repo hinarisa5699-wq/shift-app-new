@@ -115,7 +115,7 @@
 <div id="warnings-container" class="hidden mb-6"></div>
 
 <!-- 手直し用のパレット（凡例）＋保存バー -->
-<div id="edit-bar" class="hidden mb-4 bg-white rounded-xl shadow-md p-4 border border-primary-200">
+<div class="edit-bar hidden mb-4 bg-white rounded-xl shadow-md p-4 border border-primary-200">
     <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
         <div>
             <span class="text-base font-bold text-primary-800">シフトの手直し</span>
@@ -124,14 +124,14 @@
             </span>
         </div>
         <div class="flex items-center gap-2">
-            <span id="edit-status" class="text-sm font-bold"></span>
-            <span id="pending-count" class="text-sm font-bold text-amber-700"></span>
-            <button id="save-edits-btn" onclick="saveShiftEdits()"
-                    class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-5 rounded-lg shadow transition-colors text-sm">
+            <span class="edit-status text-sm font-bold"></span>
+            <span class="pending-count text-sm font-bold text-amber-700"></span>
+            <button onclick="saveShiftEdits()"
+                    class="save-edits-btn bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-5 rounded-lg shadow transition-colors text-sm">
                 変更を保存
             </button>
-            <button id="undo-edit-btn" onclick="undoLastEdit()" disabled
-                    class="bg-amber-100 hover:bg-amber-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed text-amber-800 font-bold py-2 px-4 rounded-lg text-sm">
+            <button onclick="undoLastEdit()" disabled
+                    class="undo-edit-btn bg-amber-100 hover:bg-amber-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed text-amber-800 font-bold py-2 px-4 rounded-lg text-sm">
                 ← 1つ前に戻す
             </button>
             <button onclick="discardShiftEdits()"
@@ -140,10 +140,9 @@
             </button>
         </div>
     </div>
-    <div id="palette-care" class="flex flex-wrap items-center gap-2 mb-2"></div>
-    <div id="palette-cook" class="flex flex-wrap items-center gap-2 mb-2"></div>
-    <div id="trash-box"
-         class="inline-flex items-center gap-2 px-4 py-2 rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 text-gray-500 text-sm font-bold">
+    <div class="palette-care flex flex-wrap items-center gap-2 mb-2"></div>
+    <div class="palette-cook flex flex-wrap items-center gap-2 mb-2"></div>
+    <div class="trash-box inline-flex items-center gap-2 px-4 py-2 rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 text-gray-500 text-sm font-bold">
         <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round"
                   d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
@@ -199,7 +198,7 @@
 <div id="calendar-container" class="hidden">
     <div class="bg-white rounded-xl shadow-md">
         <!-- 表の上の横スライドバー（手直しバーのすぐ下） -->
-        <div id="table-scroll-top" class="overflow-x-auto rounded-t-xl" style="height:16px">
+        <div id="table-scroll-top" class="rounded-t-xl" style="height:16px;overflow-x:scroll">
             <div style="height:1px"></div>
         </div>
         <!-- 表の中で縦横にスクロールする（職員名・日付/曜日をその場に固定するため） -->
@@ -222,81 +221,43 @@
     <p class="text-gray-400 text-base">上の「シフト生成」ボタンを押して、シフトを自動作成してください。</p>
 </div>
 
-<!-- 凡例 -->
-<div class="bg-white rounded-xl shadow-md p-6 mt-6">
-    <h3 class="text-base font-bold text-gray-700 mb-3">凡例</h3>
-    <div class="flex flex-wrap gap-3">
-        <span class="inline-flex items-center">
-            <span class="inline-block w-4 h-4 rounded bg-blue-500 mr-1"></span>
-            <span class="text-sm text-gray-600">デイ8:30-17:30</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block w-4 h-4 rounded bg-blue-400 mr-1"></span>
-            <span class="text-sm text-gray-600">デイ9:00-16:00</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block w-4 h-4 rounded bg-sky-400 mr-1"></span>
-            <span class="text-sm text-gray-600">デイ午前のみ</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block w-4 h-4 rounded bg-sky-200 mr-1"></span>
-            <span class="text-sm text-gray-600">デイ午後のみ</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block w-4 h-4 rounded bg-purple-500 mr-1"></span>
-            <span class="text-sm text-gray-600">兼務A</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block w-4 h-4 rounded bg-orange-400 mr-1"></span>
-            <span class="text-sm text-gray-600">兼務B</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block w-4 h-4 rounded bg-amber-500 mr-1"></span>
-            <span class="text-sm text-gray-600">早番（調理①）</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block w-4 h-4 rounded bg-yellow-500 mr-1"></span>
-            <span class="text-sm text-gray-600">日勤（調理②）</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block w-4 h-4 rounded bg-amber-600 mr-1"></span>
-            <span class="text-sm text-gray-600">遅番（調理③）</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block w-4 h-4 rounded bg-amber-700 mr-1"></span>
-            <span class="text-sm text-gray-600">通し（調理④）</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block w-4 h-4 rounded bg-gray-300 mr-1"></span>
-            <span class="text-sm text-gray-600">休み</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block w-4 h-4 rounded bg-red-500 mr-1"></span>
-            <span class="text-sm text-gray-600">オンコール（電話当番）</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block w-4 h-4 rounded mr-1" style="background-color:#FFF3E0"></span>
-            <span class="text-sm text-gray-600">祝日</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block px-1 rounded mr-1 text-xs" style="background-color:#FDE047;color:#333">デイ3階</span>
-            <span class="text-sm text-gray-600">3階のデイ利用日（黄）</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block px-1 rounded mr-1 text-xs" style="background-color:#FDBA74;color:#333">デイ2階</span>
-            <span class="text-sm text-gray-600">2階のデイ利用日（橙）</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block px-1 rounded mr-1 text-xs" style="background-color:#CBD5E1;color:#334155">外部デイ</span>
-            <span class="text-sm text-gray-600">外部デイの日（内部人員不要）</span>
-        </span>
-        <span class="inline-flex items-center">
-            <span class="inline-block px-1 rounded mr-1 text-xs font-bold" style="color:#1d4ed8">訪3階/訪2階</span>
-            <span class="text-sm text-gray-600">その日訪問のある階</span>
-        </span>
+<!-- 表の下にも同じ手直しバーを置く（調理までドラッグが届くように）-->
+<div class="edit-bar hidden mb-4 bg-white rounded-xl shadow-md p-4 border border-primary-200">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <div>
+            <span class="text-base font-bold text-primary-800">シフトの手直し</span>
+            <span class="text-sm text-gray-600 ml-2">
+                下の記号を表のマスへドラッグすると追加。表のシフトは別の職員へも別の日へもドラッグで移動できます（元は休みになります）。
+            </span>
+        </div>
+        <div class="flex items-center gap-2">
+            <span class="edit-status text-sm font-bold"></span>
+            <span class="pending-count text-sm font-bold text-amber-700"></span>
+            <button onclick="saveShiftEdits()"
+                    class="save-edits-btn bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-5 rounded-lg shadow transition-colors text-sm">
+                変更を保存
+            </button>
+            <button onclick="undoLastEdit()" disabled
+                    class="undo-edit-btn bg-amber-100 hover:bg-amber-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed text-amber-800 font-bold py-2 px-4 rounded-lg text-sm">
+                ← 1つ前に戻す
+            </button>
+            <button onclick="discardShiftEdits()"
+                    class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-4 rounded-lg text-sm">
+                すべて取り消す
+            </button>
+        </div>
     </div>
-    <p class="text-xs text-gray-400 mt-3">日付ヘッダの階別表示：デイ3階=黄・デイ2階=橙・外部デイ=灰／訪○階=訪問のある階。曜日は<a href="/settings" class="underline hover:text-gray-600">設定画面</a>の「階別の営業曜日」で変更でき、Excel／PDF出力の曜日行にも同じ内容が表示されます。各セルにお風呂当番（中介助／外介助）・相談（終日）が表示されます。</p>
+    <div class="palette-care flex flex-wrap items-center gap-2 mb-2"></div>
+    <div class="palette-cook flex flex-wrap items-center gap-2 mb-2"></div>
+    <div class="trash-box inline-flex items-center gap-2 px-4 py-2 rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 text-gray-500 text-sm font-bold">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+        </svg>
+        ゴミ箱（ここへドラッグすると消えます）
+    </div>
 </div>
+
 {% endblock %}
 
 {% block scripts %}

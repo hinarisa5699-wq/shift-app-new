@@ -165,7 +165,7 @@ function loadShifts(year, month) {
                 renderConfirmation(data.confirmation);
                 showElement('calendar-container');
                 showElement('export-buttons');
-                showElement('edit-bar');
+                document.querySelectorAll('.edit-bar').forEach(showEl);
                 renderPalette(data);
                 hideElement('no-data-message');
             } else if (hasWarnings) {
@@ -175,14 +175,14 @@ function loadShifts(year, month) {
                 renderConfirmation(null);
                 hideElement('calendar-container');
                 hideElement('export-buttons');
-                hideElement('edit-bar');
+                document.querySelectorAll('.edit-bar').forEach(hideEl);
                 hideElement('no-data-message');
             } else {
                 currentGenerationId = null;
                 renderConfirmation(null);
                 hideElement('calendar-container');
                 hideElement('export-buttons');
-                hideElement('edit-bar');
+                document.querySelectorAll('.edit-bar').forEach(hideEl);
                 hideElement('warnings-container');
                 showElement('no-data-message');
             }
@@ -397,17 +397,17 @@ function renderPalette(data) {
     currentShiftData = data;
     rebuildEditBaseline(data);
     const pal = data.palette || {};
-    const build = (id, items, title) => {
-        const box = document.getElementById(id);
-        if (!box) return;
-        if (!items || !items.length) { box.innerHTML = ''; return; }
-        box.innerHTML = `<span class="text-xs font-bold text-gray-500 mr-1">${title}</span>`
-            + items.map(it =>
-                `<span class="palette-chip badge ${(ASSIGNMENT_MAP[it.code] || {}).badgeClass || 'badge-off'}"`
-                + ` draggable="true" data-code="${it.code}" style="cursor:grab">${escapeHtml(it.label)}</span>`
-            ).join('')
-            + `<span class="palette-chip badge badge-off" draggable="true" data-code="off"`
-            + ` style="cursor:grab;border:1px dashed #9ca3af">休み</span>`;
+    const build = (cls, items, title) => {
+        const boxes = document.querySelectorAll('.' + cls);
+        const html = (!items || !items.length) ? ''
+            : `<span class="text-xs font-bold text-gray-500 mr-1">${title}</span>`
+              + items.map(it =>
+                  `<span class="palette-chip badge ${(ASSIGNMENT_MAP[it.code] || {}).badgeClass || 'badge-off'}"`
+                  + ` draggable="true" data-code="${it.code}" style="cursor:grab">${escapeHtml(it.label)}</span>`
+              ).join('')
+              + `<span class="palette-chip badge badge-off" draggable="true" data-code="off"`
+              + ` style="cursor:grab;border:1px dashed #9ca3af">休み</span>`;
+        boxes.forEach(box => { box.innerHTML = html; });
     };
     build('palette-care', pal.care, '介護・看護:');
     build('palette-cook', pal.cooking, '調理:');
@@ -415,30 +415,35 @@ function renderPalette(data) {
 }
 
 function setEditStatus(msg, kind) {
-    const el = document.getElementById('edit-status');
-    if (!el) return;
-    el.textContent = msg || '';
-    el.className = 'text-sm font-bold ' + (
-        kind === 'error' ? 'text-red-600' : kind === 'ok' ? 'text-emerald-700' : 'text-gray-600'
-    );
+    const els = document.querySelectorAll('.edit-status');
+    if (!els.length) return;
+    els.forEach(el => {
+        el.textContent = msg || '';
+        el.className = 'edit-status text-sm font-bold ' + (
+            kind === 'error' ? 'text-red-600' : kind === 'ok' ? 'text-emerald-700' : 'text-gray-600'
+        );
+    });
     if (msg && kind === 'ok') {
         clearTimeout(window.__editStatusTimer);
-        window.__editStatusTimer = setTimeout(() => { el.textContent = ''; }, 6000);
+        window.__editStatusTimer = setTimeout(
+            () => { document.querySelectorAll('.edit-status').forEach(el => { el.textContent = ''; }); },
+            6000);
     }
 }
 
 function updatePendingBadge() {
     const n = Object.keys(pendingEdits).length;
-    const badge = document.getElementById('pending-count');
-    const btn = document.getElementById('save-edits-btn');
-    const undoBtn = document.getElementById('undo-edit-btn');
-    if (badge) badge.textContent = n ? `未保存の変更 ${n}件` : '';
+    document.querySelectorAll('.pending-count').forEach(badge => {
+        badge.textContent = n ? `未保存の変更 ${n}件` : '';
+    });
     // 押せない（白い）ボタンで迷わないよう、いつでも押せるようにしておく
-    if (btn) {
+    document.querySelectorAll('.save-edits-btn').forEach(btn => {
         btn.disabled = false;
         btn.textContent = n ? `変更を保存（${n}件）` : '変更を保存';
-    }
-    if (undoBtn) undoBtn.disabled = editUndoStack.length === 0;
+    });
+    document.querySelectorAll('.undo-edit-btn').forEach(b => {
+        b.disabled = editUndoStack.length === 0;
+    });
 }
 
 function applyLocalEdit(dateStr, staffId, code) {
@@ -533,8 +538,8 @@ function saveShiftEdits() {
         return ch;
     });
     if (!changes.length) return;
-    const btn = document.getElementById('save-edits-btn');
-    if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
+    const btns = document.querySelectorAll('.save-edits-btn');
+    btns.forEach(b => { b.disabled = true; b.textContent = '保存中...'; });
     fetchWithCsrf('/api/shift/cells', {
         method: 'POST',
         body: JSON.stringify({ year: currentYear, month: currentMonth, changes: changes }),
@@ -549,7 +554,7 @@ function saveShiftEdits() {
         })
         .catch(e => setEditStatus('保存に失敗しました: ' + e.message, 'error'))
         .finally(() => {
-            if (btn) btn.disabled = false;
+            btns.forEach(b => { b.disabled = false; });
             updatePendingBadge();
         });
 }
@@ -702,12 +707,11 @@ function syncTableScrollbars() {
 
 function initShiftDragAndDrop() {
     const table = document.getElementById('calendar-table');
-    const bar = document.getElementById('edit-bar');
     if (!table || table.dataset.dndReady === '1') return;
     table.dataset.dndReady = '1';
 
-    const trash = document.getElementById('trash-box');
-    if (trash && trash.dataset.dndReady !== '1') {
+    document.querySelectorAll('.trash-box').forEach(trash => {
+        if (trash.dataset.dndReady === '1') return;
         trash.dataset.dndReady = '1';
         trash.addEventListener('dragover', e => {
             if (!window.__dragInfo || window.__dragInfo.type === 'palette') return;
@@ -738,9 +742,10 @@ function initShiftDragAndDrop() {
             }
             window.__dragInfo = null;
         });
-    }
+    });
 
-    if (bar && bar.dataset.dndReady !== '1') {
+    document.querySelectorAll('.edit-bar').forEach(bar => {
+        if (bar.dataset.dndReady === '1') return;
         bar.dataset.dndReady = '1';
         bar.addEventListener('dragstart', e => {
             const chip = e.target.closest('.palette-chip');
@@ -749,7 +754,7 @@ function initShiftDragAndDrop() {
             e.dataTransfer.effectAllowed = 'copy';
             e.dataTransfer.setData('text/plain', chip.dataset.code);
         });
-    }
+    });
 
     table.addEventListener('dragstart', e => {
         const chip = e.target.closest('.visit-chip');
@@ -1227,8 +1232,8 @@ function renderCalendar(data, year, month) {
     // --- 調理スタッフセクション ---
     if (hasCooking) {
         // 介護・看護と調理の間にも横スライドバーを置く（ユーザー依頼 2026-08）
-        html += `<tr><td colspan="${totalCols}" style="position:sticky;left:0;padding:4px 0;border:none;background:#fff">`
-             + `<div class="proxy-scroll" style="overflow-x:auto"><div style="height:1px"></div></div></td></tr>`;
+        html += `<tr><td colspan="${totalCols}" style="position:sticky;left:0;padding:6px 0;border:none;background:#fff">`
+             + `<div class="proxy-scroll" style="overflow-x:scroll"><div style="height:1px"></div></div></td></tr>`;
         html += sectionTitleRow('調理スタッフ');
         html += headerRowHtml();
 
@@ -2033,6 +2038,10 @@ function hideLoading() {
     const el = document.getElementById('loading');
     if (el) el.classList.add('hidden');
 }
+
+// 要素そのものを出し入れする（手直しバーが上下2か所あるため）
+function showEl(el) { if (el) el.classList.remove('hidden'); }
+function hideEl(el) { if (el) el.classList.add('hidden'); }
 
 function showElement(id) {
     const el = document.getElementById(id);

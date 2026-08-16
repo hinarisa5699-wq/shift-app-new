@@ -1299,3 +1299,28 @@ def test_settings_password_works_even_when_env_password_exists(tmp_path, monkeyp
     c3 = flask_app.test_client()
     _login(c3, "yakuin", "wrongpass")
     assert c3.get("/view").status_code in (301, 302)
+
+
+def test_calendar_has_two_edit_bars_and_scrollbars(tmp_path, monkeypatch):
+    """手直しバーが表の上と下の2か所にあり、スライドバーも3か所ある。
+
+    2026-08: 「真ん中のスクロールバーが消える」「調理までドラッグが届かない」への対応。
+    """
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    html = client.get("/calendar").get_data(as_text=True)
+
+    assert html.count('class="edit-bar hidden') == 2, "手直しバーが2か所に無い"
+    assert html.count('class="trash-box') == 2, "ゴミ箱が2か所に無い"
+    assert html.count('class="palette-care') == 2
+    assert html.count('class="palette-cook') == 2
+    assert 'id="table-scroll-top"' in html, "表の上のスライドバーが無い"
+    assert 'id="table-scroll"' in html
+    assert "凡例" not in html.split("シフトの手直し")[-1], "凡例が残っている"
+
+    js = client.get("/static/js/app.js").get_data(as_text=True)
+    assert "proxy-scroll" in js, "介護看護と調理の間のスライドバーが無い"
+    css = client.get("/static/css/style.css").get_data(as_text=True)
+    assert "::-webkit-scrollbar" in css, "スライドバーを常に見せる指定が無い"

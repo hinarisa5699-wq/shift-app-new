@@ -1419,3 +1419,33 @@ def test_late_shift_starts_at_nine(tmp_path, monkeypatch):
     # 早番(7:30-16:30)はデイ午前・午後の両方に数える
     assert "early" in export._DAY_AM_SET and "early" in export._DAY_PM_SET
     assert export.ASSIGNMENT_LABELS["late"] == "遅番9:00-18:30"
+
+
+def test_manual_public_holiday_count_wins_over_auto(tmp_path, monkeypatch):
+    """職員に公休日数を入力してあれば、自動算出より優先する。
+
+    2026-08:「郡さんは公休18と入れているのに目標8日になる」。
+    """
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    from models import db, Staff, ShiftSettings
+
+    with flask_app.app_context():
+        s = ShiftSettings.query.first()
+        s.auto_public_holidays = True          # 自動算出ON
+        st = Staff.query.filter_by(name="介護B").first()
+        st.public_holiday_count = 18           # 個別に18日と入力
+        st.max_days_per_week = 7
+        other = Staff.query.filter_by(name="介護C").first()
+        other.public_holiday_count = 0         # 未入力は自動算出のまま
+        other.max_days_per_week = 7
+        db.session.commit()
+        manual_id, auto_id = st.id, other.id
+
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    data = client.get("/api/shifts/2026/9").get_json()
+    by_id = {x["id"]: x for x in data["staff_list"]}
+    assert by_id[manual_id]["public_holiday_target"] == 18, by_id[manual_id]
+    assert by_id[auto_id]["public_holiday_target"] != 18, "未入力の職員まで18日になっている"

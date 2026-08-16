@@ -86,6 +86,10 @@ def _public_holiday_target(st, year=None, month=None) -> int:
         return 0
     settings_obj = ShiftSettings.query.first()
     manual = int(getattr(st, "public_holiday_count", 0) or 0)
+    if manual > 0:
+        # 職員ごとに公休日数を入れてある場合はその日数を優先する
+        #   （ユーザー指摘 2026-08:「郡さんは公休18と入れているのに目標8日になる」）
+        return manual
     if not settings_obj or not getattr(settings_obj, "auto_public_holidays", False):
         return manual
     if not (year and month):
@@ -2857,8 +2861,12 @@ def create_app():
             （ユーザー指摘 2026-08:「土山さんは5日と26日しか出ない設定なのに入っていない」。
             以前は目標を0＝対象外にしていたため、ソルバーが入れなくても良いと判断していた）。
             """
+            _manual = getattr(s, "public_holiday_count", 0) or 0
+            if _manual > 0:
+                # 個別に入力した公休日数はそのまま使う（自動算出より優先）
+                return _manual
             if not auto_ph_enabled:
-                return getattr(s, "public_holiday_count", 0) or 0
+                return _manual
             week_days = s.max_days_per_week or 5
             # 週5から1日減るごとに所定労働日数を -4日（週4=-4, 週3=-8 …）
             reduction = max(0, 5 - week_days) * 4

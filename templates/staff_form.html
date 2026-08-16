@@ -501,7 +501,7 @@
             </label>
             <p class="text-gray-500 text-sm mb-2">
                 その月の休みの日数の目標です（勤務しない日＝事業所の休業日・希望休・固定休・その他の休みをすべて含みます）。
-                <strong>0＝指定なし（この制約をかけません）</strong>。指定するとその日数ちょうどになるよう調整し、人員の都合で合わない月は警告を出して生成は継続します。
+                <strong>0＝指定なし（自動算出にまかせます）</strong>。日数を入れると、条件設定の「公休日数を自動算出する」より<strong>この日数が優先</strong>されます。人員の都合で合わない月は警告を出して生成は継続します。
             </p>
             <input type="number" id="public_holiday_count" name="public_holiday_count"
                    min="0" max="31"

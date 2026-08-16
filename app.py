@@ -101,8 +101,9 @@ def _public_holiday_target(st, year=None, month=None) -> int:
         if date(year, month, d).weekday() < 5
         and not (include_hol and jpholiday.is_holiday(date(year, month, d)))
     )
-    week_days = st.max_days_per_week or 5
-    shotei = max(0, fulltime - max(0, 5 - week_days) * 4)
+    # 週の勤務日数は廃止したため、自動算出は平日日数そのものを所定日数とする
+    week_days = 7
+    shotei = fulltime
     # 出勤可能日(whitelist)を登録している職員は、その月の登録日数が出勤日数の上限
     if (getattr(st, "workable_dates_mode", "only") or "only") == "only":
         _first = date(year, month, 1)
@@ -135,7 +136,7 @@ def _public_holiday_target(st, year=None, month=None) -> int:
         if hol_ng and jpholiday.is_holiday(dt):
             continue
         by_week[dt.isocalendar()[1]] = by_week.get(dt.isocalendar()[1], 0) + 1
-    max_workable = sum(min(n, week_days or 7) for n in by_week.values())
+    max_workable = sum(by_week.values())   # 週の上限は廃止（出られる日数がそのまま上限）
     return max(0, cal_days - min(shotei, max_workable))
 
 
@@ -1673,8 +1674,10 @@ def create_app():
             can_bath_assist="can_bath_assist" in request.form if is_care else False,
             gender=request.form.get("gender", ""),
             max_consecutive_days=safe_int(request.form.get("max_consecutive_days"), 5),
-            max_days_per_week=safe_int(request.form.get("max_days_per_week"), 5),
-            min_days_per_week=safe_int(request.form.get("min_days_per_week"), 0),
+            # 週の勤務日数の上限・下限は廃止（変則勤務のため週区切りで数えない。
+            #   月の公休日数と連勤上限で管理する。ユーザー依頼 2026-08）
+            max_days_per_week=7,
+            min_days_per_week=0,
             available_days=available_days if available_days else "0,1,2,3,4,5,6",
             available_time_slots=request.form.get("available_time_slots", "full_day") if is_care else "full_day",
             work_start_time=(request.form.get("work_start_time", "") or "").strip(),
@@ -1784,12 +1787,9 @@ def create_app():
         staff.max_consecutive_days = safe_int(
             request.form.get("max_consecutive_days"), staff.max_consecutive_days
         )
-        staff.max_days_per_week = safe_int(
-            request.form.get("max_days_per_week"), staff.max_days_per_week
-        )
-        staff.min_days_per_week = safe_int(
-            request.form.get("min_days_per_week"), getattr(staff, "min_days_per_week", 0) or 0
-        )
+        # 週の勤務日数の上限・下限は廃止（月の公休日数と連勤上限で管理する）
+        staff.max_days_per_week = 7
+        staff.min_days_per_week = 0
         staff.available_days = available_days if available_days else staff.available_days
         staff.fixed_days_off = fixed_days_off
         staff.required_days = ",".join(request.form.getlist("required_days"))
@@ -2837,7 +2837,7 @@ def create_app():
             avail = {int(x) for x in (s.available_days or "").split(",") if x.strip()}
             fixed = {int(x) for x in (s.fixed_days_off or "").split(",") if x.strip()}
             hol_ng = bool(getattr(s, "holiday_ng", False))
-            week_cap = s.max_days_per_week or 7
+            week_cap = 7        # 週の勤務日数は廃止（制限なし）
             by_week = {}
             for _d in range(1, _calendar_days + 1):
                 dt = date(year, month, _d)
@@ -2867,10 +2867,8 @@ def create_app():
                 return _manual
             if not auto_ph_enabled:
                 return _manual
-            week_days = s.max_days_per_week or 5
-            # 週5から1日減るごとに所定労働日数を -4日（週4=-4, 週3=-8 …）
-            reduction = max(0, 5 - week_days) * 4
-            shotei_work_days = max(0, _fulltime_shotei - reduction)
+            # 週の勤務日数は廃止（月の公休日数で管理）。自動算出は平日日数ベース。
+            shotei_work_days = _fulltime_shotei
             # 固定休・勤務可能曜日・休業日で物理的に出られない分は目標から差し引く
             shotei_work_days = min(shotei_work_days, _max_workable_days(s))
             # 出勤可能日(whitelist)を登録している職員はその日数が上限
@@ -2895,8 +2893,10 @@ def create_app():
                 "employment_type": s.employment_type,
                 "can_visit": s.can_visit,
                 "max_consecutive_days": s.max_consecutive_days,
-                "max_days_per_week": s.max_days_per_week,
-                "min_days_per_week": getattr(s, "min_days_per_week", 0) or 0,
+                # 週の勤務日数の上限・下限は使わない（週区切りで数えると
+                #   変則勤務に合わないため。月の公休日数と連勤上限で管理する）
+                "max_days_per_week": 7,
+                "min_days_per_week": 0,
                 "available_days": avail_days,
                 "available_time_slots": s.available_time_slots,
                 "fixed_days_off": fixed_off,

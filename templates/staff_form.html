@@ -469,31 +469,6 @@
                    class="w-32 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
         </div>
 
-        <!-- 週の勤務日数 -->
-        <div class="mb-8">
-            <label class="block text-lg font-semibold text-gray-700 mb-2">
-                週の勤務日数（日）
-            </label>
-            <p class="text-gray-500 text-sm mb-2">1週間あたりの出勤日数の範囲です。「週3」の方は下限・上限とも3にしてください。</p>
-            <div class="flex items-center gap-3">
-                <div>
-                    <label for="min_days_per_week" class="block text-sm font-medium text-gray-500 mb-1">下限</label>
-                    <input type="number" id="min_days_per_week" name="min_days_per_week"
-                           min="0" max="7"
-                           value="{{ staff.min_days_per_week if staff and staff.min_days_per_week else 0 }}"
-                           class="w-24 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
-                </div>
-                <span class="text-gray-400 text-xl mt-6">〜</span>
-                <div>
-                    <label for="max_days_per_week" class="block text-sm font-medium text-gray-500 mb-1">上限</label>
-                    <input type="number" id="max_days_per_week" name="max_days_per_week"
-                           min="1" max="7"
-                           value="{{ staff.max_days_per_week if staff else 5 }}"
-                           class="w-24 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
-                </div>
-            </div>
-        </div>
-
         <!-- 月の公休日数 -->
         <div class="mb-8">
             <label for="public_holiday_count" class="block text-lg font-semibold text-gray-700 mb-2">

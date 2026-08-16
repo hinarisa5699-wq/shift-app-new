@@ -1449,3 +1449,35 @@ def test_manual_public_holiday_count_wins_over_auto(tmp_path, monkeypatch):
     by_id = {x["id"]: x for x in data["staff_list"]}
     assert by_id[manual_id]["public_holiday_target"] == 18, by_id[manual_id]
     assert by_id[auto_id]["public_holiday_target"] != 18, "未入力の職員まで18日になっている"
+
+
+def test_weekly_limits_are_not_used(tmp_path, monkeypatch):
+    """週の勤務日数の上限・下限は使わない（変則勤務のため）。
+
+    2026-08:「週の限界値を入れるところをなくす。日曜〜土曜で数えるとおかしくなる」。
+    管理は「月の公休日数」と「連勤上限」で行う。
+    """
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    from models import db, Staff
+
+    with flask_app.app_context():
+        st = Staff.query.filter_by(name="介護B").first()
+        st.max_days_per_week = 2        # 古い設定が残っていても
+        st.min_days_per_week = 2
+        st.public_holiday_count = 10    # 月の公休10日＝20日勤務
+        db.session.commit()
+        sid = st.id
+
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    data = client.get("/api/shifts/2026/9").get_json()
+    worked = len([x for x in data["shifts"] if x["staff_id"] == sid])
+    # 週2日（=月8日程度）に縛られず、公休10日（=20日勤務）を目指せている
+    assert worked > 10, f"週の上限に縛られている（{worked}日）"
+
+    # 職員画面から週の入力欄が消えている
+    form = client.get(f"/staff/{sid}/edit").get_data(as_text=True)
+    assert 'name="max_days_per_week"' not in form
+    assert 'name="min_days_per_week"' not in form

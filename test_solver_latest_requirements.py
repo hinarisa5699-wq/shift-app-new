@@ -391,3 +391,43 @@ def test_backup_staff_used_only_when_needed():
     shifts2, _w2 = generate_shift(2026, 9, few, [], [], settings)
     backup_days2 = [s for s in shifts2 if s["staff_id"] == 99 and s["assignment"] != "off"]
     assert backup_days2, "人手が足りないのに応援が入っていない"
+
+
+def test_all_fixed_cooking_staff_keeps_shifts_without_warning():
+    """調理職員を全員「固定」にして再生成しても、既存シフトが残り警告も出ない。
+
+    2026-08: 全員固定だとソルバーに動かせる余地が無く、実際にはシフトが
+    残っているのに「解を見つけられませんでした」が毎日出ていた。
+    """
+    from solver import generate_shift
+
+    def _cook(i):
+        return {
+            "id": i, "name": f"調理{i}", "employment_type": "パート",
+            "can_visit": False, "max_consecutive_days": 5, "max_days_per_week": 5,
+            "min_days_per_week": 0, "available_days": [0, 1, 2, 3, 4, 5, 6],
+            "available_time_slots": "full_day", "fixed_days_off": [],
+            "staff_group": "cooking", "gender": "female", "has_phone_duty": False,
+            "qualification_ids": [], "qualification_names": [], "qualification_codes": [],
+            "weekend_constraint": "", "holiday_ng": False,
+        }
+
+    cooks = [_cook(101), _cook(102)]
+    # 2人とも固定（既存シフトあり）。朝・昼・夜のカバーは満たしていない日を含む
+    locked = [
+        {"date": "2026-09-01", "staff_id": 101, "assignment": "cooking_2"},
+        {"date": "2026-09-02", "staff_id": 102, "assignment": "cooking_3"},
+    ]
+    settings = {
+        "min_day_service": 0, "min_visit_am": 0, "min_visit_pm": 0,
+        "closed_days": [], "visit_operating_days": [],
+        "min_cooking_staff": 1, "placement_rules": [], "cooking_combo_rules": [],
+        "min_staff_at_9": 0, "min_staff_at_15": 0, "max_day_service": 0,
+        "min_early_staff": 0, "min_late_staff": 0,
+    }
+    shifts, warns = generate_shift(2026, 9, [], cooks, [], settings,
+                                   locked_shifts=locked)
+    # 固定職員の行は app.py 側で温存するため、生成結果には含めない
+    assert not [s for s in shifts if s["staff_id"] in (101, 102)],         "固定職員のシフトを作り直している"
+    assert not [w for w in warns if w["warning_type"] == "no_solution"], \
+        [w["message"] for w in warns][:3]

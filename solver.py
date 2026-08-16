@@ -3960,6 +3960,18 @@ def _solve_cooking_with_fallback(
     # 追加出勤日（振替）: [(staff_id, "YYYY-MM-DD"), ...]
     forced_work_dates = settings.get("forced_work_dates", []) or []
 
+    # 全員が「固定中」なら動かせる余地がない。既存のシフトをそのまま返す。
+    #   （2026-08: 調理職員を全員固定したまま再生成すると、実際にはシフトが
+    #     残っているのに「解を見つけられません」の警告が毎日出ていた）
+    _locked = locked_assignments or {}
+    if staff_ids and all(sid in _locked for sid in staff_ids):
+        kept = []
+        for sid, day_map in _locked.items():
+            for d_iso, code in (day_map or {}).items():
+                if code and code != "cook_off":
+                    kept.append({"date": d_iso, "staff_id": sid, "assignment": code})
+        return kept, []
+
     # Phase 1: ハード制約のみ
     shifts_data, warnings_data = _solve_cooking(
         year, month, all_dates, staff_ids, staff_by_id,

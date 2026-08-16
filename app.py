@@ -2305,7 +2305,8 @@ def create_app():
         s.care_min_by_weekday = _form_wd_counts("care_min_wd")
         s.care_max_by_weekday = _form_wd_counts("care_max_wd")
         s.min_cooking_staff = safe_int(request.form.get("min_cooking_staff"), 1)
-        s.min_cooking_overlap = safe_int(request.form.get("min_cooking_overlap"), 2)
+        # 「調理 引き継ぎ時間帯の重複人数」は撤廃（ユーザー依頼 2026-08）
+        s.min_cooking_overlap = 0
         s.breakfast_off_start = (request.form.get("breakfast_off_start", "") or "").strip()
         s.breakfast_off_end = (request.form.get("breakfast_off_end", "") or "").strip()
         s.am_preferred_gender = request.form.get("am_preferred_gender", "")
@@ -2953,7 +2954,6 @@ def create_app():
                 getattr(settings_obj, "care_max_by_weekday", "")
             ),
             "min_cooking_staff": settings_obj.min_cooking_staff,
-            "min_cooking_overlap": settings_obj.min_cooking_overlap,
             "breakfast_off_start": getattr(settings_obj, 'breakfast_off_start', '') or '',
             "breakfast_off_end": getattr(settings_obj, 'breakfast_off_end', '') or '',
             "am_preferred_gender": getattr(settings_obj, 'am_preferred_gender', '') or '',

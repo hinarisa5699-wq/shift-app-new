@@ -713,23 +713,6 @@
             </div>
         </div>
 
-        <!-- 調理スタッフ 引き継ぎ時間帯の重複人数 -->
-        <div class="mb-8 p-6 bg-amber-50 rounded-lg border border-amber-200">
-            <label for="min_cooking_overlap" class="block text-lg font-semibold text-gray-800 mb-2">
-                調理 引き継ぎ時間帯の重複人数
-            </label>
-            <p class="text-gray-600 text-sm mb-3">
-                12:00〜13:00の引き継ぎ時間帯に最低何名必要かを設定します。
-            </p>
-            <div class="flex items-center gap-2">
-                <input type="number" id="min_cooking_overlap" name="min_cooking_overlap"
-                       min="1" max="10"
-                       value="{{ settings.min_cooking_overlap if settings and settings.min_cooking_overlap is not none else 2 }}"
-                       class="w-24 px-4 py-3 text-xl font-bold text-center border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
-                <span class="text-lg text-gray-600">名</span>
-            </div>
-        </div>
-
         <!-- 朝食なし期間 -->
         <div class="mb-8 p-6 bg-amber-50 rounded-lg border border-amber-200">
             <label class="block text-lg font-semibold text-gray-800 mb-2">

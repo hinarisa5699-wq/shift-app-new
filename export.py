@@ -212,7 +212,8 @@ def _is_nurse_or_pt_staff(staff: dict) -> bool:
 
     ドライバーは送迎担当なので介護の配置人数に含めない（ユーザー依頼 2026-08）。
     """
-    if str(staff.get("job_category", "") or "") in ("driver", "executive", "office"):
+    if str(staff.get("job_category", "") or "") in (
+            "nurse_rehab", "driver", "executive", "office"):
         return True
     qual_codes = {
         code for code in staff.get("qualification_codes", [])
@@ -1815,6 +1816,9 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
     # デイ利用者がいない曜日は介護を原則N名（既定2名）に抑える（デイ人数の下限は課さない）
     no_ds_days = set(settings.get("no_day_service_days", []) or [])
     no_ds_min = int(settings.get("no_day_service_min_staff", 2) or 0)
+    # 曜日ごとの介護配置人数（設定してあればこちらを優先して判定する）
+    care_min_wd = list(settings.get("care_min_by_weekday") or [])
+    care_max_wd = list(settings.get("care_max_by_weekday") or [])
 
     nurse_pt_ids = {st["id"] for st in staff_list if _is_nurse_or_pt_staff(st)}
     counselor_qual_ids = _get_counselor_qual_ids_for_validation(settings)
@@ -1847,14 +1851,26 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
         def warn(wt, msg):
             warnings.append({"date": iso, "warning_type": wt, "message": msg})
 
+        # その日出勤している介護職員の人数（看護師・PT・ドライバー・役員・事務は除く）
+        care_work = sum(
+            1 for it in items
+            if it["staff_id"] not in nurse_pt_ids
+            and it["assignment"] in _CARE_WORK_SET
+        )
+        wd = dt.weekday()
+        wd_min = care_min_wd[wd] if wd < len(care_min_wd) else None
+        wd_max = care_max_wd[wd] if wd < len(care_max_wd) else None
+        if wd_min is not None and care_work < wd_min:
+            warn("understaffed_care",
+                 f"介護職員: {wd_min - care_work}名不足（設定{wd_min}名／配置{care_work}名）")
+        if wd_max is not None and care_work > wd_max:
+            warn("over_staffed_care",
+                 f"介護職員: {care_work - wd_max}名超過（設定{wd_max}名／配置{care_work}名）")
+
         if dt.weekday() in no_ds_days:
-            # デイ利用者がいない曜日はデイ人数の下限を課さず、介護人数の超過だけ見る
-            if no_ds_min > 0:
-                care_work = sum(
-                    1 for it in items
-                    if it["staff_id"] not in nurse_pt_ids
-                    and it["assignment"] in _CARE_WORK_SET
-                )
+            # デイ利用者がいない曜日。曜日ごとの人数を設定していない場合だけ
+            #   従来の「原則2名」で超過を見る。
+            if no_ds_min > 0 and wd_min is None and wd_max is None:
                 if care_work > no_ds_min:
                     warn(
                         "over_staffed_no_day_service",

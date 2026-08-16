@@ -179,6 +179,17 @@
                 <p class="text-gray-500 text-sm mt-1 ml-8">チェックを入れると、シフト（出勤）は一切割り当てず、オンコール（電話当番）だけを担当します。</p>
             </div>
 
+            <!-- 応援（人手が足りないときだけ） -->
+            <div class="mb-6">
+                <label class="flex items-center cursor-pointer">
+                    <input type="checkbox" name="backup_only" value="1"
+                           {% if staff and staff.backup_only %}checked{% endif %}
+                           class="w-5 h-5 text-orange-500 border-gray-300 rounded focus:ring-orange-400">
+                    <span class="ml-3 text-lg font-semibold text-gray-700">応援（人手が足りないときだけ入れる）</span>
+                </label>
+                <p class="text-gray-500 text-sm mt-1 ml-8">チェックを入れると、他の職員だけで人数が足りるときは割り当てません。どうしても足りない日だけ入ります。</p>
+            </div>
+
             <!-- 休みでもオンコール可 -->
             <div class="mb-6">
                 <label class="flex items-center cursor-pointer">

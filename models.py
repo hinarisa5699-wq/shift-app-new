@@ -67,6 +67,9 @@ class Staff(db.Model):
     # True = 退職（在籍していない）。シフト生成・オンコール・閲覧画面・印刷の対象外。
     #   過去のシフト履歴は残すため、職員データ自体は削除しない
     #   （ユーザー依頼 2026-08:「シフト閲覧にやめた人がいっぱい出る」）。
+    backup_only = db.Column(db.Boolean, default=False, nullable=False)
+    # True = 応援（人手が本当に足りないときだけ入れる）。
+    #   ユーザー依頼 2026-08:「ヘルパーステーションヘルプは人数本当に足りないときに入れます」。
     oncall_only = db.Column(db.Boolean, default=False, nullable=False)
     # True = オンコール（電話当番）のみ担当。出勤シフトは一切割り当てない
     # （ユーザー依頼 2026-08: 「前垣茜はオンコールのみ当番」）。
@@ -143,6 +146,7 @@ class Staff(db.Model):
             "retired": self.retired or False,
             "retired_date": self.retired_date.isoformat() if self.retired_date else None,
             "oncall_only": self.oncall_only or False,
+            "backup_only": self.backup_only or False,
             "workable_dates_mode": self.workable_dates_mode or "only",
             "oncall_when_off_ok": self.oncall_when_off_ok or False,
             "required_days": self.required_days or "",

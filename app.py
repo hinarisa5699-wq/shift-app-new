@@ -222,7 +222,7 @@ _COUNSELOR_QUALIFICATION_NAMES = {"相談員", "生活相談員"}
 STAFF_CSV_COLUMNS = [
     "id", "name", "job_category", "role", "employment_type", "gender",
     "can_visit", "can_counsel", "can_bath_assist", "has_phone_duty",
-    "oncall_only", "retired", "holiday_ng", "weekend_constraint",
+    "oncall_only", "backup_only", "retired", "holiday_ng", "weekend_constraint",
     "work_start_time", "work_end_time",
     "available_time_slots", "available_days", "fixed_days_off",
     "max_consecutive_days", "max_days_per_week", "min_days_per_week",
@@ -473,6 +473,9 @@ def _run_migrations(app):
     if "retired_date" not in columns:
         # 退職月（この月まではシフト表に出す）
         cursor.execute("ALTER TABLE staff ADD COLUMN retired_date DATE")
+    if "backup_only" not in columns:
+        # 応援職員（人手が足りないときだけ入れる）
+        cursor.execute("ALTER TABLE staff ADD COLUMN backup_only BOOLEAN NOT NULL DEFAULT 0")
     if "oncall_only" not in columns:
         # オンコールのみ当番（出勤シフトは割り当てない）
         cursor.execute("ALTER TABLE staff ADD COLUMN oncall_only BOOLEAN NOT NULL DEFAULT 0")
@@ -1680,6 +1683,7 @@ def create_app():
             retired="retired" in request.form,
             retired_date=_parse_retired_month(request.form.get("retired_date", "")),
             oncall_only="oncall_only" in request.form if is_care else False,
+            backup_only="backup_only" in request.form,
             oncall_when_off_ok="oncall_when_off_ok" in request.form if is_care else False,
             public_holiday_count=max(0, safe_int(request.form.get("public_holiday_count"), 0)),
             car_commute="car_commute" in request.form,
@@ -1741,6 +1745,9 @@ def create_app():
         staff.gender = request.form.get("gender", "")
         staff.work_start_time = (request.form.get("work_start_time", "") or "").strip()
         staff.work_end_time = (request.form.get("work_end_time", "") or "").strip()
+
+        # 応援（人手が足りないときだけ入れる）は区分を問わず保存する
+        staff.backup_only = "backup_only" in request.form
 
         if staff.staff_group == "cooking":
             staff.can_visit = False
@@ -2890,6 +2897,8 @@ def create_app():
                 ],
                 "staff_group": s.staff_group,
                 "job_category": getattr(s, "job_category", "caregiver") or "caregiver",
+                # 応援（人手が足りないときだけ入れる）
+                "backup_only": bool(getattr(s, "backup_only", False)),
                 "gender": s.gender,
                 "has_phone_duty": s.has_phone_duty,
                 "can_bath_assist": getattr(s, "can_bath_assist", False) or False,
@@ -4155,6 +4164,11 @@ def create_app():
             "min_bath_out": getattr(so, "min_bath_out", 0) or 0,
             "min_early_staff": getattr(so, "min_early_staff", 1) or 0,
             "min_late_staff": getattr(so, "min_late_staff", 1) or 0,
+            # 曜日ごとの介護配置人数（警告の判定にも使う。2026-08 の依頼）
+            "care_min_by_weekday": _parse_wd_counts(
+                getattr(so, "care_min_by_weekday", "")),
+            "care_max_by_weekday": _parse_wd_counts(
+                getattr(so, "care_max_by_weekday", "")),
             "placement_rules": placement,
         }
 

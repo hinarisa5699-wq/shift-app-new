@@ -1611,6 +1611,8 @@ def _solve_care_with_fallback(
                 if str(x).strip().isdigit()
             ],
             "job_category": s.get("job_category", "caregiver"),
+            # 応援（人手が足りないときだけ入れる）
+            "backup_only": bool(s.get("backup_only", False)),
             "gender": s.get("gender", ""),
             "has_phone_duty": s.get("has_phone_duty", False),
             "qualification_ids": s.get("qualification_ids", []),
@@ -2127,8 +2129,9 @@ def _solve_care(
         if _staff_has_any_qualification(
             staff_by_id[s], codes=_NURSE_PT_QUAL_CODES, names=_NURSE_PT_QUAL_NAMES
         )
-        # ドライバー（送迎担当）も介護の配置人数には数えない（ユーザー依頼 2026-08）
-        or str(staff_by_id[s].get("job_category", "") or "") == "driver"
+        # 看護・ドライバー・役員・事務は介護の配置人数に数えない（ユーザー依頼 2026-08）
+        or str(staff_by_id[s].get("job_category", "") or "") in (
+            "nurse_rehab", "driver", "executive", "office")
     }
     if nurse_pt_qual_ids:
         nurse_pt_ids |= {
@@ -3193,6 +3196,23 @@ def _solve_care(
     )
 
     # ==================================================================
+    # 応援職員（backup_only）: 人手が本当に足りないときだけ入れる。
+    #   ユーザー依頼 2026-08:「ヘルパーステーションヘルプは人数が本当に
+    #   足りないときに入れます。公休を多くしているのに応援を入れるのはおかしい」。
+    #   → 出勤1日ごとに重いペナルティ。公休のズレより高くし、
+    #     人員確保のスラック（配置不足）よりは低くする＝どうしても足りない日だけ入る。
+    # ==================================================================
+    backup_ids = [
+        s_id for s_id in staff_ids
+        if staff_by_id[s_id].get("backup_only")
+    ]
+    backup_work_terms = [
+        (1 - x[s_id, d_idx, "off"])
+        for s_id in backup_ids for d_idx in range(num_days)
+    ]
+    backup_penalty = 0        # 重みは目的関数の直前で決める
+
+    # ==================================================================
     # 依頼文41-(2): 訪問回数（日数）の平等化
     #   訪問可(can_visit)の全職員間で、訪問日数（VISIT_ASSIGNMENTS のいずれかに
     #   入った日数）の差（最大−最小）を最小化する。完全一致は不可能なため soft。
@@ -3395,6 +3415,12 @@ def _solve_care(
             sum(oncall_work_miss.values()) * visit_slack_weight
             if oncall_work_miss else 0
         )
+        # 応援職員のペナルティ: ほかのソフト条件より重く、人員確保のスラックよりは軽い。
+        #   → どうしても人が足りない日だけ入る（ユーザー依頼 2026-08）。
+        _backup_weight = max(1, slack_weight // 2)
+        backup_penalty = (
+            sum(backup_work_terms) * _backup_weight if backup_work_terms else 0
+        )
         model.minimize(
             early_late_slack_penalty
             + visit_slack_penalty
@@ -3411,8 +3437,14 @@ def _solve_care(
             + late_consec_penalty + late_fairness_penalty
             + early_consec_penalty + early_fairness_penalty
             + public_holiday_penalty
+            + backup_penalty
         )
     else:
+        # スラック無しの段階でも応援は最後に回す（ハード制約は必ず満たされる）
+        backup_penalty = (
+            sum(backup_work_terms) * ((num_days + 1) * max(1, len(staff_ids)) * 5)
+            if backup_work_terms else 0
+        )
         model.minimize(
             total_working_days * headcount_weight
             + bath_short_penalty + desk_short_penalty + counselor_soft_penalty
@@ -3423,6 +3455,7 @@ def _solve_care(
             + late_consec_penalty + late_fairness_penalty
             + early_consec_penalty + early_fairness_penalty
             + public_holiday_penalty
+            + backup_penalty
         )
 
     # ==================================================================

@@ -349,3 +349,45 @@ def test_care_headcount_over_limit_warns_but_generates():
     assert any(w["warning_type"] in (
         "over_staffed_care", "understaffed_visit_am", "understaffed_visit_pm",
     ) for w in warnings), [w["warning_type"] for w in warnings]
+
+
+def test_backup_staff_used_only_when_needed():
+    """応援職員（backup_only）は、他の職員で足りるときは入れない。
+
+    ユーザー依頼 2026-08:「ヘルパーステーションヘルプは人数が本当に
+    足りないときに入れます。公休を多くしているのに応援を入れるのはおかしい」。
+    """
+    from solver import generate_shift
+
+    def _st(i, backup=False, maxw=5):
+        return {
+            "id": i, "name": ("応援" if backup else "介護") + str(i),
+            "employment_type": "常勤", "can_visit": True,
+            "max_consecutive_days": 5, "max_days_per_week": maxw,
+            "min_days_per_week": 0, "available_days": [0, 1, 2, 3, 4, 5, 6],
+            "available_time_slots": "full_day", "fixed_days_off": [],
+            "staff_group": "care", "gender": "female", "has_phone_duty": False,
+            "qualification_ids": [], "qualification_names": [],
+            "qualification_codes": ["care_worker"],
+            "weekend_constraint": "", "holiday_ng": False,
+            "backup_only": backup,
+        }
+
+    settings = {
+        "min_day_service": 2, "min_visit_am": 0, "min_visit_pm": 0,
+        "closed_days": [6], "visit_operating_days": [],
+        "min_cooking_staff": 0, "min_cooking_overlap": 0, "placement_rules": [],
+        "cooking_combo_rules": [], "min_staff_at_9": 2, "min_staff_at_15": 2,
+        "max_day_service": 4, "min_early_staff": 1, "min_late_staff": 1,
+    }
+    # 通常の職員だけで足りる人数を用意し、応援を1名混ぜる
+    care = [_st(i) for i in range(1, 8)] + [_st(99, backup=True)]
+    shifts, _w = generate_shift(2026, 9, care, [], [], settings)
+    backup_days = [s for s in shifts if s["staff_id"] == 99 and s["assignment"] != "off"]
+    assert not backup_days, f"応援が {len(backup_days)} 日入っている"
+
+    # 逆に人が足りないときは応援が入る
+    few = [_st(i) for i in range(1, 3)] + [_st(99, backup=True)]
+    shifts2, _w2 = generate_shift(2026, 9, few, [], [], settings)
+    backup_days2 = [s for s in shifts2 if s["staff_id"] == 99 and s["assignment"] != "off"]
+    assert backup_days2, "人手が足りないのに応援が入っていない"

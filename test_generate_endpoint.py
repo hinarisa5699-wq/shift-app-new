@@ -1347,3 +1347,43 @@ def test_horizontal_sliders_are_always_drawn(tmp_path, monkeypatch):
 
     css = client.get("/static/css/style.css").get_data(as_text=True)
     assert ".proxy-slider" in css and ".slider-thumb" in css
+
+
+def test_warnings_use_weekday_headcount(tmp_path, monkeypatch):
+    """警告の判定に「曜日ごとの介護配置人数」を使う。
+
+    2026-08: 水曜4名・月曜3名と設定しても、警告は固定の「原則2名」で
+    判定されていたため、不足に気づけず、範囲内なのに超過と出ていた。
+    """
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    from models import db, ShiftSettings
+
+    with flask_app.app_context():
+        s = ShiftSettings.query.first()
+        s.care_min_by_weekday = "3,3,4,3,3,3,0"     # 月,火,水,木,金,土,日
+        s.care_max_by_weekday = "3,4,5,4,3,4,0"
+        db.session.commit()
+
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+
+    data = client.get("/api/shifts/2026/9").get_json()
+    care_ids = [s["id"] for s in data["staff_list"]
+                if s["department"] != "cooking" and s["job_category"] == "caregiver"]
+    # 水曜(9/2)の介護をわざと減らして、不足の警告が出るか見る
+    wed = [x for x in data["shifts"]
+           if x["date"] == "2026-09-02" and x["staff_id"] in care_ids]
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9,
+        "changes": [{"date": "2026-09-02", "staff_id": wed[0]["staff_id"],
+                     "assignment": ""}],
+    })
+    assert res.status_code == 200
+    warns = res.get_json().get("warnings", [])
+    wed_warns = [w for w in warns if w["date"] == "2026-09-02"]
+    assert any(w["warning_type"] == "understaffed_care" for w in wed_warns), wed_warns
+
+    # 「原則2名」の古い判定は、曜日ごとの設定があるときは出さない
+    assert not [w for w in warns if w["warning_type"] == "over_staffed_no_day_service"]

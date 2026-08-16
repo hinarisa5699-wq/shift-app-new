@@ -57,7 +57,7 @@ const ASSIGNMENT_MAP = {
     day_pattern3:    { label: 'デイ午前8:30-12:30', badgeClass: 'badge-day-am'   },
     day_pattern4:    { label: 'デイ午後12:30-17:30', badgeClass: 'badge-day-pm' },
     early:           { label: '早番7:30-16:30',  badgeClass: 'badge-day-full' },
-    late:            { label: '遅番9:30-18:30',  badgeClass: 'badge-day-p2'   },
+    late:            { label: '遅番9:00-18:30',  badgeClass: 'badge-day-p2'   },
     nurse_short:     { label: '看護9:30-13:30',  badgeClass: 'badge-visit-am' },
     visit_am:        { label: '訪問午前のみ',     badgeClass: 'badge-visit-am'  },
     visit_pm:        { label: '訪問午後のみ',     badgeClass: 'badge-visit-pm'  },
@@ -78,7 +78,7 @@ const ASSIGNMENT_MAP = {
 // デイ午前に寄与するアサインメント
 const DAY_AM_SET = new Set([
     'day_pattern1', 'day_pattern2', 'day_pattern3', 'day_p3_visit_pm',
-    'day_am', 'day_am_visit_pm', 'late',
+    'day_am', 'day_am_visit_pm', 'late', 'early',
 ]);
 // デイ午後に寄与するアサインメント
 const DAY_PM_SET = new Set([
@@ -1166,7 +1166,16 @@ function renderCalendar(data, year, month) {
               + ` style="background:#dbeafe;color:#1d4ed8;cursor:grab">訪問（${slot === 'am' ? '午前' : '午後'}）</span>`
             : '';
         // 早番に自動で訪問（午前）は付けない（ユーザー依頼 2026-08 のルール変更）
-        const visitNote = slotNote;
+        //   ただし訪問の枠（訪問のみ／兼務）で入っている人には、分かるように札を出す
+        let autoVisitNote = '';
+        if (!slot) {
+            if (VISIT_AM_SET.has(assignment)) {
+                autoVisitNote = `<br><span class="badge" style="background:#dbeafe;color:#1d4ed8">訪問（午前）</span>`;
+            } else if (VISIT_PM_SET.has(assignment)) {
+                autoVisitNote = `<br><span class="badge" style="background:#e0e7ff;color:#4338ca">訪問（午後）</span>`;
+            }
+        }
+        const visitNote = slotNote || autoVisitNote;
         return `${badge}${bathDisplay}${phoneBadge}${parkingBadge(dateStr, s.id)}${visitNote}${deskLabel}`;
     }
 

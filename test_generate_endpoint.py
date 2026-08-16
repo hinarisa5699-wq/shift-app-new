@@ -1387,3 +1387,35 @@ def test_warnings_use_weekday_headcount(tmp_path, monkeypatch):
 
     # 「原則2名」の古い判定は、曜日ごとの設定があるときは出さない
     assert not [w for w in warns if w["warning_type"] == "over_staffed_no_day_service"]
+
+
+def test_visit_label_shown_for_visit_shifts(tmp_path, monkeypatch):
+    """訪問の枠（訪問のみ／兼務）で入っている人にも「訪問（午前）」が出る。
+
+    2026-08:「訪問午前がどこにも見えない」＝兼務(訪問→デイ)としか出ていなかった。
+    """
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+
+    js = client.get("/static/js/app.js").get_data(as_text=True)
+    assert "VISIT_AM_SET.has(assignment)" in js, "画面に訪問（午前）の札を出していない"
+    view = client.get("/view", follow_redirects=False)
+    # 閲覧アプリ側にも同じ表示がある
+    html = client.get("/view").get_data(as_text=True) if view.status_code == 200 else ""
+    if html:
+        assert "AM_CODES.indexOf(assignment)" in html
+
+
+def test_late_shift_starts_at_nine(tmp_path, monkeypatch):
+    """遅番は9:00開始。デイ午前の人数にも数える（ユーザー依頼 2026-08）。"""
+    from solver import ASSIGNMENT_TIME_RANGES, DAY_AM_ASSIGNMENTS, PRESENT_AT_9
+    import export
+
+    assert ASSIGNMENT_TIME_RANGES["late"][0] == 9 * 60, "遅番の開始が9時になっていない"
+    assert "late" in DAY_AM_ASSIGNMENTS
+    assert "late" in PRESENT_AT_9, "遅番が9時在籍に入っていない"
+    # 早番(7:30-16:30)はデイ午前・午後の両方に数える
+    assert "early" in export._DAY_AM_SET and "early" in export._DAY_PM_SET
+    assert export.ASSIGNMENT_LABELS["late"] == "遅番9:00-18:30"

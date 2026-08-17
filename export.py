@@ -1982,3 +1982,114 @@ def export_excel_group_half(
     wb.save(buf)
     buf.seek(0)
     return buf
+
+
+# ---------------------------------------------------------------------------
+# 職員のパスワードカード（ラミネート用・A4縦に6枚）
+#
+# ユーザー依頼 2026-08:「カードこの大きさにして。大きさ揃えてくれないと
+# 裏表でラミネートできない」。食事カード（Aloha食事注文のID配布PDF）を実測し、
+# 同じ寸法・同じ配置にそろえてある。
+#   カード枠 87.8 x 72.2 mm ／ 左端 14.29mm・列送り 93.94mm
+#   上端 10.05mm・段送り 78.05mm ／ 2列 x 3段 = 6枚/ページ
+# ---------------------------------------------------------------------------
+CARD_W_MM = 249.0 * 25.4 / 72.0        # 87.83
+CARD_H_MM = 204.8 * 25.4 / 72.0        # 72.25
+CARD_X0_MM = 40.5 * 25.4 / 72.0        # 14.29（左列の左端）
+CARD_Y0_MM = 28.5 * 25.4 / 72.0        # 10.05（1段目の上端）
+CARD_DX_MM = 266.3 * 25.4 / 72.0       # 93.94（列送り）
+CARD_DY_MM = 221.25 * 25.4 / 72.0      # 78.05（段送り）
+CARD_COLS = 2
+CARD_ROWS = 3
+CARD_PER_PAGE = CARD_COLS * CARD_ROWS
+
+
+def build_login_cards_pdf(cards, view_url=""):
+    """パスワードカードのPDF（A4縦・6枚/ページ）を作って bytes で返す。
+
+    cards: [{"name": 氏名, "login_id": ID, "password": パスワード}, ...]
+    view_url: 職員が開くアドレス
+    """
+    from fpdf import FPDF  # 遅延 import
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(False)
+    pdf.add_font(_PDF_FONT, "", _PDF_FONT_PATH)
+
+    ink = (17, 24, 39)          # 本文
+    muted = (107, 114, 128)     # ラベル
+    line = (156, 163, 175)      # 切り取り線
+    brand = (13, 148, 136)      # Alohaの色
+
+    def draw_card(x, y, card):
+        # 外枠（切り取り線）
+        pdf.set_draw_color(*line)
+        pdf.set_line_width(0.3)
+        pdf.rect(x, y, CARD_W_MM, CARD_H_MM)
+
+        pad = 5.0
+        cx = x + pad
+        cw = CARD_W_MM - pad * 2
+
+        # 見出し
+        pdf.set_font(_PDF_FONT, "", 12)
+        pdf.set_text_color(*brand)
+        pdf.text(cx, y + 8.5, "Alohaシフト（シフト表）")
+        pdf.set_draw_color(*line)
+        pdf.set_line_width(0.2)
+        pdf.line(cx, y + 11.0, cx + cw, y + 11.0)
+
+        # 氏名
+        pdf.set_font(_PDF_FONT, "", 14)
+        pdf.set_text_color(*ink)
+        name = str(card.get("name") or "")
+        while name and pdf.get_string_width(name + " さん") > cw:
+            name = name[:-1]
+        pdf.text(cx, y + 19.5, name + " さん")
+
+        # ログインID / パスワード
+        def field(label, value, ty):
+            pdf.set_font(_PDF_FONT, "", 8)
+            pdf.set_text_color(*muted)
+            pdf.text(cx, ty, label)
+            pdf.set_font(_PDF_FONT, "", 15)
+            pdf.set_text_color(*ink)
+            pdf.text(cx + 26.0, ty + 0.8, str(value or ""))
+
+        field("ログインID", card.get("login_id"), y + 29.0)
+        field("パスワード", card.get("password"), y + 39.0)
+
+        # 使い方
+        pdf.set_font(_PDF_FONT, "", 7.5)
+        pdf.set_text_color(*muted)
+        steps = [
+            "① このアドレスを開く",
+            "　 " + str(view_url or ""),
+            "② 上のIDとパスワードで入る（半角）",
+            "③ 自分のシフトが出ます",
+        ]
+        ty = y + 48.5
+        for s in steps:
+            t = s
+            while t and pdf.get_string_width(t) > cw:
+                t = t[:-1]
+            pdf.text(cx, ty, t)
+            ty += 4.2
+
+        pdf.set_font(_PDF_FONT, "", 7)
+        pdf.text(cx, y + CARD_H_MM - 4.0, "※ 他の人には教えないでください")
+
+    for i, card in enumerate(cards):
+        if i % CARD_PER_PAGE == 0:
+            pdf.add_page()
+        slot = i % CARD_PER_PAGE
+        col = slot % CARD_COLS
+        row = slot // CARD_COLS
+        draw_card(CARD_X0_MM + col * CARD_DX_MM,
+                  CARD_Y0_MM + row * CARD_DY_MM, card)
+
+    if not cards:
+        pdf.add_page()
+
+    out = pdf.output()
+    return bytes(out)

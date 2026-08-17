@@ -68,6 +68,13 @@
                     未発行の人にカードを発行
                 </button>
             </form>
+            <form method="POST" action="{{ url_for('staff_login_ids_renumber') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit"
+                        class="inline-flex items-center bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-6 rounded-lg transition-colors">
+                    IDを並び順で振り直す（S001…）
+                </button>
+            </form>
             <form method="POST" action="{{ url_for('staff_login_password_reissue_all') }}"
                   onsubmit="return confirm('全員のパスワードを作り直します。いま使っているパスワードは使えなくなり、新しいカードを配り直す必要があります。よろしいですか？');">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

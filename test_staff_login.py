@@ -254,7 +254,7 @@ def test_single_card_can_be_printed_for_one_staff(tmp_path, monkeypatch):
     assert len(cards) == 1                      # その人のカードだけ
     assert cards[0]["name"] == name
     body = res.data.decode("utf-8", "replace")
-    assert "カードを印刷する" in body           # 印刷ボタンがある
+    assert "印刷用PDF" in body                  # PDFダウンロードのボタンがある
     assert "/view" in body                      # 開く場所（URL）が載っている
 
     # 新しいパスワードで入れる
@@ -418,3 +418,131 @@ def test_new_staff_goes_to_the_end_of_the_order(tmp_path, monkeypatch):
     import app as app_module
     with flask_app.app_context():
         assert app_module._ordered_staff().all()[-1].name == "あとから 太郎"
+
+
+def test_login_cards_pdf_matches_meal_card_size(tmp_path, monkeypatch):
+    """カードPDFが食事カードと同じ寸法・配置になっている（裏表ラミネート用）。"""
+    import export
+
+    data = export.build_login_cards_pdf(
+        [{"name": "テスト 太郎{}".format(i), "login_id": "s{}".format(i),
+          "password": "abcd{:04d}".format(i)} for i in range(7)],
+        "https://example.invalid/view",
+    )
+    assert data[:4] == b"%PDF"
+
+    fitz = __import__("fitz")
+    doc = fitz.open(stream=data, filetype="pdf")
+    assert doc.page_count == 2, "6枚/ページで折り返していない"
+    mm = 25.4 / 72.0
+
+    page = doc[0]
+    assert abs(page.rect.width * mm - 210.0) < 0.5    # A4縦
+    assert abs(page.rect.height * mm - 297.0) < 0.5
+
+    frames = sorted(
+        (r for r in (d["rect"] for d in page.get_drawings())
+         if r.width > 200 and r.height > 100),   # 枠だけ（下線は除く）
+        key=lambda r: (round(r.y0), r.x0),
+    )
+    assert len(frames) == 6, "1ページ6枚になっていない"
+    # 食事カードPDFの実測値と同じ
+    for f in frames:
+        assert abs(f.width * mm - 87.8) < 0.2, "カード幅が87.8mmでない"
+        assert abs(f.height * mm - 72.2) < 0.2, "カード高が72.2mmでない"
+    xs = sorted({round(f.x0 * mm, 1) for f in frames})
+    ys = sorted({round(f.y0 * mm, 1) for f in frames})
+    assert xs == [14.3, 108.2], xs
+    assert ys == [10.1, 88.1, 166.2], ys
+
+
+def test_login_cards_pdf_endpoint(tmp_path, monkeypatch):
+    """カード画面からPDFをダウンロードできる。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    admin = flask_app.test_client()
+    _login(admin, "admin", "testpass")
+    issued = _issue_all(admin).issued
+
+    res = admin.post("/api/staff/login-cards.pdf", data={
+        "c_name": [c["name"] for c in issued],
+        "c_id": [c["login_id"] for c in issued],
+        "c_pw": [c["password"] for c in issued],
+    })
+    assert res.status_code == 200
+    assert res.mimetype == "application/pdf"
+    assert res.data[:4] == b"%PDF"
+
+    fitz = __import__("fitz")
+    doc = fitz.open(stream=res.data, filetype="pdf")
+    text = "".join(p.get_text() for p in doc)
+    for c in issued:
+        assert c["password"] in text, "PDFにパスワードが入っていない"
+
+
+def test_renumber_login_ids_follows_display_order(tmp_path, monkeypatch):
+    """ログインIDを並び順の番号で振り直せる（S001, S002 …）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    admin = flask_app.test_client()
+    _login(admin, "admin", "testpass")
+
+    from models import Staff
+    with flask_app.app_context():
+        ids = [s.id for s in Staff.query.order_by(Staff.id).all()]
+    # 1,2,3,5,6,7,8,9 と欠番(4)をつくる（食事カードの欠番と同じ状況）
+    numbers = [1, 2, 3, 5, 6, 7, 8, 9]
+    admin.post("/api/staff/order",
+               data={"order_{}".format(sid): str(n) for sid, n in zip(ids, numbers)},
+               follow_redirects=True)
+
+    res = admin.post("/api/staff/login-ids/renumber", follow_redirects=True)
+    assert res.status_code == 200
+
+    import app as app_module
+    with flask_app.app_context():
+        got = [(s.display_order, s.login_id) for s in app_module._ordered_staff().all()]
+    assert got == [(n, "S{:03d}".format(n)) for n in numbers], got
+
+
+def test_login_id_is_case_insensitive(tmp_path, monkeypatch):
+    """S001 でも s001 でもログインできる（カードは大文字で印刷する）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    admin = flask_app.test_client()
+    _login(admin, "admin", "testpass")
+    _issue_all(admin)
+    admin.post("/api/staff/login-ids/renumber", follow_redirects=True)
+
+    from models import Staff
+    with flask_app.app_context():
+        st = Staff.query.order_by(Staff.display_order, Staff.id).first()
+        sid, login_id = st.id, st.login_id
+    assert login_id.startswith("S"), login_id
+
+    card = _cards_of(admin.post("/api/staff/{}/login-password".format(sid)))[0]
+    assert card["login_id"] == login_id          # カードは大文字のまま
+
+    upper = flask_app.test_client()
+    assert _login(upper, login_id, card["password"]).status_code in (301, 302)
+    lower = flask_app.test_client()
+    assert _login(lower, login_id.lower(), card["password"]).status_code in (301, 302)
+
+
+def test_renumber_keeps_passwords(tmp_path, monkeypatch):
+    """IDを振り直してもパスワードは変わらない。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    admin = flask_app.test_client()
+    _login(admin, "admin", "testpass")
+    me = _issue_all(admin).issued[0]
+
+    from models import Staff
+    with flask_app.app_context():
+        sid = Staff.query.filter_by(login_id=me["login_id"]).first().id
+    admin.post("/api/staff/login-ids/renumber", follow_redirects=True)
+    with flask_app.app_context():
+        new_id = Staff.query.get(sid).login_id
+
+    guest = flask_app.test_client()
+    assert _login(guest, new_id, me["password"]).status_code in (301, 302)

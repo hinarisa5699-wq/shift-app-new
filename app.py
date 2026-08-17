@@ -60,7 +60,7 @@ from export import (
     export_excel_group_half, export_pdf_from_excel,
     parse_uploaded_shift_excel, parse_shift_cell, state_to_cell_text,
     recompute_warnings_from_shifts, ASSIGNMENT_LABELS, configure_operating_days,
-    register_day_off_requests,
+    register_day_off_requests, build_login_cards_pdf,
 )
 
 
@@ -200,14 +200,30 @@ def _staff_login_allowed(st) -> bool:
 
 
 def _normalize_login_id(raw) -> str:
-    """ログインIDを正規化（小文字・英数字とハイフン/アンダースコアのみ）。"""
-    s = (raw or "").strip().lower()
-    return re.sub(r"[^a-z0-9_-]", "", s)[:50]
+    """ログインIDを正規化（英数字とハイフン/アンダースコアのみ）。
+
+    大文字はそのまま残す（カードに S001 と印刷したいため）。
+    ログインの照合は大文字小文字を区別しないので、S001 でも s001 でも入れる。
+    """
+    s = (raw or "").strip()
+    return re.sub(r"[^A-Za-z0-9_-]", "", s)[:50]
 
 
 def _suggest_login_id(staff_id) -> str:
-    """職員のログインIDの初期値（例: s12）。"""
+    """職員のログインIDの初期値（例: s12）。
+
+    並び順に沿った S001 形式は、ログイン管理画面の「IDを振り直す」で付ける。
+    """
     return "s{}".format(int(staff_id))
+
+
+def _order_login_id(display_order) -> str:
+    """並び順の番号から作るログインID（例: 1 → S001）。
+
+    ユーザー依頼 2026-08:「ログインID上からS01で作り変え。池田友子S001 前垣茜S002」。
+    食事カードの staff001… と同じ番号になるよう、並び順の数字をそのまま使う。
+    """
+    return "S{:03d}".format(int(display_order))
 
 
 def _generate_login_password(length=8) -> str:
@@ -216,13 +232,21 @@ def _generate_login_password(length=8) -> str:
 
 
 def _login_id_taken(login_id, exclude_staff_id=None) -> bool:
-    """そのログインIDが既に他の職員に使われているか。"""
+    """そのログインIDが既に他の職員に使われているか（大文字小文字は区別しない）。"""
     if not login_id:
         return False
-    q = Staff.query.filter(Staff.login_id == login_id)
+    q = Staff.query.filter(db.func.lower(Staff.login_id) == login_id.lower())
     if exclude_staff_id is not None:
         q = q.filter(Staff.id != exclude_staff_id)
     return q.first() is not None
+
+
+def _staff_by_login_id(login_id):
+    """ログインIDから職員を探す（大文字小文字は区別しない）。"""
+    if not login_id:
+        return None
+    return Staff.query.filter(
+        db.func.lower(Staff.login_id) == login_id.lower()).first()
 
 
 def _shared_viewer_login_enabled() -> bool:
@@ -1458,8 +1482,8 @@ def create_app():
             login_staff = None
             if user is None:
                 _lid = _normalize_login_id(username)
-                if _lid and _lid not in _RESERVED_LOGIN_IDS:
-                    _cand = Staff.query.filter(Staff.login_id == _lid).first()
+                if _lid and _lid.lower() not in _RESERVED_LOGIN_IDS:
+                    _cand = _staff_by_login_id(_lid)
                     if (_cand is not None and (_cand.login_password_hash or "")
                             and check_password_hash(_cand.login_password_hash, password)):
                         if not _staff_login_allowed(_cand):
@@ -1757,6 +1781,32 @@ def create_app():
             view_url=request.host_url.rstrip("/") + url_for("view_shift"),
         )
 
+    @app.route("/api/staff/login-cards.pdf", methods=["POST"])
+    def staff_login_cards_pdf():
+        """画面に出ているパスワードカードを、ラミネート用のPDFで受け取る。
+
+        カード寸法は食事カードのPDFと同じ 87.8 x 72.2mm（A4縦に6枚）にそろえて
+        あるので、裏表を合わせてラミネートできる（ユーザー依頼 2026-08）。
+        パスワードはどこにも保存していないため、画面に出ている内容をそのまま
+        送り返してもらってPDFにする。
+        """
+        names = request.form.getlist("c_name")
+        ids = request.form.getlist("c_id")
+        pws = request.form.getlist("c_pw")
+        cards = [
+            {"name": n, "login_id": i, "password": p}
+            for n, i, p in zip(names, ids, pws)
+        ]
+        if not cards:
+            flash("PDFにするカードがありません。", "error")
+            return redirect(url_for("staff_logins"))
+        data = build_login_cards_pdf(
+            cards, request.host_url.rstrip("/") + url_for("view_shift"))
+        return send_file(
+            BytesIO(data), mimetype="application/pdf", as_attachment=True,
+            download_name="パスワードカード.pdf",
+        )
+
     def _issue_password_for(staff):
         """その職員に新しいパスワードを発行し、カード1枚分の内容を返す。"""
         if not (staff.login_id or ""):
@@ -1820,6 +1870,40 @@ def create_app():
             "{}名分のパスワードを作り直しました。前のパスワードは使えません。"
             .format(len(issued)), "success")
         return _render_login_cards(issued)
+
+    @app.route("/api/staff/login-ids/renumber", methods=["POST"])
+    def staff_login_ids_renumber():
+        """ログインIDを並び順の番号で振り直す（S001, S002 …）。
+
+        ユーザー依頼 2026-08:「ログインID上からS01で作り変え。
+        池田友子S001 前垣茜S002」。並び順の数字をそのまま使うので、
+        食事カードの staff001… と同じ番号になる（欠番もそのまま残る）。
+        パスワードは変わらないので、カードを配り直す必要があるのはIDだけ。
+        """
+        staffs = _ordered_staff().all()
+        used, changed = set(), 0
+        # 並び順が未設定(0)の職員には、いちばん大きい番号の続きを振る
+        next_no = max([int(st.display_order or 0) for st in staffs] or [0]) + 1
+        for st in staffs:
+            no = int(st.display_order or 0)
+            if no <= 0:
+                no = next_no
+                next_no += 1
+            new_id = _order_login_id(no)
+            while new_id.lower() in used:      # 並び順が重複していたらずらす
+                no = next_no
+                next_no += 1
+                new_id = _order_login_id(no)
+            used.add(new_id.lower())
+            if st.login_id != new_id:
+                st.login_id = new_id
+                changed += 1
+        db.session.commit()
+        flash(
+            "ログインIDを振り直しました（{}名を変更）。"
+            "IDが変わった職員には新しいカードをお渡しください。".format(changed),
+            "success")
+        return redirect(url_for("staff_logins"))
 
     @app.route("/api/staff/<int:staff_id>/login-password/revoke", methods=["POST"])
     def staff_login_password_revoke(staff_id):
@@ -1982,7 +2066,7 @@ def create_app():
         _lid = _normalize_login_id(request.form.get("login_id", ""))
         if not _lid:
             _lid = _suggest_login_id(staff.id)
-        if _lid in _RESERVED_LOGIN_IDS or _login_id_taken(_lid, staff.id):
+        if _lid.lower() in _RESERVED_LOGIN_IDS or _login_id_taken(_lid, staff.id):
             _lid = _suggest_login_id(staff.id)
         staff.login_id = _lid
 
@@ -2080,7 +2164,7 @@ def create_app():
             _lid = _normalize_login_id(request.form.get("login_id", ""))
             if not _lid:
                 _lid = _suggest_login_id(staff.id)
-            if _lid in _RESERVED_LOGIN_IDS:
+            if _lid.lower() in _RESERVED_LOGIN_IDS:
                 flash("そのログインIDは使えません（admin などの予約語）。", "error")
             elif _login_id_taken(_lid, staff.id):
                 flash("そのログインIDは他の職員が使っています。", "error")

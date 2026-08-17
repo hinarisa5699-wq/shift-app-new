@@ -4,11 +4,23 @@
 
 {% block content %}
 <style>
-    /* 印刷したときにカードが途中で切れないようにする */
+    /* ブラウザから直接印刷したときも、食事カードと同じ大きさで出す。
+       （ラミネート用にきっちり合わせたいときは「印刷用PDF」を使ってください） */
     @media print {
-        .login-card { break-inside: avoid; page-break-inside: avoid; }
-        .card-grid  { gap: 10mm; }
+        @page { size: A4 portrait; margin: 10mm 14mm; }
         body { background: #fff; }
+        .card-grid {
+            display: grid;
+            grid-template-columns: 87.8mm 87.8mm;
+            column-gap: 6.1mm;    /* 列送り 93.94mm - カード幅 87.8mm */
+            row-gap: 5.8mm;       /* 段送り 78.05mm - カード高 72.2mm */
+        }
+        .login-card {
+            width: 87.8mm; height: 72.2mm;
+            box-sizing: border-box;
+            break-inside: avoid; page-break-inside: avoid;
+            overflow: hidden;
+        }
     }
 </style>
 
@@ -27,19 +39,32 @@
         </p>
     </div>
     <div class="mt-4 flex flex-wrap gap-3">
-        <button type="button" onclick="window.print()"
-                class="inline-flex items-center bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors text-lg">
-            <svg class="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                      d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zM7 7h10V5a2 2 0 00-2-2H9a2 2 0 00-2 2v2z"/>
-            </svg>
-            カードを印刷する
-        </button>
+        <!-- ラミネート用PDF（食事カードと同じ 87.8×72.2mm・A4に6枚） -->
+        <form method="POST" action="{{ url_for('staff_login_cards_pdf') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            {% for c in cards %}
+            <input type="hidden" name="c_name" value="{{ c.name }}">
+            <input type="hidden" name="c_id" value="{{ c.login_id }}">
+            <input type="hidden" name="c_pw" value="{{ c.password }}">
+            {% endfor %}
+            <button type="submit"
+                    class="inline-flex items-center bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors text-lg">
+                <svg class="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zM7 7h10V5a2 2 0 00-2-2H9a2 2 0 00-2 2v2z"/>
+                </svg>
+                印刷用PDFをダウンロード（ラミネート用）
+            </button>
+        </form>
         <a href="{{ url_for('staff_logins') }}"
            class="inline-flex items-center bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-6 rounded-lg transition-colors">
             ログイン管理にもどる
         </a>
     </div>
+    <p class="text-sm text-gray-600 mt-2">
+        PDFのカードは <strong>87.8 × 72.2 mm</strong>（A4に6枚）で、
+        <strong>食事カードとまったく同じ大きさ・同じ位置</strong>です。裏表を合わせてラミネートできます。
+    </p>
 </div>
 
 {% if not cards %}

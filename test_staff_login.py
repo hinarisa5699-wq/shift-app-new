@@ -365,3 +365,56 @@ def test_cards_are_not_kept_in_the_session_cookie(tmp_path, monkeypatch):
     body = admin.get("/staff/logins").data.decode("utf-8", "replace")
     for row in issued:
         assert row["password"] not in body
+
+
+def test_staff_display_order_applies_everywhere(tmp_path, monkeypatch):
+    """職員一覧で決めた並び順が、シフト表（閲覧API）の職員順にも反映される。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    admin = flask_app.test_client()
+    _login(admin, "admin", "testpass")
+
+    from models import Staff
+    with flask_app.app_context():
+        ids = [s.id for s in Staff.query.order_by(Staff.id).all()]
+
+    # 逆順に並べ替える
+    data = {"order_{}".format(sid): str(len(ids) - i) for i, sid in enumerate(ids)}
+    res = admin.post("/api/staff/order", data=data, follow_redirects=True)
+    assert res.status_code == 200
+
+    import app as app_module
+    with flask_app.app_context():
+        ordered = [s.id for s in app_module._ordered_staff().all()]
+    assert ordered == list(reversed(ids))
+
+    # 職員一覧の表示もその順番
+    body = admin.get("/staff").data.decode("utf-8", "replace")
+    with flask_app.app_context():
+        names = [Staff.query.get(sid).name for sid in reversed(ids)]
+    positions = [body.index(n) for n in names]
+    assert positions == sorted(positions), "職員一覧が並び順どおりに出ていない"
+
+
+def test_new_staff_goes_to_the_end_of_the_order(tmp_path, monkeypatch):
+    """あとから追加した職員は、並び順のいちばん最後に入る。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    admin = flask_app.test_client()
+    _login(admin, "admin", "testpass")
+
+    from models import Staff
+    with flask_app.app_context():
+        ids = [s.id for s in Staff.query.order_by(Staff.id).all()]
+    admin.post("/api/staff/order",
+               data={"order_{}".format(sid): str(i + 1) for i, sid in enumerate(ids)},
+               follow_redirects=True)
+
+    admin.post("/api/staff", data={
+        "name": "あとから 太郎", "job_category": "caregiver",
+        "employment_type": "パート", "available_days": "0",
+    }, follow_redirects=True)
+
+    import app as app_module
+    with flask_app.app_context():
+        assert app_module._ordered_staff().all()[-1].name == "あとから 太郎"

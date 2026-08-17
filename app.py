@@ -157,11 +157,20 @@ def _is_staff_active_in_month(st, year, month) -> bool:
     return (rd.year, rd.month) >= (int(year), int(month))
 
 
+def _ordered_staff(query=None):
+    """職員を表示順で並べたクエリ。
+
+    display_order（職員一覧で決めた並び順）が小さいほど上。同じ値なら登録順(id)。
+    ユーザー依頼 2026-08:「（食事カードと）この順番で並べて」。
+    """
+    q = query if query is not None else Staff.query
+    return q.order_by(Staff.display_order, Staff.id)
+
+
 def _active_staff_for_month(year, month, base_query=None):
-    """対象年月に在籍している職員の一覧（id順）。"""
-    q = base_query if base_query is not None else Staff.query
+    """対象年月に在籍している職員の一覧（表示順）。"""
     return [
-        st for st in q.order_by(Staff.id).all()
+        st for st in _ordered_staff(base_query).all()
         if _is_staff_active_in_month(st, year, month)
     ]
 
@@ -537,6 +546,9 @@ def _run_migrations(app):
     if "retired_date" not in columns:
         # 退職月（この月まではシフト表に出す）
         cursor.execute("ALTER TABLE staff ADD COLUMN retired_date DATE")
+    if "display_order" not in columns:
+        # 一覧・シフト表・印刷での並び順（0=未設定。同じ値なら登録順）
+        cursor.execute("ALTER TABLE staff ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0")
     if "login_id" not in columns:
         # 職員ごとのログインID（空＝ログイン不可）
         cursor.execute("ALTER TABLE staff ADD COLUMN login_id VARCHAR(50) NOT NULL DEFAULT ''")
@@ -1674,7 +1686,7 @@ def create_app():
         query = Staff.query
         if not show_inactive:
             query = query.filter_by(on_leave=False, retired=False)
-        staffs = query.order_by(Staff.id).all()
+        staffs = _ordered_staff(query).all()
         inactive_count = Staff.query.filter(
             db.or_(Staff.on_leave == True, Staff.retired == True)  # noqa: E712
         ).count()
@@ -1682,6 +1694,32 @@ def create_app():
             "staff_list.html", staff_list=staffs,
             show_inactive=show_inactive, inactive_count=inactive_count,
         )
+
+    @app.route("/api/staff/order", methods=["POST"])
+    def staff_order_update():
+        """職員一覧で入力した並び順をまとめて保存する。
+
+        ユーザー依頼 2026-08:「（食事カードと）この順番で並べて」。
+        シフト表・閲覧アプリ・印刷もこの順番になる。
+        """
+        changed = 0
+        for staff in Staff.query.all():
+            raw = request.form.get("order_{}".format(staff.id))
+            if raw is None:
+                continue
+            n = safe_int(raw, None)
+            if n is None:
+                continue
+            n = max(0, min(999, n))
+            if staff.display_order != n:
+                staff.display_order = n
+                changed += 1
+        db.session.commit()
+        flash("並び順を保存しました（{}名を変更）。".format(changed), "success")
+        return redirect(url_for(
+            "staff_list",
+            **({"show_inactive": 1} if request.args.get("show_inactive") == "1" else {})
+        ))
 
     # -----------------------------------------------------------------
     # 職員ごとのログイン管理（ユーザー依頼 2026-08:「パスワード1人ずつにしたら？」）
@@ -1692,7 +1730,7 @@ def create_app():
         平文パスワードはここには出さない。発行したときのカード画面にだけ出す。
         """
         staffs = [
-            st for st in Staff.query.order_by(Staff.id).all()
+            st for st in _ordered_staff().all()
             if _staff_login_allowed(st)
         ]
         changed = False
@@ -1754,7 +1792,7 @@ def create_app():
     def staff_login_password_issue_all():
         """まだパスワードを発行していない職員に、まとめて発行してカードを出す。"""
         issued = []
-        for staff in Staff.query.order_by(Staff.id).all():
+        for staff in _ordered_staff().all():
             if not _staff_login_allowed(staff):
                 continue          # 休職中・退職者には発行しない
             if staff.login_password_hash:
@@ -1773,7 +1811,7 @@ def create_app():
     def staff_login_password_reissue_all():
         """在籍中の全員に新しいパスワードを発行し直して、全員分のカードを出す。"""
         issued = []
-        for staff in Staff.query.order_by(Staff.id).all():
+        for staff in _ordered_staff().all():
             if not _staff_login_allowed(staff):
                 continue
             issued.append(_issue_password_for(staff))
@@ -1934,6 +1972,10 @@ def create_app():
         )
         db.session.add(staff)
         db.session.flush()  # IDを取得
+
+        # 並び順は既定でいちばん最後（0のままだと先頭に来てしまうため）
+        _max_order = db.session.query(db.func.max(Staff.display_order)).scalar() or 0
+        staff.display_order = int(_max_order) + 1
 
         # ログインID（未入力なら s+職員ID を自動で割り当てる）。
         #   パスワードは別途「発行」を押したときに作る（未発行の間はログイン不可）。
@@ -2108,7 +2150,7 @@ def create_app():
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(STAFF_CSV_COLUMNS)
-        for s in Staff.query.order_by(Staff.id).all():
+        for s in _ordered_staff().all():
             has_counsel = "counselor" in qual_codes.get(s.id, [])
             # 資格列は相談員を除外（相談員は can_counsel 列で管理）
             names_excl = [n for n in qual_names.get(s.id, []) if n != "相談員"]
@@ -2268,7 +2310,7 @@ def create_app():
         for r in DayOffRequest.query.all():
             offs.setdefault(r.staff_id, []).append(r.date.isoformat())
         out = []
-        for s in Staff.query.filter_by(staff_group="cooking").order_by(Staff.id).all():
+        for s in _ordered_staff(Staff.query.filter_by(staff_group="cooking")).all():
             out.append({
                 "id": s.id,
                 "name": s.name,
@@ -4335,7 +4377,8 @@ def create_app():
         if year and month:
             staffs = _active_staff_for_month(year, month)
         else:
-            staffs = Staff.query.filter_by(on_leave=False, retired=False).order_by(Staff.id).all()
+            staffs = _ordered_staff(
+                Staff.query.filter_by(on_leave=False, retired=False)).all()
         if group == "cooking":
             return [s for s in staffs if s.staff_group == "cooking"]
         return [s for s in staffs if s.staff_group != "cooking"]
@@ -4437,7 +4480,8 @@ def create_app():
         qm, qn, qc = _build_staff_qualification_maps()
         rows = (
             _active_staff_for_month(year, month) if (year and month)
-            else Staff.query.filter_by(on_leave=False, retired=False).all()
+            else _ordered_staff(
+                Staff.query.filter_by(on_leave=False, retired=False)).all()
         )
         return [
             {"id": s.id, "name": s.name,

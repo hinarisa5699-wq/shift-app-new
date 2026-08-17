@@ -191,11 +191,31 @@ function staffCsvConfirm(form) {
         </a>
     </div>
 {% else %}
+    <!-- 並び順（表の中の入力欄は form 属性でこのフォームに紐づける） -->
+    <form id="order-form" method="POST" action="{{ url_for('staff_order_update') }}"
+          class="bg-white rounded-xl shadow-md p-4 mb-4 flex flex-wrap items-center gap-4">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="flex-1 min-w-[16rem]">
+            <h2 class="text-lg font-bold text-primary-800">並び順</h2>
+            <p class="text-sm text-gray-600">
+                左の「順」に 1・2・3… と数字を入れて保存すると、シフト表・閲覧アプリ・印刷もこの順番になります
+                （同じ数字のときは登録順）。
+            </p>
+        </div>
+        <button type="submit"
+                class="inline-flex items-center bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors">
+            並び順を保存
+        </button>
+    </form>
+
     <div class="bg-white rounded-xl shadow-md overflow-hidden">
         <div class="overflow-x-auto">
             <table class="min-w-full divide-y divide-gray-200">
                 <thead class="bg-primary-50">
                     <tr>
+                        <th class="px-3 py-4 text-center text-sm font-bold text-primary-800 uppercase tracking-wider">
+                            順
+                        </th>
                         <th class="px-6 py-4 text-left text-sm font-bold text-primary-800 uppercase tracking-wider">
                             氏名
                         </th>
@@ -225,6 +245,13 @@ function staffCsvConfirm(form) {
                 <tbody class="bg-white divide-y divide-gray-200">
                     {% for staff in staff_list %}
                     <tr class="hover:bg-gray-50 transition-colors">
+                        <td class="px-3 py-4 whitespace-nowrap text-center">
+                            <input type="number" min="0" max="999" step="1"
+                                   form="order-form"
+                                   name="order_{{ staff.id }}"
+                                   value="{{ staff.display_order or loop.index }}"
+                                   class="w-16 px-2 py-2 text-center text-base border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
+                        </td>
                         <td class="px-6 py-4 whitespace-nowrap">
                             <span class="text-base font-semibold text-gray-900">{{ staff.name }}{% if staff.has_phone_duty %} <span class="text-red-500" title="オンコール担当者">★</span>{% endif %}</span>
                             {% if staff.on_leave %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-amber-200 text-amber-900 ml-2" title="休職中（生成・印刷の対象外）">休職中</span>{% endif %}

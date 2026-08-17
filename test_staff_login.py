@@ -11,7 +11,7 @@ from test_generate_endpoint import _make_app, _seed, _login
 
 # 発行後に出るパスワードカード1枚から「氏名／ID／パスワード」を読み取る
 _CARD = re.compile(
-    r'text-2xl font-bold text-gray-900 mb-4">(.+?) さん</p>.*?'
+    r'text-2xl font-bold text-gray-900">(.+?) さん</p>.*?'
     r'tracking-wider">\s*([A-Za-z0-9_-]+)\s*</td>.*?'
     r'tracking-wider">\s*([A-Za-z0-9_-]+)\s*</td>',
     re.S,
@@ -546,3 +546,58 @@ def test_renumber_keeps_passwords(tmp_path, monkeypatch):
 
     guest = flask_app.test_client()
     assert _login(guest, new_id, me["password"]).status_code in (301, 302)
+
+
+def test_login_card_pdf_has_qr_code(tmp_path, monkeypatch):
+    """カードPDFにQRコードが入っていて、開くアドレスが正しく入っている。"""
+    import segno
+    import export
+
+    url = "https://example.invalid/view"
+    data = export.build_login_cards_pdf(
+        [{"name": "テスト 太郎", "login_id": "S001", "password": "abcd1234"}], url)
+
+    fitz = __import__("fitz")
+    doc = fitz.open(stream=data, filetype="pdf")
+    page = doc[0]
+
+    # QRのマス目を、描かれた黒い四角から読み直して照合する
+    expect = [list(r) for r in segno.make(url, error="m").matrix]
+    n = len(expect)
+    mm = 25.4 / 72.0
+    qr_x = export.CARD_X0_MM + export.CARD_W_MM - 5.0 - 23.0
+    qr_y = export.CARD_Y0_MM + 14.5
+    cell = 23.0 / n
+
+    black = [d["rect"] for d in page.get_drawings() if d.get("fill")]
+    assert black, "QRの黒い四角が1つも描かれていない"
+
+    def is_black(r, c):
+        px = (qr_x + (c + 0.5) * cell) / mm
+        py = (qr_y + (r + 0.5) * cell) / mm
+        return any(rect.x0 <= px <= rect.x1 and rect.y0 <= py <= rect.y1
+                   for rect in black)
+
+    wrong = sum(1 for r in range(n) for c in range(n)
+                if is_black(r, c) != expect[r][c])
+    assert wrong == 0, "QRのマス目が{}個ちがう".format(wrong)
+
+
+def test_login_card_qr_works_without_segno(tmp_path, monkeypatch):
+    """QRのライブラリが無くても、カードPDF自体は作れる（落ちない）。"""
+    import builtins
+    import export
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **kw):
+        if name == "segno":
+            raise ImportError("no segno")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    data = export.build_login_cards_pdf(
+        [{"name": "テスト 太郎", "login_id": "S001", "password": "abcd1234"}],
+        "https://example.invalid/view")
+    assert data[:4] == b"%PDF"
+    assert export.qr_data_uri("https://example.invalid/view") == ""

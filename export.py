@@ -2004,6 +2004,35 @@ CARD_ROWS = 3
 CARD_PER_PAGE = CARD_COLS * CARD_ROWS
 
 
+def _qr_matrix(text):
+    """QRコードの白黒マス目を [[bool,...],...] で返す。作れなければ None。
+
+    画像ライブラリを使わず、PDFに四角を並べて描くためのデータだけを取り出す。
+    """
+    if not text:
+        return None
+    try:
+        import segno
+    except ImportError:      # QRなしでもカード自体は作れるようにする
+        return None
+    try:
+        qr = segno.make(str(text), error="m")
+        return [list(row) for row in qr.matrix]
+    except Exception:
+        return None
+
+
+def qr_data_uri(text, scale=4):
+    """QRコードを data: URI（SVG）で返す。画面のカード表示用。作れなければ ""。"""
+    if not text:
+        return ""
+    try:
+        import segno
+        return segno.make(str(text), error="m").svg_data_uri(scale=scale, border=1)
+    except Exception:
+        return ""
+
+
 def build_login_cards_pdf(cards, view_url=""):
     """パスワードカードのPDF（A4縦・6枚/ページ）を作って bytes で返す。
 
@@ -2021,6 +2050,28 @@ def build_login_cards_pdf(cards, view_url=""):
     line = (156, 163, 175)      # 切り取り線
     brand = (13, 148, 136)      # Alohaの色
 
+    qr_matrix = _qr_matrix(view_url)
+
+    def draw_qr(x, y, size):
+        """QRコードを塗りつぶしの四角で描く（画像を作らずPDFに直接描画）。"""
+        if not qr_matrix:
+            return
+        n = len(qr_matrix)
+        cell = size / n
+        pdf.set_fill_color(0, 0, 0)
+        for r, rowbits in enumerate(qr_matrix):
+            c = 0
+            while c < n:
+                if not rowbits[c]:
+                    c += 1
+                    continue
+                run = c
+                while run < n and rowbits[run]:   # 横に続く黒はまとめて1つの矩形に
+                    run += 1
+                pdf.rect(x + c * cell, y + r * cell,
+                         (run - c) * cell, cell, style="F")
+                c = run
+
     def draw_card(x, y, card):
         # 外枠（切り取り線）
         pdf.set_draw_color(*line)
@@ -2031,6 +2082,18 @@ def build_login_cards_pdf(cards, view_url=""):
         cx = x + pad
         cw = CARD_W_MM - pad * 2
 
+        # QRコード（右上）。読み取ればログイン画面が開く
+        qr_size = 23.0
+        qr_x = x + CARD_W_MM - pad - qr_size
+        qr_y = y + 14.5
+        draw_qr(qr_x, qr_y, qr_size)
+        pdf.set_font(_PDF_FONT, "", 6.5)
+        pdf.set_text_color(*muted)
+        pdf.text(qr_x, qr_y + qr_size + 3.0, "スマホでこれを読み取る")
+
+        # 文字を書ける幅（QRの左側まで）
+        tw = qr_x - cx - 3.0
+
         # 見出し
         pdf.set_font(_PDF_FONT, "", 12)
         pdf.set_text_color(*brand)
@@ -2039,13 +2102,21 @@ def build_login_cards_pdf(cards, view_url=""):
         pdf.set_line_width(0.2)
         pdf.line(cx, y + 11.0, cx + cw, y + 11.0)
 
-        # 氏名
-        pdf.set_font(_PDF_FONT, "", 14)
-        pdf.set_text_color(*ink)
-        name = str(card.get("name") or "")
-        while name and pdf.get_string_width(name + " さん") > cw:
-            name = name[:-1]
-        pdf.text(cx, y + 19.5, name + " さん")
+        def fit_text(tx, ty, text, max_w, fs, color, min_fs=5.0):
+            """幅に収まるまで文字を小さくして書く（切り捨てない）。"""
+            text = str(text or "")
+            if not text:
+                return
+            size = fs
+            pdf.set_font(_PDF_FONT, "", size)
+            while size > min_fs and pdf.get_string_width(text) > max_w:
+                size -= 0.25
+                pdf.set_font(_PDF_FONT, "", size)
+            pdf.set_text_color(*color)
+            pdf.text(tx, ty, text)
+
+        # 氏名（長い名前は自動で小さくする）
+        fit_text(cx, y + 19.0, str(card.get("name") or "") + " さん", tw, 13, ink)
 
         # ログインID / パスワード
         def field(label, value, ty):
@@ -2054,30 +2125,17 @@ def build_login_cards_pdf(cards, view_url=""):
             pdf.text(cx, ty, label)
             pdf.set_font(_PDF_FONT, "", 15)
             pdf.set_text_color(*ink)
-            pdf.text(cx + 26.0, ty + 0.8, str(value or ""))
+            pdf.text(cx, ty + 7.0, str(value or ""))
 
-        field("ログインID", card.get("login_id"), y + 29.0)
-        field("パスワード", card.get("password"), y + 39.0)
+        field("ログインID", card.get("login_id"), y + 27.0)
+        field("パスワード", card.get("password"), y + 42.0)
 
-        # 使い方
-        pdf.set_font(_PDF_FONT, "", 7.5)
-        pdf.set_text_color(*muted)
-        steps = [
-            "① このアドレスを開く",
-            "　 " + str(view_url or ""),
-            "② 上のIDとパスワードで入る（半角）",
-            "③ 自分のシフトが出ます",
-        ]
-        ty = y + 48.5
-        for s in steps:
-            t = s
-            while t and pdf.get_string_width(t) > cw:
-                t = t[:-1]
-            pdf.text(cx, ty, t)
-            ty += 4.2
-
-        pdf.set_font(_PDF_FONT, "", 7)
-        pdf.text(cx, y + CARD_H_MM - 4.0, "※ 他の人には教えないでください")
+        # 使い方（幅に入らなければ自動で小さくなる）
+        ty = y + CARD_H_MM - 12.0
+        fit_text(cx, ty, "① QRを読み取る　② 上のIDとパスワードで入る（半角）　③ 自分のシフトが出ます",
+                 cw, 7.5, muted)
+        fit_text(cx, ty + 4.0, "QRが使えないとき: " + str(view_url or ""), cw, 7.0, muted)
+        fit_text(cx, ty + 8.5, "※ 他の人には教えないでください", cw, 7.0, muted)
 
     for i, card in enumerate(cards):
         if i % CARD_PER_PAGE == 0:

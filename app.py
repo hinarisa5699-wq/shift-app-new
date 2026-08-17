@@ -60,7 +60,7 @@ from export import (
     export_excel_group_half, export_pdf_from_excel,
     parse_uploaded_shift_excel, parse_shift_cell, state_to_cell_text,
     recompute_warnings_from_shifts, ASSIGNMENT_LABELS, configure_operating_days,
-    register_day_off_requests, build_login_cards_pdf,
+    register_day_off_requests, build_login_cards_pdf, qr_data_uri,
 )
 
 
@@ -1775,10 +1775,12 @@ def create_app():
 
         平文パスワードはこの応答のHTMLにしか載せない。保存はしない。
         """
+        view_url = request.host_url.rstrip("/") + url_for("view_shift")
         return render_template(
             "staff_login_cards.html",
             cards=cards,
-            view_url=request.host_url.rstrip("/") + url_for("view_shift"),
+            view_url=view_url,
+            qr_uri=qr_data_uri(view_url),
         )
 
     @app.route("/api/staff/login-cards.pdf", methods=["POST"])

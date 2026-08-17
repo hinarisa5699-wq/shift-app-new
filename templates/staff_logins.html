@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+
+{% block title %}職員ログインの管理 - シフト自動作成くん{% endblock %}
+
+{% block content %}
+<div class="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-8">
+    <div>
+        <h1 class="text-3xl font-bold text-primary-800 mb-1">職員ログインの管理</h1>
+        <p class="text-gray-600 text-lg">職員がシフトを見るときの、1人ずつのIDとパスワードです。</p>
+    </div>
+    <a href="{{ url_for('staff_list') }}"
+       class="mt-4 sm:mt-0 inline-flex items-center bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-4 rounded-lg transition-colors text-sm">
+        職員一覧にもどる
+    </a>
+</div>
+
+<!-- 使い方 -->
+<div class="bg-blue-50 border border-blue-200 rounded-xl p-6 mb-6">
+    <h2 class="text-lg font-bold text-blue-900 mb-2">手順</h2>
+    <ol class="list-decimal ml-6 space-y-1 text-gray-800">
+        <li>「未発行の人にカードを発行」を押して、全員分のID・パスワードを作る</li>
+        <li>出てきた<strong>パスワードカード</strong>を印刷して、切って本人にお渡しする</li>
+        <li>全員に渡し終わったら、下の「共通パスワード」を止める</li>
+    </ol>
+    <p class="text-sm text-gray-700 mt-3">
+        職員を追加したとき・ログインIDを変えたときは、その人の
+        <strong>「カードを発行」</strong>を押すと<strong>そのカード1枚だけ</strong>印刷できます。
+    </p>
+    <p class="text-sm text-gray-700 mt-2">
+        退職した職員は、退職月の翌月から<strong>自動的にログインできなくなります</strong>。
+        すぐに止めたいときは、その人の「停止」を押してください。
+    </p>
+    <p class="text-sm text-red-700 mt-2">
+        ⚠ パスワードは暗号化して保存するため、あとから見ることはできません。
+        なくしたときは「カードを発行」で作り直してください。
+    </p>
+</div>
+
+<!-- 共通パスワードの状態 -->
+<div class="bg-white rounded-xl shadow-md p-6 mb-6">
+    <h2 class="text-lg font-bold text-primary-800 mb-2">共通パスワード（旧方式）</h2>
+    {% if shared_enabled %}
+    <p class="text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+        いまは<strong>使える状態</strong>です。共通パスワードを知っている人（退職者を含む）は誰でも見られます。
+        全員に個人のID・パスワードを配り終えたら、条件設定の
+        「共通の閲覧パスワードを使う」のチェックを外してください。
+    </p>
+    {% else %}
+    <p class="text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3">
+        <strong>停止中</strong>です。職員ごとのID・パスワードでしかログインできません。
+    </p>
+    {% endif %}
+    <a href="{{ url_for('settings') }}"
+       class="inline-block mt-3 text-primary-700 hover:text-primary-900 font-semibold underline">
+        条件設定を開く
+    </a>
+</div>
+
+<!-- 職員ごとの状態 -->
+<div class="bg-white rounded-xl shadow-md overflow-hidden">
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between p-6 pb-4 gap-3">
+        <h2 class="text-lg font-bold text-primary-800">在籍中の職員（{{ staff_list|length }}名）</h2>
+        <div class="flex flex-wrap gap-3">
+            <form method="POST" action="{{ url_for('staff_login_password_issue_all') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit"
+                        class="inline-flex items-center bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors">
+                    未発行の人にカードを発行
+                </button>
+            </form>
+            <form method="POST" action="{{ url_for('staff_login_password_reissue_all') }}"
+                  onsubmit="return confirm('全員のパスワードを作り直します。いま使っているパスワードは使えなくなり、新しいカードを配り直す必要があります。よろしいですか？');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit"
+                        class="inline-flex items-center bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-6 rounded-lg transition-colors">
+                    全員のカードを作り直す
+                </button>
+            </form>
+        </div>
+    </div>
+    <div class="overflow-x-auto">
+        <table class="w-full text-left border-collapse">
+            <thead>
+                <tr class="bg-gray-50">
+                    <th class="px-4 py-3 text-sm font-bold text-gray-700 border-b">氏名</th>
+                    <th class="px-4 py-3 text-sm font-bold text-gray-700 border-b">ログインID</th>
+                    <th class="px-4 py-3 text-sm font-bold text-gray-700 border-b">パスワード</th>
+                    <th class="px-4 py-3 text-sm font-bold text-gray-700 border-b">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for st in staff_list %}
+                <tr class="border-b hover:bg-gray-50">
+                    <td class="px-4 py-3 text-base font-semibold text-gray-900">{{ st.name }}</td>
+                    <td class="px-4 py-3 text-base font-mono text-gray-900">{{ st.login_id }}</td>
+                    <td class="px-4 py-3 text-sm">
+                        {% if st.login_password_hash %}
+                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800">
+                            発行済み
+                        </span>
+                        {% if st.login_password_set_at %}
+                        <span class="text-gray-500 ml-2">{{ st.login_password_set_at.strftime('%Y/%m/%d') }}</span>
+                        {% endif %}
+                        {% else %}
+                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-bold bg-gray-200 text-gray-700">
+                            未発行（ログイン不可）
+                        </span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-3">
+                        <div class="flex flex-wrap gap-2">
+                            <form method="POST"
+                                  action="{{ url_for('staff_login_password_issue', staff_id=st.id) }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit"
+                                        class="bg-primary-600 hover:bg-primary-700 text-white text-sm font-bold py-2 px-4 rounded-lg transition-colors">
+                                    {% if st.login_password_hash %}カードを再発行{% else %}カードを発行{% endif %}
+                                </button>
+                            </form>
+                            {% if st.login_password_hash %}
+                            <form method="POST"
+                                  action="{{ url_for('staff_login_password_revoke', staff_id=st.id) }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit"
+                                        class="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-bold py-2 px-4 rounded-lg transition-colors">
+                                    停止
+                                </button>
+                            </form>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

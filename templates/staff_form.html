@@ -30,6 +30,58 @@
                    placeholder="例: 山田 花子">
         </div>
 
+        <!-- シフト閲覧アプリのログイン -->
+        <div class="mb-6 p-4 bg-sky-50 border border-sky-200 rounded-lg">
+            <label for="login_id" class="block text-lg font-semibold text-gray-700 mb-2">
+                ログインID（シフト閲覧アプリ）
+            </label>
+            <input type="text" id="login_id" name="login_id"
+                   value="{{ staff.login_id if staff else '' }}"
+                   class="w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500"
+                   placeholder="空欄なら自動（例: s12）">
+            <p class="text-gray-600 text-sm mt-1">
+                半角の英数字・ハイフン・アンダースコアが使えます。空欄にすると自動で決まります。
+            </p>
+            {% if staff %}
+            <p class="text-sm mt-3">
+                パスワード:
+                {% if staff.login_password_hash %}
+                <span class="font-bold text-emerald-700">発行済み</span>
+                {% else %}
+                <span class="font-bold text-gray-600">未発行（この職員はログインできません）</span>
+                {% endif %}
+                <a href="{{ url_for('staff_logins') }}"
+                   class="ml-2 text-primary-700 hover:text-primary-900 underline font-semibold">
+                    ログイン管理を開く
+                </a>
+            </p>
+            <p class="text-gray-600 text-xs mt-2">
+                ※ ログインIDを変えたときは、下のボタンで新しいカードを1枚だけ印刷して本人にお渡しください
+                （IDを変えても古いカードのIDでは入れなくなります）。
+            </p>
+            {% endif %}
+        </div>
+
+        {% if staff %}
+        <!-- パスワードカードを1枚だけ発行して印刷する（職員の追加・ID変更のとき） -->
+        <div class="mb-6 -mt-3 ml-1">
+            <button type="submit"
+                    formaction="{{ url_for('staff_login_password_issue', staff_id=staff.id) }}"
+                    formnovalidate
+                    class="inline-flex items-center bg-sky-600 hover:bg-sky-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors">
+                <svg class="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zM7 7h10V5a2 2 0 00-2-2H9a2 2 0 00-2 2v2z"/>
+                </svg>
+                この人のパスワードカードを発行して印刷
+            </button>
+            <p class="text-gray-500 text-xs mt-2">
+                押すと新しいパスワードが作られ、カード1枚が表示されます（前のパスワードは使えなくなります）。
+                ページ上部の編集内容はまだ保存されないので、先に「更新する」で保存してから押してください。
+            </p>
+        </div>
+        {% endif %}
+
         <!-- 休職中 -->
         <div class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
             <label class="flex items-center cursor-pointer">

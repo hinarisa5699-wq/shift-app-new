@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import threading
 import uuid
@@ -163,6 +164,64 @@ def _active_staff_for_month(year, month, base_query=None):
         st for st in q.order_by(Staff.id).all()
         if _is_staff_active_in_month(st, year, month)
     ]
+
+
+# ---------------------------------------------------------------------------
+# 職員ごとのログイン（ユーザー依頼 2026-08:「パスワード1人ずつにしたら？」）
+#
+# 共通パスワードだと、退職した人がパスワードを覚えている限り見られてしまう。
+# 1人1アカウントにして、休職中・退職月を過ぎた職員はログインさせない。
+# ---------------------------------------------------------------------------
+# 役割アカウントと衝突するIDは職員には使わせない
+_RESERVED_LOGIN_IDS = {"admin", "saseki", "yakuin", "staff", "jimu", "root", "test"}
+# 発行するパスワードに使う文字（0/O/1/l など読み間違えやすいものは除く）
+_PW_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+
+
+def _staff_login_allowed(st) -> bool:
+    """その職員が「いま」ログインしてよいか。
+
+    休職中はログイン不可。退職は退職月まで可（翌月から自動的に入れなくなる）。
+    退職月が空欄なら即ログイン不可。
+    """
+    if st is None:
+        return False
+    today = _now_jst().date()
+    return _is_staff_active_in_month(st, today.year, today.month)
+
+
+def _normalize_login_id(raw) -> str:
+    """ログインIDを正規化（小文字・英数字とハイフン/アンダースコアのみ）。"""
+    s = (raw or "").strip().lower()
+    return re.sub(r"[^a-z0-9_-]", "", s)[:50]
+
+
+def _suggest_login_id(staff_id) -> str:
+    """職員のログインIDの初期値（例: s12）。"""
+    return "s{}".format(int(staff_id))
+
+
+def _generate_login_password(length=8) -> str:
+    """配布用のパスワードを作る（読み間違えにくい英数字）。"""
+    return "".join(secrets.choice(_PW_ALPHABET) for _ in range(length))
+
+
+def _login_id_taken(login_id, exclude_staff_id=None) -> bool:
+    """そのログインIDが既に他の職員に使われているか。"""
+    if not login_id:
+        return False
+    q = Staff.query.filter(Staff.login_id == login_id)
+    if exclude_staff_id is not None:
+        q = q.filter(Staff.id != exclude_staff_id)
+    return q.first() is not None
+
+
+def _shared_viewer_login_enabled() -> bool:
+    """共通の閲覧アカウント(staff)を今も使うか（設定画面で切り替え）。"""
+    st = ShiftSettings.query.first()
+    if st is None:
+        return True
+    return bool(getattr(st, "shared_viewer_login_enabled", True))
 
 
 def _parse_wd_counts(raw):
@@ -478,6 +537,16 @@ def _run_migrations(app):
     if "retired_date" not in columns:
         # 退職月（この月まではシフト表に出す）
         cursor.execute("ALTER TABLE staff ADD COLUMN retired_date DATE")
+    if "login_id" not in columns:
+        # 職員ごとのログインID（空＝ログイン不可）
+        cursor.execute("ALTER TABLE staff ADD COLUMN login_id VARCHAR(50) NOT NULL DEFAULT ''")
+    if "login_password_hash" not in columns:
+        # 職員ごとのパスワード（ハッシュ。空＝未発行＝ログイン不可）
+        cursor.execute(
+            "ALTER TABLE staff ADD COLUMN login_password_hash VARCHAR(255) NOT NULL DEFAULT ''"
+        )
+    if "login_password_set_at" not in columns:
+        cursor.execute("ALTER TABLE staff ADD COLUMN login_password_set_at DATETIME")
     if "backup_only" not in columns:
         # 応援職員（人手が足りないときだけ入れる）
         cursor.execute("ALTER TABLE staff ADD COLUMN backup_only BOOLEAN NOT NULL DEFAULT 0")
@@ -646,6 +715,12 @@ def _run_migrations(app):
         # 役員用ページのパスワード（ハッシュ）
         cursor.execute(
             "ALTER TABLE shift_settings ADD COLUMN exec_password_hash VARCHAR(255) NOT NULL DEFAULT ''"
+        )
+    if "shared_viewer_login_enabled" not in columns:
+        # 共通の閲覧アカウント(staff)を使うか（既定ON＝従来どおり）
+        cursor.execute(
+            "ALTER TABLE shift_settings ADD COLUMN shared_viewer_login_enabled "
+            "BOOLEAN NOT NULL DEFAULT 1"
         )
     if "oncall_requires_work" not in columns:
         # オンコールは出勤している職員にだけ割り当てる（既定ON）
@@ -1303,6 +1378,21 @@ def create_app():
             if request.path.startswith("/api/"):
                 return jsonify({"error": "ログインが必要です", "login_required": True}), 401
             return redirect(url_for("login", next=request.path))
+        # 職員アカウントは毎回「今も在籍しているか」を見る。
+        #   退職月を過ぎた／休職中になった人は、ログインしっぱなしの端末でも
+        #   次のアクセスで自動的にログアウトされる（ユーザー依頼 2026-08:
+        #   「ずっと見られちゃうのは困ります」）。
+        _sid = session.get("staff_id")
+        if _sid:
+            _st = Staff.query.get(_sid)
+            if not _staff_login_allowed(_st) or not (_st.login_password_hash or ""):
+                session.clear()
+                if request.path.startswith("/api/"):
+                    return jsonify(
+                        {"error": "ログインが必要です", "login_required": True}
+                    ), 401
+                flash("このアカウントは使えなくなりました。担当者にお問い合わせください。", "error")
+                return redirect(url_for("login"))
         # 閲覧専用ロールは閲覧ページと読み取りAPIのみ（編集・生成・設定は一切不可）
         if session.get("role") == VIEWER_ROLE:
             if endpoint not in _VIEWER_ENDPOINTS or request.method != "GET":
@@ -1331,15 +1421,18 @@ def create_app():
             #   （2026-08: 環境変数が優先されて、設定画面で変えたパスワードでは
             #     入れなくなっていた）
             candidates = []
+            # 共通の閲覧アカウント(staff)は設定でOFFにできる。OFFなら候補から外す
+            #   （1人1アカウントに移行したあと、退職者を締め出すため）。
+            _shared_ok = username != VIEWER_USERNAME or _shared_viewer_login_enabled()
             _env_user = app.config["USERS"].get(username)
-            if _env_user:
+            if _env_user and _shared_ok:
                 candidates.append(_env_user)
             _from_settings = {
                 OFFICE_USERNAME: ("office_password_hash", OFFICE_VIEW_ROLE),
                 EXEC_USERNAME: ("exec_password_hash", EXEC_VIEW_ROLE),
                 VIEWER_USERNAME: ("viewer_password_hash", VIEWER_ROLE),
             }.get(username)
-            if _from_settings:
+            if _from_settings and _shared_ok:
                 _col, _role = _from_settings
                 _st = ShiftSettings.query.first()
                 _hash = getattr(_st, _col, "") or ""
@@ -1349,9 +1442,29 @@ def create_app():
                 (c for c in candidates if check_password_hash(c["hash"], password)),
                 None,
             )
+            # 役割アカウントで一致しなければ、職員ごとのアカウントを照合する
+            login_staff = None
+            if user is None:
+                _lid = _normalize_login_id(username)
+                if _lid and _lid not in _RESERVED_LOGIN_IDS:
+                    _cand = Staff.query.filter(Staff.login_id == _lid).first()
+                    if (_cand is not None and (_cand.login_password_hash or "")
+                            and check_password_hash(_cand.login_password_hash, password)):
+                        if not _staff_login_allowed(_cand):
+                            # 退職・休職中の職員はここで止める
+                            flash(
+                                "このアカウントは現在ご利用いただけません。"
+                                "担当者にお問い合わせください。", "error")
+                            return render_template("login.html")
+                        login_staff = _cand
+                        user = {"role": VIEWER_ROLE}
+                        username = _lid
             if user:
                 session["user"] = username
                 session["role"] = user["role"]
+                # 職員アカウントのときは本人のIDを覚えて、閲覧画面を本人から開く
+                session["staff_id"] = login_staff.id if login_staff else None
+                session["staff_name"] = login_staff.name if login_staff else ""
                 _view_only = (user["role"] == VIEWER_ROLE
                               or user["role"] in _PLAN_EDIT_ROLES)
                 default_next = (
@@ -1570,6 +1683,116 @@ def create_app():
             show_inactive=show_inactive, inactive_count=inactive_count,
         )
 
+    # -----------------------------------------------------------------
+    # 職員ごとのログイン管理（ユーザー依頼 2026-08:「パスワード1人ずつにしたら？」）
+    # -----------------------------------------------------------------
+    def _render_staff_logins():
+        """ログイン管理画面（誰が発行済みかの一覧）を描画する。
+
+        平文パスワードはここには出さない。発行したときのカード画面にだけ出す。
+        """
+        staffs = [
+            st for st in Staff.query.order_by(Staff.id).all()
+            if _staff_login_allowed(st)
+        ]
+        changed = False
+        for st in staffs:
+            if not (st.login_id or ""):
+                st.login_id = _suggest_login_id(st.id)
+                changed = True
+        if changed:
+            db.session.commit()
+        return render_template(
+            "staff_logins.html",
+            staff_list=staffs,
+            shared_enabled=_shared_viewer_login_enabled(),
+        )
+
+    def _render_login_cards(cards):
+        """配布用のパスワードカードを描画する（印刷用）。
+
+        平文パスワードはこの応答のHTMLにしか載せない。保存はしない。
+        """
+        return render_template(
+            "staff_login_cards.html",
+            cards=cards,
+            view_url=request.host_url.rstrip("/") + url_for("view_shift"),
+        )
+
+    def _issue_password_for(staff):
+        """その職員に新しいパスワードを発行し、カード1枚分の内容を返す。"""
+        if not (staff.login_id or ""):
+            staff.login_id = _suggest_login_id(staff.id)
+        pw = _generate_login_password()
+        staff.login_password_hash = generate_password_hash(pw)
+        staff.login_password_set_at = _now_jst()
+        return {"name": staff.name, "login_id": staff.login_id, "password": pw}
+
+    @app.route("/staff/logins")
+    def staff_logins():
+        """職員ごとのログインID・パスワードの発行画面。
+
+        パスワードはハッシュで保存するため、あとから見ることはできない。
+        発行した直後の画面だけに出るので、その場で控えて本人に渡す。
+        """
+        return _render_staff_logins()
+
+    @app.route("/api/staff/<int:staff_id>/login-password", methods=["POST"])
+    def staff_login_password_issue(staff_id):
+        """その職員のパスワードを新しく発行し、その人のカードだけを出す。
+
+        職員を追加したとき・ログインIDを変えたときに、1枚だけ印刷して渡せる
+        （ユーザー依頼 2026-08:「追加やID変更もしたらそのカードだけ印刷できるように」）。
+        """
+        staff = Staff.query.get_or_404(staff_id)
+        card = _issue_password_for(staff)
+        db.session.commit()
+        flash("{} さんのパスワードを発行しました。".format(staff.name), "success")
+        return _render_login_cards([card])
+
+    @app.route("/api/staff/login-passwords/issue-all", methods=["POST"])
+    def staff_login_password_issue_all():
+        """まだパスワードを発行していない職員に、まとめて発行してカードを出す。"""
+        issued = []
+        for staff in Staff.query.order_by(Staff.id).all():
+            if not _staff_login_allowed(staff):
+                continue          # 休職中・退職者には発行しない
+            if staff.login_password_hash:
+                continue          # すでに発行済みの人はそのまま
+            issued.append(_issue_password_for(staff))
+        db.session.commit()
+        if issued:
+            flash("{}名分のパスワードを発行しました。".format(len(issued)), "success")
+        else:
+            flash(
+                "新しく発行する人はいませんでした（全員発行済みです）。"
+                "配り直すときは、その人の「カードを再発行」を押してください。", "success")
+        return _render_login_cards(issued)
+
+    @app.route("/api/staff/login-passwords/reissue-all", methods=["POST"])
+    def staff_login_password_reissue_all():
+        """在籍中の全員に新しいパスワードを発行し直して、全員分のカードを出す。"""
+        issued = []
+        for staff in Staff.query.order_by(Staff.id).all():
+            if not _staff_login_allowed(staff):
+                continue
+            issued.append(_issue_password_for(staff))
+        db.session.commit()
+        flash(
+            "{}名分のパスワードを作り直しました。前のパスワードは使えません。"
+            .format(len(issued)), "success")
+        return _render_login_cards(issued)
+
+    @app.route("/api/staff/<int:staff_id>/login-password/revoke", methods=["POST"])
+    def staff_login_password_revoke(staff_id):
+        """その職員のログインを停止する（パスワードを無効化）。"""
+        staff = Staff.query.get_or_404(staff_id)
+        staff.login_password_hash = ""
+        staff.login_password_set_at = None
+        db.session.commit()
+        flash("{} さんのログインを停止しました。".format(staff.name), "success")
+        return redirect(url_for("staff_logins"))
+
     @app.route("/staff/new")
     def staff_new():
         """職員登録フォーム"""
@@ -1638,6 +1861,9 @@ def create_app():
             default_year=today.year,
             default_month=today.month,
             is_viewer=(session.get("role") == VIEWER_ROLE),
+            # 職員アカウントでログインしたときは、その人のページを最初に開く
+            my_staff_id=session.get("staff_id") or 0,
+            my_staff_name=session.get("staff_name") or "",
             # この画面から予定を入れられる区分（役員／事務）
             plan_edit_categories=(
                 [] if session.get("role") == VIEWER_ROLE
@@ -1708,6 +1934,15 @@ def create_app():
         )
         db.session.add(staff)
         db.session.flush()  # IDを取得
+
+        # ログインID（未入力なら s+職員ID を自動で割り当てる）。
+        #   パスワードは別途「発行」を押したときに作る（未発行の間はログイン不可）。
+        _lid = _normalize_login_id(request.form.get("login_id", ""))
+        if not _lid:
+            _lid = _suggest_login_id(staff.id)
+        if _lid in _RESERVED_LOGIN_IDS or _login_id_taken(_lid, staff.id):
+            _lid = _suggest_login_id(staff.id)
+        staff.login_id = _lid
 
         # 資格の紐付け（相談員は「相談員可」チェックで別途管理するため除外）
         counselor_qid = _counselor_qual_id()
@@ -1798,6 +2033,17 @@ def create_app():
         staff.on_leave = "on_leave" in request.form
         staff.retired = "retired" in request.form
         staff.retired_date = _parse_retired_month(request.form.get("retired_date", ""))
+        # ログインID（他の職員や役割アカウントと重なる場合は変更しない）
+        if "login_id" in request.form:
+            _lid = _normalize_login_id(request.form.get("login_id", ""))
+            if not _lid:
+                _lid = _suggest_login_id(staff.id)
+            if _lid in _RESERVED_LOGIN_IDS:
+                flash("そのログインIDは使えません（admin などの予約語）。", "error")
+            elif _login_id_taken(_lid, staff.id):
+                flash("そのログインIDは他の職員が使っています。", "error")
+            else:
+                staff.login_id = _lid
         staff.public_holiday_count = max(0, safe_int(request.form.get("public_holiday_count"), 0))
         # 駐車場（依頼文24）— 車通勤は care/cooking どちらも対象
         staff.car_commute = "car_commute" in request.form
@@ -2316,6 +2562,13 @@ def create_app():
         s.am_preferred_gender = request.form.get("am_preferred_gender", "")
         s.phone_duty_enabled = "phone_duty_enabled" in request.form
         s.oncall_requires_work = "oncall_requires_work" in request.form
+        # 共通の閲覧アカウント(staff)を使うか。OFFにすると職員ごとのログインだけになる
+        #   （ユーザー依頼 2026-08:「パスワード1人ずつにしたら？」）
+        #   チェックボックスは「送信されなければ OFF」なので、設定画面から来た
+        #   投稿（hidden の目印つき）のときだけ書き換える。目印のない部分的な
+        #   保存で、うっかり共通ログインが止まらないようにするため。
+        if "shared_viewer_login_present" in request.form:
+            s.shared_viewer_login_enabled = "shared_viewer_login_enabled" in request.form
         # 閲覧専用ページのパスワード（空欄＝変更なし／「解除」で無効化）
         _vp = (request.form.get("viewer_password") or "").strip()
         if "viewer_password_clear" in request.form:

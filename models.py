@@ -67,6 +67,15 @@ class Staff(db.Model):
     # True = 退職（在籍していない）。シフト生成・オンコール・閲覧画面・印刷の対象外。
     #   過去のシフト履歴は残すため、職員データ自体は削除しない
     #   （ユーザー依頼 2026-08:「シフト閲覧にやめた人がいっぱい出る」）。
+    # --- 職員ごとのログイン（ユーザー依頼 2026-08:「パスワード1人ずつにしたら？」）---
+    login_id = db.Column(db.String(50), default="", nullable=False)
+    # 閲覧アプリのログインID。空＝この職員はログインできない。
+    #   共通パスワードだと退職者を締め出せないため、1人1アカウントにした。
+    login_password_hash = db.Column(db.String(255), default="", nullable=False)
+    # パスワード（ハッシュ）。空＝未発行＝ログイン不可。
+    login_password_set_at = db.Column(db.DateTime, nullable=True)
+    # パスワードを発行した日時（管理画面に「発行済み/未発行」を出すため）。
+
     backup_only = db.Column(db.Boolean, default=False, nullable=False)
     # True = 応援（人手が本当に足りないときだけ入れる）。
     #   ユーザー依頼 2026-08:「ヘルパーステーションヘルプは人数本当に足りないときに入れます」。
@@ -398,6 +407,10 @@ class ShiftSettings(db.Model):
     office_password_hash = db.Column(db.String(255), default="", nullable=False)
     # 閲覧専用ページ(/view)のパスワード（ハッシュ化して保存。空＝閲覧アカウント無効）
     #   ユーザー依頼 2026-08: Renderの環境変数を触らずに画面から設定できるように。
+    shared_viewer_login_enabled = db.Column(db.Boolean, default=True, nullable=False)
+    # False = 共通の閲覧アカウント(staff)でのログインを止める。
+    #   1人1アカウント（Staff.login_id）に切り替えたあとOFFにすると、
+    #   共通パスワードを知っている退職者が入れなくなる（ユーザー依頼 2026-08）。
     oncall_requires_work = db.Column(db.Boolean, default=True, nullable=False)
     # True = オンコールはその日出勤している職員にだけ割り当てる（電話を持ち帰るため）。
     #   職員側の oncall_when_off_ok にチェックがある人は例外として休みでも持てる。

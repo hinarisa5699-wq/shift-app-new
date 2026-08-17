@@ -59,6 +59,30 @@
                 空欄のまま保存すると、いまのパスワードのままです。パスワードは暗号化して保存され、画面には表示されません。
             </p>
 
+            <!-- 共通パスワードを使うかどうか（1人1アカウントへの切替） -->
+            <div class="mt-4 p-4 bg-white border-2 border-indigo-300 rounded-lg">
+                <input type="hidden" name="shared_viewer_login_present" value="1">
+                <label class="flex items-start cursor-pointer">
+                    <input type="checkbox" name="shared_viewer_login_enabled" value="1"
+                           {% if not settings or settings.shared_viewer_login_enabled %}checked{% endif %}
+                           class="w-5 h-5 mt-1 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
+                    <span class="ml-3">
+                        <span class="text-base font-bold text-gray-800">
+                            共通の閲覧パスワード（ID: staff）を使う
+                        </span>
+                        <span class="block text-sm text-gray-600 mt-1">
+                            チェックを外すと、<strong>職員ごとのID・パスワードでしかログインできなくなります</strong>。
+                            共通パスワードを知っている退職者を締め出せます。
+                            外す前に、職員一覧の「ログインID・パスワード」から全員分を発行してお渡しください。
+                        </span>
+                        <a href="{{ url_for('staff_logins') }}"
+                           class="inline-block mt-2 text-indigo-700 hover:text-indigo-900 underline font-semibold text-sm">
+                            職員ごとのログインを設定する
+                        </a>
+                    </span>
+                </label>
+            </div>
+
             <div class="mt-5 pt-4 border-t border-indigo-200">
                 <p class="text-base font-bold text-indigo-800 mb-2">役員用（見る＋自分の予定を入れられる）</p>
                 <div class="mb-3 text-sm bg-white border border-indigo-200 rounded-lg px-3 py-2">

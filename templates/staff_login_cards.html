@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block title %}パスワードカード - シフト自動作成くん{% endblock %}
+
+{% block content %}
+<style>
+    /* 印刷したときにカードが途中で切れないようにする */
+    @media print {
+        .login-card { break-inside: avoid; page-break-inside: avoid; }
+        .card-grid  { gap: 10mm; }
+        body { background: #fff; }
+    }
+</style>
+
+<div class="mb-6 print:hidden">
+    <h1 class="text-3xl font-bold text-primary-800 mb-1">パスワードカード</h1>
+    <p class="text-gray-600 text-lg">
+        切り取って本人にお渡しください（{{ cards|length }}枚）。
+    </p>
+    <div class="mt-4 p-4 bg-red-50 border-2 border-red-300 rounded-lg">
+        <p class="text-red-800 font-bold">
+            ⚠ パスワードは暗号化して保存するため、この画面を離れると二度と表示できません。
+        </p>
+        <p class="text-red-700 text-sm mt-1">
+            必ずこの画面で印刷（またはメモ）してから閉じてください。
+            もう一度必要になったときは「再発行」で新しいパスワードを作り直します。
+        </p>
+    </div>
+    <div class="mt-4 flex flex-wrap gap-3">
+        <button type="button" onclick="window.print()"
+                class="inline-flex items-center bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors text-lg">
+            <svg class="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zM7 7h10V5a2 2 0 00-2-2H9a2 2 0 00-2 2v2z"/>
+            </svg>
+            カードを印刷する
+        </button>
+        <a href="{{ url_for('staff_logins') }}"
+           class="inline-flex items-center bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-6 rounded-lg transition-colors">
+            ログイン管理にもどる
+        </a>
+    </div>
+</div>
+
+{% if not cards %}
+<div class="bg-white rounded-xl shadow-md p-8 text-center print:hidden">
+    <p class="text-gray-600 text-lg">印刷するカードがありません。</p>
+</div>
+{% endif %}
+
+<div class="card-grid grid grid-cols-1 md:grid-cols-2 gap-6">
+    {% for c in cards %}
+    <div class="login-card bg-white border-2 border-dashed border-gray-400 rounded-xl p-6">
+        <div class="flex items-baseline justify-between border-b border-gray-200 pb-2 mb-4">
+            <span class="text-xl font-bold text-primary-800">Alohaシフト</span>
+            <span class="text-sm text-gray-500">シフト表の見かた</span>
+        </div>
+
+        <p class="text-2xl font-bold text-gray-900 mb-4">{{ c.name }} さん</p>
+
+        <table class="w-full text-left">
+            <tr>
+                <th class="py-2 pr-3 align-top text-sm font-semibold text-gray-500 whitespace-nowrap">ひらく場所</th>
+                <td class="py-2 text-base font-mono text-gray-900 break-all">{{ view_url }}</td>
+            </tr>
+            <tr class="border-t border-gray-100">
+                <th class="py-2 pr-3 align-top text-sm font-semibold text-gray-500 whitespace-nowrap">ID</th>
+                <td class="py-2 text-2xl font-mono font-bold text-gray-900 tracking-wider">{{ c.login_id }}</td>
+            </tr>
+            <tr class="border-t border-gray-100">
+                <th class="py-2 pr-3 align-top text-sm font-semibold text-gray-500 whitespace-nowrap">パスワード</th>
+                <td class="py-2 text-2xl font-mono font-bold text-gray-900 tracking-wider">
+                    {% if c.password %}{{ c.password }}{% else %}<span class="text-base font-sans font-normal text-gray-500">前と同じです（変えていません）</span>{% endif %}
+                </td>
+            </tr>
+        </table>
+
+        <p class="text-xs text-gray-500 mt-4 leading-relaxed">
+            ・IDとパスワードは半角で入力してください（大文字・小文字の区別があります）<br>
+            ・他の人には教えないでください<br>
+            ・わからなくなったら担当者にお申し出ください
+        </p>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

@@ -107,7 +107,7 @@ const LABELS = {
     day_pattern3: 'デイ午前 8:30-12:30',
     day_pattern4: 'デイ午後 12:30-17:30',
     early: '早番 7:30-16:30',
-    late: '遅番 9:00-18:30',
+    late: '遅番 9:30-18:30',
     nurse_short: '看護 9:30-13:30',
     visit_am: '訪問 午前',
     visit_pm: '訪問 午後',
@@ -119,9 +119,11 @@ const LABELS = {
     visit_am_day_pm: '兼務（訪問→デイ）',
 };
 const DOW = ['月', '火', '水', '木', '金', '土', '日'];
+// 職員ごとのIDでログインしたときは、その人のシフトを最初に開く（0＝共通ログイン）
+const MY_STAFF_ID = {{ my_staff_id|default(0) }};
 let state = {
     year: {{ default_year }}, month: {{ default_month }},
-    mode: 'person', personId: null, data: null, group: 'care',
+    mode: 'person', personId: (MY_STAFF_ID || null), data: null, group: 'care',
     weekIndex: 0, range: 'week',   // range: 'week' = 1画面1週間 / 'month' = 月全体
 };
 
@@ -190,6 +192,18 @@ function splitWeeks(dates) {
 }
 
 // いま見ている区分（介護・看護／調理）の職員を選ぶ
+// 本人ログインのときは、最初の1回だけ、その人が調理なら「調理」タブに合わせる
+//   （そのあとは職員がタブを切り替えられるように、二度と上書きしない）
+let alignedToMe = false;
+function alignGroupToMe() {
+    if (!MY_STAFF_ID || alignedToMe) return;
+    const list = (state.data && state.data.staff_list) || [];
+    const me = list.find(s => s.id === MY_STAFF_ID);
+    if (!me) return;
+    state.group = (me.department === 'cooking') ? 'cooking' : 'care';
+    alignedToMe = true;
+}
+
 function selectFirstOfGroup() {
     const list = (state.data && state.data.staff_list) || [];
     if (!list.length) return;
@@ -312,6 +326,7 @@ function render() {
 
     const staffList = data.staff_list || [];
     const sel = el('person');
+    alignGroupToMe();
     const sig = String(staffList.length) + ':' + staffList.map(s => s.id).join(',');
     if (sel.dataset.filled !== sig) {
         const care = staffList.filter(s => s.department !== 'cooking');

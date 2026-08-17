@@ -57,7 +57,7 @@ const ASSIGNMENT_MAP = {
     day_pattern3:    { label: 'デイ午前8:30-12:30', badgeClass: 'badge-day-am'   },
     day_pattern4:    { label: 'デイ午後12:30-17:30', badgeClass: 'badge-day-pm' },
     early:           { label: '早番7:30-16:30',  badgeClass: 'badge-day-full' },
-    late:            { label: '遅番9:00-18:30',  badgeClass: 'badge-day-p2'   },
+    late:            { label: '遅番9:30-18:30',  badgeClass: 'badge-day-p2'   },
     nurse_short:     { label: '看護9:30-13:30',  badgeClass: 'badge-visit-am' },
     visit_am:        { label: '訪問午前のみ',     badgeClass: 'badge-visit-am'  },
     visit_pm:        { label: '訪問午後のみ',     badgeClass: 'badge-visit-pm'  },

@@ -1408,17 +1408,17 @@ def test_visit_label_shown_for_visit_shifts(tmp_path, monkeypatch):
         assert "AM_CODES.indexOf(assignment)" in html
 
 
-def test_late_shift_starts_at_nine(tmp_path, monkeypatch):
-    """遅番は9:00開始。デイ午前の人数にも数える（ユーザー依頼 2026-08）。"""
+def test_late_shift_starts_at_nine_thirty(tmp_path, monkeypatch):
+    """遅番は9:30開始。デイ午前の人数にも数える（ユーザー依頼 2026-08）。"""
     from solver import ASSIGNMENT_TIME_RANGES, DAY_AM_ASSIGNMENTS, PRESENT_AT_9
     import export
 
-    assert ASSIGNMENT_TIME_RANGES["late"][0] == 9 * 60, "遅番の開始が9時になっていない"
+    assert ASSIGNMENT_TIME_RANGES["late"][0] == 9 * 60 + 30, "遅番の開始が9時半になっていない"
     assert "late" in DAY_AM_ASSIGNMENTS
-    assert "late" in PRESENT_AT_9, "遅番が9時在籍に入っていない"
+    assert "late" in PRESENT_AT_9, "遅番が9時台の在籍に入っていない"
     # 早番(7:30-16:30)はデイ午前・午後の両方に数える
     assert "early" in export._DAY_AM_SET and "early" in export._DAY_PM_SET
-    assert export.ASSIGNMENT_LABELS["late"] == "遅番9:00-18:30"
+    assert export.ASSIGNMENT_LABELS["late"] == "遅番9:30-18:30"
 
 
 def test_manual_public_holiday_count_wins_over_auto(tmp_path, monkeypatch):

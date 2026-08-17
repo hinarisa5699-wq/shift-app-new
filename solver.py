@@ -57,18 +57,20 @@ COUNSELOR_CARE_DUTY_ASSIGNMENTS = {
 # 各カテゴリに寄与するアサインメントの集合
 # ※ early(早番) は訪問営業日のAMは訪問・非営業日のAMはデイと日替わりのため、
 #   AM側(DAY_AM/VISIT_AM/PRESENT_AT_9/11)へは静的集合に含めず、_solve_care 内で日別に加算する。
-#   late(遅番 9:00-18:30) は終日デイ扱い（9時から在席）。
+#   late(遅番 9:30-18:30) は終日デイ扱い（9時半から在席）。
 DAY_AM_ASSIGNMENTS = {"day_pattern1", "day_pattern2", "day_pattern3", "day_p3_visit_pm", "late"}
 DAY_PM_ASSIGNMENTS = {"day_pattern1", "day_pattern2", "day_pattern4", "visit_am_day_p4", "early", "late"}
 VISIT_AM_ASSIGNMENTS = {"visit_am", "visit_am_day_p4"}
 VISIT_PM_ASSIGNMENTS = {"visit_pm", "day_p3_visit_pm"}
 
-# 9時在籍（事業所に物理的にいる人。訪問外出中は含まない）
-#   遅番は9:00開始（ユーザー依頼 2026-08:「遅番は9時からです」）。
+# 9時台の在籍（事業所に物理的にいる人。訪問外出中は含まない）
+#   遅番は9:30開始（ユーザー依頼 2026-08:「遅番は9時半から18時半」）。
+#   人数チェックは下の PRESENT_AT_930（9時半時点）で行うため、
+#   9時ちょうどには未在席の遅番もこの集合に含めてよい。
 PRESENT_AT_9 = {
     "day_pattern1", "day_pattern2", "day_pattern3",
     "day_p3_visit_pm",     # AM事業所→PM訪問、9時は事業所にいる
-    "late",                # 遅番 9:00開始
+    "late",                # 遅番 9:30開始（判定は9:30時点）
 }
 
 # 11時在籍（午前配置 + フルタイム + 午前兼務）
@@ -131,7 +133,7 @@ ASSIGNMENT_TIME_RANGES = {
     "day_p3_visit_pm": (8 * 60 + 30, 17 * 60 + 30),   # 兼務A(午前デイ→午後訪問)
     "visit_am_day_p4": (8 * 60 + 30, 17 * 60 + 30),   # 兼務B(午前訪問→午後デイ)
     "early":           (7 * 60 + 30, 16 * 60 + 30),   # 早番 7:30-16:30
-    "late":            (9 * 60, 18 * 60 + 30),       # 遅番 9:00-18:30
+    "late":            (9 * 60 + 30, 18 * 60 + 30),  # 遅番 9:30-18:30
     "nurse_short":     (9 * 60 + 30, 13 * 60 + 30),   # 看護師短時間 9:30-13:30
 }
 

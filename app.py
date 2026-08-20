@@ -14,6 +14,7 @@ import shutil
 import threading
 import uuid
 import sqlite3
+import unicodedata
 import zipfile
 import calendar
 from datetime import date, datetime, timedelta, timezone
@@ -48,7 +49,7 @@ from models import (
     db, Staff, DayOffRequest, ShiftSettings, GeneratedShift, ShiftWarning,
     ShiftPattern, Qualification, StaffQualification, PlacementRule, CookingComboRule,
     StaffAllowedPattern, StaffWorkableDate, OncallAssignment, ShiftConfirmation,
-    ParkingSlot, ParkingAssignment, ShiftFix,
+    ParkingSlot, ParkingAssignment, ShiftFix, StaffPlan,
 )
 from parking import assign_parking
 from solver import (
@@ -355,6 +356,54 @@ def _is_plan_only_staff(st) -> bool:
 EXEC_OFF_CODE = "exec_off"
 # 役員の予定（例: "exec:9:00-12:00 デイ面接"）。表にはこの文字をそのまま出す。
 EXEC_PLAN_PREFIX = "exec:"
+
+# --- 個人の予定（StaffPlan）---
+#   ユーザー依頼 2026-08:「スケジュールは追加機能もいれて手入力も可能にしたい。
+#   例 デイ面接 9時から10時 本社10時から17時 みたいに、何個でもいれていいように」
+#   勤務表（GeneratedShift）とは別枠なので、1日に何件でも並べられるし、
+#   看護師など自動作成の対象になっている職員でも勤務とは別に持てる。
+PLAN_MAX_PER_DAY = 20
+
+
+def _normalize_plan_time(raw) -> str:
+    """予定の時刻入力を "HH:MM" に揃える。空・読めない値は ""（時間の指定なし）。
+
+    スマホの時刻ピッカーは "09:00" を送ってくるが、手打ちの "9:00" "9時" "9"
+    "０９：００"（全角）でも受け取れるようにしておく。
+    """
+    s = unicodedata.normalize("NFKC", str(raw or "")).strip()
+    if not s:
+        return ""
+    s = s.replace("時", ":").replace("分", "").replace(" ", "")
+    m = re.match(r"^(\d{1,2}):?(\d{1,2})?$", s)
+    if not m:
+        return ""
+    hour = int(m.group(1))
+    minute = int(m.group(2) or 0)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return ""
+    return "{:02d}:{:02d}".format(hour, minute)
+
+
+def _plans_for_day(staff_id, d):
+    """その職員のその日の予定（並び順）。"""
+    rows = StaffPlan.query.filter_by(staff_id=staff_id, date=d).order_by(
+        StaffPlan.display_order, StaffPlan.id).all()
+    return [r.to_dict() for r in rows]
+
+
+def _plans_payload(year, month):
+    """月ぶんの予定を {"YYYY-MM-DD": {"職員ID": [予定, ...]}} で返す。"""
+    first_day = date(year, month, 1)
+    last_day = date(year, month, calendar.monthrange(year, month)[1])
+    rows = StaffPlan.query.filter(
+        StaffPlan.date >= first_day, StaffPlan.date <= last_day
+    ).order_by(StaffPlan.date, StaffPlan.display_order, StaffPlan.id).all()
+    out = {}
+    for r in rows:
+        out.setdefault(r.date.isoformat(), {}).setdefault(
+            str(r.staff_id), []).append(r.to_dict())
+    return out
 
 # --- 区分(job_category) / 役割(role) の選択肢とラベル ---
 JOB_CATEGORIES = [
@@ -809,56 +858,32 @@ def _run_migrations(app):
                 "UPDATE shift_pattern SET counts_as_cooking=0 "
                 "WHERE staff_group='cooking' AND label LIKE '%事務%'"
             )
-        # 調理フォールバック用: 9:00-16:00 の調理パターンを保証（1人で昼夜をまかなう）
-        cursor.execute(
-            "SELECT COUNT(*) FROM shift_pattern "
-            "WHERE staff_group='cooking' AND ("
-            "  (start_time='09:00' AND end_time='16:00') OR code='cooking_6')"
-        )
-        if cursor.fetchone()[0] == 0:
-            cursor.execute(
-                "SELECT COALESCE(MAX(display_order), 0) + 1 FROM shift_pattern "
-                "WHERE staff_group='cooking'"
-            )
-            _co = cursor.fetchone()[0]
-            cursor.execute(
-                "INSERT INTO shift_pattern "
-                "(code, staff_group, label, start_time, end_time, has_break, "
-                " break_minutes, display_order, period, covers_am, covers_pm) "
-                "VALUES ('cooking_6','cooking','(6) 9:00-16:00','09:00','16:00',0,0,?,'full',1,1)",
-                (_co,),
-            )
-        # 池田さん向け 6:00-12:00(⑦) / 13:00-19:00(⑧) パターンを保証（休憩なし）
-        for _code, _label, _st, _et in (
-            ("cooking_7", "(7) 6:00-12:00", "06:00", "12:00"),
-            ("cooking_8", "(8) 13:00-19:00", "13:00", "19:00"),
-        ):
-            cursor.execute(
-                "SELECT COUNT(*) FROM shift_pattern WHERE staff_group='cooking' AND code=?",
-                (_code,),
-            )
-            if cursor.fetchone()[0] == 0:
-                cursor.execute(
-                    "SELECT COALESCE(MAX(display_order), 0) + 1 FROM shift_pattern "
-                    "WHERE staff_group='cooking'"
-                )
-                _co2 = cursor.fetchone()[0]
-                cursor.execute(
-                    "INSERT INTO shift_pattern "
-                    "(code, staff_group, label, start_time, end_time, has_break, "
-                    " break_minutes, display_order, period, covers_am, covers_pm) "
-                    "VALUES (?,'cooking',?,?,?,0,0,?,'full',1,1)",
-                    (_code, _label, _st, _et, _co2),
-                )
-        # ※ 7:00-15:00（朝食あり日の1人勤務用）は _sync_cooking_patterns() で保証する
-        #   （新規DB・既存DBの双方に効かせるため）。
+        # ※ 調理シフト種類（9:00-16:00 / 6:00-12:00 / 13:00-19:00 / 6:30-14:30）は
+        #   _sync_cooking_patterns() で保証する。ここで cooking_6 のような固定コードで
+        #   作ると、新規DBで別の種類が同じ番号を先に取っていたときに
+        #   「もう有るから」と判定してしまい、必要な種類が入らない
+        #   （ユーザー指摘 2026-08:「調理のシフト 9時から16時 項目追加」の原因）。
 
-    # 池田さん向け組み合わせ（⑦6-12＋③12-19 / ④6-13＋⑧13-19）を保証。無ければ追加。
-    if "cooking_combo_rule" in tables:
-        for _name, _pats in (
-            ("池田朝(⑦6-12)+夜(③12-19)", '["cooking_7", "cooking_3"]'),
-            ("朝(④6-13)+池田夜(⑧13-19)", '["cooking_4", "cooking_8"]'),
+    # 池田さん向け組み合わせ（6-12＋12-19 / 6-13＋13-19）を保証。無ければ追加。
+    #   種類のコード番号は環境によってずれるので、必ず時間帯から引く。
+    if "cooking_combo_rule" in tables and "shift_pattern" in tables:
+        def _cook_code(_st, _et):
+            cursor.execute(
+                "SELECT code FROM shift_pattern WHERE staff_group='cooking' "
+                "AND start_time=? AND end_time=? ORDER BY display_order LIMIT 1",
+                (_st, _et),
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
+
+        for _name, _times in (
+            ("池田朝(6-12)+夜(12-19)", (("06:00", "12:00"), ("12:00", "19:00"))),
+            ("朝(6-13)+池田夜(13-19)", (("06:00", "13:00"), ("13:00", "19:00"))),
         ):
+            _codes = [_cook_code(_st, _et) for _st, _et in _times]
+            if any(c is None for c in _codes):
+                continue      # 種類がまだ揃っていない（次回起動で入る）
+            _pats = json.dumps(_codes)
             cursor.execute(
                 "SELECT COUNT(*) FROM cooking_combo_rule WHERE allowed_patterns_json=?",
                 (_pats,),
@@ -1144,22 +1169,40 @@ def _sync_cooking_patterns():
             _p.label = _p.label.replace("7:00-15:00", "6:30-14:30")
         changed = True
 
-    if ShiftPattern.query.filter_by(
-        staff_group="cooking", start_time="06:30", end_time="14:30"
-    ).first() is None:
+    def _ensure_cook_pattern(start, end):
+        """その時間帯の調理シフト種類が無ければ足す（あれば何もしない）。
+
+        時刻で判定するので、画面から手で追加済みなら重複しない。
+        番号は既存の cooking_N の続きにする（表示名も同じ番号にそろえる）。
+        """
+        if ShiftPattern.query.filter_by(
+            staff_group="cooking", start_time=start, end_time=end
+        ).first() is not None:
+            return False
         max_n, max_order = 0, 0
         for p in ShiftPattern.query.filter_by(staff_group="cooking").all():
             m = re.match(r"^cooking_(\d+)$", p.code or "")
             if m:
                 max_n = max(max_n, int(m.group(1)))
             max_order = max(max_order, p.display_order or 0)
+        n = max_n + 1
         db.session.add(ShiftPattern(
-            code=f"cooking_{max_n + 1}", staff_group="cooking",
-            label="(9) 6:30-14:30", start_time="06:30", end_time="14:30",
+            code="cooking_{}".format(n), staff_group="cooking",
+            label="({}) {}-{}".format(n, start.lstrip("0"), end.lstrip("0")),
+            start_time=start, end_time=end,
             has_break=False, break_minutes=0, display_order=max_order + 1,
             period="full", covers_am=True, covers_pm=True,
         ))
-        changed = True
+        db.session.flush()      # 続けて呼ぶときに番号を重複させない
+        return True
+
+    # 朝食あり日の1人勤務 6:30-14:30、朝食なし日の1人勤務 9:00-16:00、
+    #   池田さん向けの 6:00-12:00 / 13:00-19:00。
+    #   9:00-16:00 はユーザー依頼 2026-08:「調理のシフト 9時から16時 項目追加」。
+    for _st, _et in (("06:30", "14:30"), ("09:00", "16:00"),
+                     ("06:00", "12:00"), ("13:00", "19:00")):
+        if _ensure_cook_pattern(_st, _et):
+            changed = True
 
     # GeneratedShift の旧調理コードを移行
     for old, new in _COOK_CODE_MIGRATE.items():
@@ -1301,7 +1344,39 @@ _VIEWER_ENDPOINTS = {
 }
 
 # 役員・事務ロールは閲覧に加えて「自分たちの予定」の保存だけできる
-_EXEC_ENDPOINTS = _VIEWER_ENDPOINTS | {"api_shift_cells_update"}
+_EXEC_ENDPOINTS = _VIEWER_ENDPOINTS | {
+    "api_shift_cells_update", "api_staff_plans_update", "api_staff_plans_get",
+}
+# 職員ごとのアカウント（閲覧ロール）でも、自分の予定だけは入れられる。
+#   実際に誰のどの内容を変えられるかは各APIの中でもう一度確かめる。
+_OWN_PLAN_ENDPOINTS = {
+    "api_staff_plans_update", "api_staff_plans_get", "api_shift_cells_update",
+}
+
+
+def _plan_editable_staff_ids():
+    """このアカウントが予定を入れてよい職員のID集合。None なら全員。
+
+    - 管理者／サ責／役員の本アカウント … 全員（None）
+    - 役員(yakuin)・事務(jimu)の共通アカウント … その区分の職員
+    - 職員ごとのアカウント … 本人だけ
+    - 共通の閲覧アカウント(staff) … 誰の予定も入れられない
+
+    ユーザー指摘 2026-08:「池田友子・池田和男・小倉シモネの個人のアカウントで
+    スケジュールがブランクで入力できません」。個人アカウントは閲覧ロールなので、
+    以前は自分の予定すら入れられなかった。
+    """
+    role = session.get("role")
+    cats = _PLAN_EDIT_ROLES.get(role)
+    if cats:
+        return {
+            st.id for st in Staff.query.all()
+            if (getattr(st, "job_category", "") or "") in cats
+        }
+    if role == VIEWER_ROLE:
+        sid = session.get("staff_id")
+        return {int(sid)} if sid else set()
+    return None
 
 
 # ログイン不要でアクセスできるエンドポイント
@@ -1431,14 +1506,18 @@ def create_app():
                 return redirect(url_for("login"))
         # 閲覧専用ロールは閲覧ページと読み取りAPIのみ（編集・生成・設定は一切不可）
         if session.get("role") == VIEWER_ROLE:
-            if endpoint not in _VIEWER_ENDPOINTS or request.method != "GET":
+            # 職員ごとのアカウントは「自分の予定」の保存だけ追加で許す
+            _own_plan_ok = bool(_sid) and endpoint in _OWN_PLAN_ENDPOINTS
+            if not _own_plan_ok and (
+                    endpoint not in _VIEWER_ENDPOINTS or request.method != "GET"):
                 if request.path.startswith("/api/"):
                     return jsonify({"error": "閲覧専用アカウントでは実行できません"}), 403
                 return redirect(url_for("view_shift"))
         if session.get("role") in _PLAN_EDIT_ROLES:
             # 閲覧＋「役員の予定」の保存のみ（中身のチェックは保存時に行う）
             ok = endpoint in _EXEC_ENDPOINTS and (
-                request.method == "GET" or endpoint == "api_shift_cells_update"
+                request.method == "GET"
+                or endpoint in ("api_shift_cells_update", "api_staff_plans_update")
             )
             if not ok:
                 if request.path.startswith("/api/"):
@@ -1988,10 +2067,15 @@ def create_app():
             # 職員アカウントでログインしたときは、その人のページを最初に開く
             my_staff_id=session.get("staff_id") or 0,
             my_staff_name=session.get("staff_name") or "",
-            # この画面から予定を入れられる区分（役員／事務）
+            # この画面から「勤務」の予定（役員のセル）を入れられる区分（役員／事務）
             plan_edit_categories=(
                 [] if session.get("role") == VIEWER_ROLE
                 else list(_PLAN_EDIT_ROLES.get(session.get("role"), PLAN_ONLY_CATEGORIES))
+            ),
+            # 手入力のスケジュールを入れてよい職員ID（null なら全員）
+            plan_editable_staff_ids=(
+                None if _plan_editable_staff_ids() is None
+                else sorted(_plan_editable_staff_ids())
             ),
         )
 
@@ -3771,6 +3855,8 @@ def create_app():
                 "oncall": oncall_map,
                 "day_off_requests": dayoff_map,
                 "parking": parking_map,
+                # 手入力のスケジュール（1日に何件でも）
+                "plans": _plans_payload(year, month),
                 "confirmation": conf.to_dict() if conf else None,
                 "fixed_staff_ids": fixed_staff_ids,
                 "operating_days": operating_days,
@@ -3893,6 +3979,70 @@ def create_app():
             "default": ({"year": default[0], "month": default[1]} if default else None),
         })
 
+    # -----------------------------------------------------------------
+    # 個人のスケジュール（手入力・1日に何件でも）
+    #   ユーザー依頼 2026-08:「スケジュールは追加機能もいれて手入力も可能にしたい。
+    #   例 デイ面接 9時から10時 本社10時から17時 みたいに何個でも」
+    # -----------------------------------------------------------------
+    @app.route("/api/staff-plans/<int:year>/<int:month>", methods=["GET"])
+    def api_staff_plans_get(year, month):
+        """その月のスケジュールをまとめて返す。"""
+        if not (2000 <= year <= 2100 and 1 <= month <= 12):
+            return jsonify({"error": "年月が正しくありません"}), 400
+        return jsonify({"plans": _plans_payload(year, month)})
+
+    @app.route("/api/staff-plans", methods=["POST"])
+    def api_staff_plans_update():
+        """1日ぶんのスケジュールをまとめて置き換える。
+
+        {"staff_id": 3, "date": "2026-08-21",
+         "items": [{"start": "09:00", "end": "10:00", "title": "デイ面接"},
+                   {"start": "10:00", "end": "17:00", "title": "本社"}]}
+
+        items が空なら、その日のスケジュールを全部消す。
+        勤務表そのものは変えないので、確定済みの月でも入れられる。
+        """
+        data = request.get_json(silent=True) or {}
+        staff_id = safe_int(data.get("staff_id"), 0)
+        try:
+            d = datetime.strptime(str(data.get("date")), "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return jsonify({"error": "日付が正しくありません"}), 400
+        if Staff.query.get(staff_id) is None:
+            return jsonify({"error": "職員が見つかりません"}), 404
+        allowed = _plan_editable_staff_ids()
+        if allowed is not None and staff_id not in allowed:
+            return jsonify(
+                {"error": "このアカウントで入れられるのは自分の予定だけです"}), 403
+        items = data.get("items")
+        if not isinstance(items, list):
+            return jsonify({"error": "items の形式が正しくありません"}), 400
+        if len(items) > PLAN_MAX_PER_DAY:
+            return jsonify({
+                "error": "1日に入れられる予定は{}件までです".format(PLAN_MAX_PER_DAY),
+            }), 400
+
+        rows = []
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            start = _normalize_plan_time(item.get("start"))
+            end = _normalize_plan_time(item.get("end"))
+            title = " ".join(str(item.get("title") or "").split())[:40]
+            if not (title or start or end):
+                continue     # 空の行は保存しない
+            rows.append((start, end, title, i))
+
+        StaffPlan.query.filter_by(staff_id=staff_id, date=d).delete()
+        for start, end, title, i in rows:
+            db.session.add(StaffPlan(
+                staff_id=staff_id, date=d, start_time=start, end_time=end,
+                title=title, display_order=i,
+            ))
+        db.session.commit()
+        saved = _plans_for_day(staff_id, d)
+        return jsonify({"saved": len(saved), "items": saved})
+
     @app.route("/api/shift/cells", methods=["POST"])
     def api_shift_cells_update():
         """画面上で直接編集したシフトを保存する（1セル単位の一括反映）。
@@ -3913,12 +4063,19 @@ def create_app():
         _all_staff = Staff.query.all()
         exec_staff_ids = {st.id for st in _all_staff if _is_plan_only_staff(st)}
         _my_cats = _PLAN_EDIT_ROLES.get(session.get("role"))
+        allowed_ids = None
         if _my_cats:
             # 役員／事務アカウントは自分の区分の予定だけ。ほかの職員のシフトは触れない
             allowed_ids = {
                 st.id for st in _all_staff
                 if (getattr(st, "job_category", "") or "") in _my_cats
             }
+        elif session.get("role") == VIEWER_ROLE and session.get("staff_id"):
+            # 職員ごとのアカウント。役員・事務の本人だけ、自分のセルに予定を入れられる
+            #   （介護・看護の職員が自分の勤務を消せてしまわないよう区分で絞る）
+            _me = int(session["staff_id"])
+            allowed_ids = {_me} & exec_staff_ids
+        if allowed_ids is not None:
             for ch in changes:
                 if safe_int(ch.get("staff_id"), None) not in allowed_ids:
                     return jsonify({

@@ -135,6 +135,9 @@ class Staff(db.Model):
     allowed_patterns = db.relationship(
         "StaffAllowedPattern", backref="staff", lazy=True, cascade="all, delete-orphan"
     )
+    plans = db.relationship(
+        "StaffPlan", backref="staff", lazy=True, cascade="all, delete-orphan"
+    )
 
     def to_dict(self):
         """辞書形式に変換"""
@@ -812,4 +815,64 @@ class CookingComboRule(db.Model):
             "name": self.name,
             "allowed_patterns": json.loads(self.allowed_patterns_json or "[]"),
             "is_active": self.is_active,
+        }
+
+
+class StaffPlan(db.Model):
+    """職員一人ひとりの予定（手入力）。
+
+    自動作成の勤務（GeneratedShift）とは別枠で持つ。1日に何件でも入れられるので、
+    「9:00-10:00 デイ面接」「10:00-17:00 本社」のように並べて登録できる。
+    ユーザー依頼 2026-08:「スケジュールは手入力も可能に。何個でもいれていいように」。
+
+    勤務表そのものは変えないため、確定済みの月でも入れられる。
+    """
+    __tablename__ = "staff_plan"
+
+    id = db.Column(db.Integer, primary_key=True)
+    staff_id = db.Column(db.Integer, db.ForeignKey("staff.id"), nullable=False)
+    date = db.Column(db.Date, nullable=False)
+    # "09:00" 形式。空文字は「時間の指定なし」（終日の予定）
+    start_time = db.Column(db.String(5), nullable=False, default="")
+    end_time = db.Column(db.String(5), nullable=False, default="")
+    title = db.Column(db.String(40), nullable=False, default="")
+    # 同じ日の並び順（画面で入れた順）
+    display_order = db.Column(db.Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        db.Index("ix_staff_plan_staff_date", "staff_id", "date"),
+    )
+
+    @staticmethod
+    def _hm(value):
+        """"09:00" → "9:00"（先頭の0を落として見やすくする）"""
+        s = (value or "").strip()
+        if len(s) == 5 and s[0] == "0":
+            return s[1:]
+        return s
+
+    def label(self):
+        """画面や表に出す1行（例: "9:00-10:00 デイ面接"）。"""
+        start = self._hm(self.start_time)
+        end = self._hm(self.end_time)
+        if start and end:
+            span = "{}-{}".format(start, end)
+        elif start:
+            span = "{}〜".format(start)
+        elif end:
+            span = "〜{}".format(end)
+        else:
+            span = ""
+        title = (self.title or "").strip()
+        return " ".join(x for x in (span, title) if x)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "staff_id": self.staff_id,
+            "date": self.date.isoformat(),
+            "start_time": self.start_time or "",
+            "end_time": self.end_time or "",
+            "title": self.title or "",
+            "label": self.label(),
         }

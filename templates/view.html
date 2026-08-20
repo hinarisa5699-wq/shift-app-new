@@ -85,20 +85,16 @@
     <div id="all-view" class="hidden bg-white card overflow-auto"></div>
 
     <p class="text-xs text-gray-400 mt-4">
-        この画面は閲覧専用です。内容は自動作成システムと同じデータをそのまま表示しています（1分ごとに自動更新）。
+        シフトは自動作成システムと同じデータをそのまま表示しています（1分ごとに自動更新）。
+        「予定を入れる」から入れたスケジュールは、その場で全員の画面に反映されます。
     </p>
 </main>
 
 <script>
 const PLAN_EDIT_CATEGORIES = {{ plan_edit_categories | tojson }};
+// 手入力のスケジュールを入れてよい職員ID（null = 全員入れられる）
+const PLAN_EDITABLE_IDS = {{ plan_editable_staff_ids | tojson }};
 const PLAN_ONLY_CATEGORIES = ['executive', 'office'];
-// 区分ごとに選べる内容（事務は面接・契約を出さない）
-const PLAN_KINDS = {
-    executive: ['終日休み', '終日デイ', '在宅勤務', '本部勤務', 'デイ', 'デイ面接', '契約'],
-    office:    ['終日休み', '終日デイ', '在宅勤務', '本部勤務', 'デイ'],
-};
-const EXEC_NO_TIME_KINDS = ['終日休み', '終日デイ'];
-let execEdit = null;   // {date, staffId}
 
 const LABELS = {
     exec_off: '休',
@@ -276,19 +272,40 @@ function visitSlotOf(data, dateStr, sid) {
     return row ? row.visit_slot : null;
 }
 
-function cellHtml(data, sid, dateStr, assignment, visitSet, dow) {
+// 予定も勤務も無い日（役員・事務）に出す印
+const PLAN_DASH = '<span class="text-gray-300">-</span>';
+
+// その職員のその日のスケジュール（手入力・何件でも）
+function plansOf(data, dateStr, sid) {
+    return ((data.plans || {})[dateStr] || {})[String(sid)] || [];
+}
+
+// この画面からスケジュールを入れてよい相手か
+function canEditPlan(sid) {
+    return PLAN_EDITABLE_IDS === null || PLAN_EDITABLE_IDS.indexOf(sid) !== -1;
+}
+
+function planLinesHtml(data, dateStr, sid) {
+    return plansOf(data, dateStr, sid).map(pl =>
+        `<div class="text-[11px] font-bold text-emerald-800 whitespace-nowrap">${esc(pl.label)}</div>`
+    ).join('');
+}
+
+function cellHtml(data, sid, dateStr, assignment, visitSet, dow, withPlans) {
+    // 個人ビューではスケジュールを別に描くので、ここでは付けない
+    const planHtml = (withPlans === false) ? '' : planLinesHtml(data, dateStr, sid);
     const off = !assignment || assignment === 'off' || assignment === 'cook_off'
                 || assignment === 'exec_off';
     // 役員は予定を入れた日だけ表示する（何も無い日は空欄）
     const staffOf = (data.staff_list || []).find(x => x.id === sid);
     if (!assignment && staffOf && PLAN_ONLY_CATEGORIES.indexOf(staffOf.job_category) !== -1) {
-        return '<span class="text-gray-300">-</span>';
+        return planHtml || PLAN_DASH;
     }
     if (off) {
         const ids = (data.day_off_requests || {})[dateStr] || [];
-        return ids.indexOf(sid) !== -1
+        return (ids.indexOf(sid) !== -1
             ? '<span class="text-amber-700 font-bold">希望休</span>'
-            : '<span class="text-gray-400">休</span>';
+            : '<span class="text-gray-400">休</span>') + planHtml;
     }
     const cookLabels = data.cook_labels || {};
     let label = assignment.indexOf('exec:') === 0 ? assignment.slice(5)
@@ -306,7 +323,7 @@ function cellHtml(data, sid, dateStr, assignment, visitSet, dow) {
     } else if (slot) {
         extra += `<br><span class="text-blue-700 font-bold">訪問（${slot === 'am' ? '午前' : '午後'}）</span>`;
     }
-    return `<span class="font-medium text-gray-800">${esc(label)}</span>${extra}`;
+    return `<span class="font-medium text-gray-800">${esc(label)}</span>${extra}${planHtml}`;
 }
 
 function dayClass(data, dateStr, dow) {
@@ -340,11 +357,13 @@ function render() {
         sel.value = state.personId;
     }
 
+    // シフトがまだ無い月でも、個人ビューは出す（スケジュールを入れられるように）
     const hasShifts = (data.shifts || []).length > 0;
+    const showPerson = state.mode === 'person' && staffList.length > 0;
     el('empty').classList.toggle('hidden', hasShifts);
-    el('person-view').classList.toggle('hidden', !hasShifts || state.mode !== 'person');
+    el('person-view').classList.toggle('hidden', !showPerson);
     el('all-view').classList.toggle('hidden', !hasShifts || state.mode === 'person');
-    if (!hasShifts) { el('person-view').innerHTML = ''; el('all-view').innerHTML = ''; return; }
+    if (!hasShifts && !showPerson) { el('person-view').innerHTML = ''; el('all-view').innerHTML = ''; return; }
 
     // date -> staff_id -> assignment
     const map = {};
@@ -365,7 +384,7 @@ function render() {
     if (state.weekIndex >= weeks.length) state.weekIndex = weeks.length - 1;
     if (state.weekIndex < 0) state.weekIndex = 0;
     const useWeek = state.range === 'week' && weeks.length > 0;
-    el('week-bar').classList.toggle('hidden', !hasShifts);
+    el('week-bar').classList.toggle('hidden', !hasShifts && !showPerson);
     if (useWeek) {
         const w = weeks[state.weekIndex];
         const first = w[0], last = w[w.length - 1];
@@ -387,24 +406,33 @@ function renderPerson(data, map, dates, visitSet) {
     const sid = state.personId;
     const staff = (data.staff_list || []).find(s => s.id === sid);
     if (!staff) { el('person-view').innerHTML = ''; return; }
-    const canEdit = PLAN_EDIT_CATEGORIES.indexOf(staff.job_category) !== -1;
+    const canPlan = canEditPlan(sid);
     let work = 0;
     const rows = dates.map(({ d, dateStr, dow }) => {
         const a = (map[dateStr] || {})[sid];
         if (a && a !== 'off' && a !== 'cook_off' && a !== 'exec_off') work++;
         const oncall = (data.oncall || {})[dateStr] === staff.name;
         const hol = (data.holidays || {})[dateStr];
+        const plans = plansOf(data, dateStr, sid);
+        const planHtml = plans.map(pl =>
+            `<div class="text-sm font-bold text-emerald-800">${esc(pl.label)}</div>`).join('');
+        const addBtn = canPlan
+            ? `<button type="button" onclick="openPlanEditor('${dateStr}', ${sid})"
+                    class="mt-1 text-xs font-bold text-teal-700 bg-teal-50 border border-teal-200 rounded-lg px-2 py-1">
+                    ${plans.length ? '予定を変える' : '＋ 予定を入れる'}</button>`
+            : '';
+        let shiftHtml = cellHtml(data, sid, dateStr, a, visitSet, dow, false);
+        if (plans.length && shiftHtml === PLAN_DASH) shiftHtml = '';
         return `<tr class="${dayClass(data, dateStr, dow)} border-b border-gray-100">
-            <td class="px-3 py-3 whitespace-nowrap w-24">
+            <td class="px-3 py-3 whitespace-nowrap w-24 align-top">
                 <span class="font-bold">${state.month}/${d}</span>
                 <span class="text-gray-500">(${DOW[dow]})</span>
                 ${hol ? `<div class="text-[10px] text-amber-700">${esc(hol)}</div>` : ''}
             </td>
-            <td class="px-3 py-3 ${canEdit ? 'cursor-pointer' : ''}"
-                ${canEdit ? `onclick="openExecPlan('${dateStr}', ${sid}, '${(a || '').replace(/'/g, "")}')"` : ''}>
-                ${cellHtml(data, sid, dateStr, a, visitSet, dow)}
-                ${canEdit ? '<span class="text-[10px] text-teal-600 ml-1">タップして変更</span>' : ''}</td>
-            <td class="px-2 py-2 text-right">${oncall ? '<span class="text-[10px] bg-red-100 text-red-700 rounded px-2 py-1 font-bold">オンコール</span>' : ''}</td>
+            <td class="px-3 py-3 align-top">
+                ${shiftHtml}
+                ${planHtml}${addBtn}</td>
+            <td class="px-2 py-2 text-right align-top">${oncall ? '<span class="text-[10px] bg-red-100 text-red-700 rounded px-2 py-1 font-bold">オンコール</span>' : ''}</td>
         </tr>`;
     }).join('');
     const scope = state.range === 'week' ? 'この週' : 'この月';
@@ -468,123 +496,167 @@ setMode('person');
 })();
 setInterval(load, 60000);   // 1分ごとに最新を取り込む
 
-/* --- 役員の予定をこの画面から入れる --- */
-function execTimeOptions() {
-    const opts = ['<option value="">指定なし</option>'];
-    for (let h = 6; h <= 21; h++) {
-        for (const m of ['00', '30']) opts.push(`<option value="${h}:${m}">${h}:${m}</option>`);
-    }
-    return opts.join('');
+/* --- スケジュールをこの画面から入れる（1日に何件でも） ---
+   ユーザー依頼 2026-08:「スケジュールは追加機能もいれて手入力も可能にしたい。
+   例 デイ面接 9時から10時 本社10時から17時 みたいに、何個でもいれていいように」 */
+let planEdit = null;   // {date, staffId, current, canOff}
+
+// 役員・事務のセル（勤務欄）を「終日休み」にできるアカウントか
+function canEditExecCell(staff) {
+    if (!staff || PLAN_ONLY_CATEGORIES.indexOf(staff.job_category) === -1) return false;
+    if (PLAN_EDIT_CATEGORIES.indexOf(staff.job_category) !== -1) return true;
+    return staff.id === MY_STAFF_ID;      // 本人のアカウント
 }
 
-function openExecPlan(dateStr, staffId, current) {
-    execEdit = { date: dateStr, staffId: staffId };
-    const _s = ((state.data || {}).staff_list || []).find(x => x.id === staffId);
-    const EXEC_KINDS = PLAN_KINDS[(_s && _s.job_category) === 'office' ? 'office' : 'executive'];
-    const start = el('exec-start'), end = el('exec-end');
-    if (!start.options.length) { start.innerHTML = execTimeOptions(); end.innerHTML = execTimeOptions(); }
-    let kind = '終日休み', from = '', to = '';
-    if (current === 'exec_off') kind = '終日休み';
-    else if (current && current.indexOf('exec:') === 0) {
+function planRowHtml(start, end, title) {
+    return `<div class="plan-row border border-gray-200 rounded-lg p-2 bg-gray-50">
+        <div class="flex items-center gap-1">
+            <input type="time" value="${esc(start)}"
+                   class="plan-start flex-1 min-w-0 px-2 py-2 border border-gray-300 rounded-lg text-base bg-white">
+            <span class="text-gray-500">〜</span>
+            <input type="time" value="${esc(end)}"
+                   class="plan-end flex-1 min-w-0 px-2 py-2 border border-gray-300 rounded-lg text-base bg-white">
+            <button type="button" onclick="removePlanRow(this)"
+                    class="px-2 text-2xl leading-none text-gray-400" title="この予定を消す">×</button>
+        </div>
+        <input type="text" maxlength="40" value="${esc(title)}" placeholder="内容（例: デイ面接／本社）"
+               class="plan-title mt-2 w-full px-2 py-2 border border-gray-300 rounded-lg text-base bg-white">
+    </div>`;
+}
+
+function addPlanRow(start, end, title) {
+    const box = el('plan-rows');
+    if (box.querySelectorAll('.plan-row').length >= 20) {
+        el('plan-msg').textContent = '1日に入れられる予定は20件までです';
+        return;
+    }
+    box.insertAdjacentHTML('beforeend', planRowHtml(start || '', end || '', title || ''));
+}
+
+function removePlanRow(btn) {
+    const row = btn.parentNode.parentNode;
+    if (row && row.parentNode) row.parentNode.removeChild(row);
+}
+
+function openPlanEditor(dateStr, staffId) {
+    const data = state.data || {};
+    const staff = (data.staff_list || []).find(x => x.id === staffId);
+    const current = (((data.shifts || []).find(
+        x => x.date === dateStr && x.staff_id === staffId) || {}).assignment) || '';
+    planEdit = {
+        date: dateStr, staffId: staffId, current: current,
+        canOff: canEditExecCell(staff),
+    };
+    el('plan-rows').innerHTML = '';
+    plansOf(data, dateStr, staffId).forEach(pl => addPlanRow(pl.start_time, pl.end_time, pl.title));
+    // 旧いやり方（勤務欄に入れた「exec:9:00-12:00 デイ面接」）は予定として引き継ぐ
+    if (planEdit.canOff && current.indexOf('exec:') === 0) {
         const text = current.slice(5);
         const m = text.match(/^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})\s*(.*)$/);
-        if (m) { from = m[1]; to = m[2]; kind = m[3] || 'デイ'; } else { kind = text; }
+        if (m) addPlanRow(pad2(m[1]), pad2(m[2]), m[3] || '');
+        else addPlanRow('', '', text);
     }
-    el('exec-kind').innerHTML = EXEC_KINDS.map(k => `<option value="${k}">${k}</option>`).join('')
-        + '<option value="その他">その他（自分で入力）</option>';
-    const known = EXEC_KINDS.indexOf(kind) !== -1;
-    el('exec-kind').value = known ? kind : 'その他';
-    el('exec-free').value = known ? '' : kind;
-    el('exec-start').value = from;
-    el('exec-end').value = to;
-    el('exec-when').textContent = dateStr.slice(5).replace('-', '/');
-    onExecKindChange();
-    el('exec-modal').classList.remove('hidden');
+    if (!el('plan-rows').querySelectorAll('.plan-row').length) addPlanRow('', '', '');
+    el('plan-off-row').classList.toggle('hidden', !planEdit.canOff);
+    el('plan-off').checked = (current === 'exec_off');
+    el('plan-who').textContent = staff ? staff.name + ' さん' : '';
+    el('plan-when').textContent = dateStr.slice(5).replace('-', '/');
+    el('plan-msg').textContent = '';
+    el('plan-modal').classList.remove('hidden');
 }
 
-function onExecKindChange() {
-    const kind = el('exec-kind').value;
-    el('exec-free-row').classList.toggle('hidden', kind !== 'その他');
-    el('exec-time-row').classList.toggle('hidden', EXEC_NO_TIME_KINDS.indexOf(kind) !== -1);
+// "9:00" → "09:00"（<input type="time"> は2桁でないと受け付けない）
+function pad2(t) {
+    const m = String(t || '').match(/^(\d{1,2}):(\d{2})$/);
+    return m ? String(m[1]).padStart(2, '0') + ':' + m[2] : '';
 }
 
-function closeExecPlan() {
-    el('exec-modal').classList.add('hidden');
-    execEdit = null;
+function closePlanEditor() {
+    el('plan-modal').classList.add('hidden');
+    planEdit = null;
 }
 
-async function sendExecPlan(code) {
-    if (!execEdit) return;
+function collectPlanRows() {
+    return Array.from(el('plan-rows').querySelectorAll('.plan-row')).map(row => ({
+        start: row.querySelector('.plan-start').value || '',
+        end: row.querySelector('.plan-end').value || '',
+        title: (row.querySelector('.plan-title').value || '').trim(),
+    })).filter(x => x.start || x.end || x.title);
+}
+
+async function savePlans() {
+    if (!planEdit) return;
+    const items = collectPlanRows();
+    if (items.some(x => !x.title)) {
+        el('plan-msg').textContent = '内容を入力してください（時間だけの予定は入れられません）';
+        return;
+    }
     const token = document.querySelector('meta[name="csrf-token"]').content;
-    el('exec-msg').textContent = '保存中...';
+    const head = { 'Content-Type': 'application/json', 'X-CSRFToken': token };
+    el('plan-msg').textContent = '保存中...';
     try {
-        const r = await fetch('/api/shift/cells', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': token },
+        const r = await fetch('/api/staff-plans', {
+            method: 'POST', headers: head,
             body: JSON.stringify({
-                year: state.year, month: state.month,
-                changes: [{ date: execEdit.date, staff_id: execEdit.staffId, assignment: code }],
+                staff_id: planEdit.staffId, date: planEdit.date, items: items,
             }),
         });
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || '保存できませんでした');
-        closeExecPlan();
+        // 役員・事務は勤務欄の「終日休み」も合わせて直す
+        if (planEdit.canOff) {
+            const want = el('plan-off').checked ? 'exec_off' : '';
+            if (want !== planEdit.current) {
+                const r2 = await fetch('/api/shift/cells', {
+                    method: 'POST', headers: head,
+                    body: JSON.stringify({
+                        year: state.year, month: state.month,
+                        changes: [{ date: planEdit.date, staff_id: planEdit.staffId,
+                                    assignment: want }],
+                    }),
+                });
+                const j2 = await r2.json();
+                if (!r2.ok) throw new Error(j2.error || '休みの反映ができませんでした');
+            }
+        }
+        closePlanEditor();
         await load();
     } catch (e) {
-        el('exec-msg').textContent = e.message;
+        el('plan-msg').textContent = e.message;
     }
 }
-
-function saveExecPlan() {
-    let kind = el('exec-kind').value;
-    if (kind === 'その他') {
-        kind = (el('exec-free').value || '').trim();
-        if (!kind) { el('exec-msg').textContent = '内容を入力してください'; return; }
-    }
-    let code;
-    if (kind === '終日休み') code = 'exec_off';
-    else {
-        const from = el('exec-start').value, to = el('exec-end').value;
-        const withTime = (EXEC_NO_TIME_KINDS.indexOf(kind) === -1) && from && to;
-        code = 'exec:' + (withTime ? `${from}-${to} ${kind}` : kind);
-    }
-    sendExecPlan(code.slice(0, 30));
-}
-
-function clearExecPlan() { sendExecPlan(''); }
 </script>
 
-<!-- 役員の予定を入れる画面 -->
-<div id="exec-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center px-4"
+<!-- スケジュールを入れる画面（1日に何件でも） -->
+<div id="plan-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center px-4"
      style="background:rgba(0,0,0,.45)">
-    <div class="bg-white rounded-2xl shadow-xl p-5 w-full max-w-sm">
-        <div class="flex items-center justify-between mb-3">
-            <span class="text-lg font-bold text-gray-800">予定を入れる</span>
-            <span id="exec-when" class="text-sm text-gray-500"></span>
+    <div class="bg-white rounded-2xl shadow-xl p-5 w-full max-w-md max-h-[90vh] overflow-y-auto">
+        <div class="flex items-center justify-between mb-1">
+            <span class="text-lg font-bold text-gray-800">スケジュール</span>
+            <span id="plan-when" class="text-sm text-gray-500"></span>
         </div>
-        <label class="block text-sm font-bold text-gray-600 mb-1">内容</label>
-        <select id="exec-kind" onchange="onExecKindChange()"
-                class="w-full px-3 py-3 border border-gray-300 rounded-lg mb-3 text-base"></select>
-        <div id="exec-free-row" class="hidden mb-3">
-            <label class="block text-sm font-bold text-gray-600 mb-1">内容を入力</label>
-            <input id="exec-free" type="text" maxlength="12"
-                   class="w-full px-3 py-3 border border-gray-300 rounded-lg text-base" placeholder="例: 会議">
+        <div id="plan-who" class="text-sm text-gray-500 mb-3"></div>
+
+        <div id="plan-off-row" class="hidden mb-3">
+            <label class="flex items-center gap-2 text-base font-bold text-gray-700">
+                <input id="plan-off" type="checkbox" class="w-5 h-5">
+                この日は終日休み
+            </label>
         </div>
-        <div id="exec-time-row" class="mb-4">
-            <label class="block text-sm font-bold text-gray-600 mb-1">時間（いらないときは「指定なし」）</label>
-            <div class="flex items-center gap-2">
-                <select id="exec-start" class="flex-1 px-2 py-3 border border-gray-300 rounded-lg text-base"></select>
-                <span class="text-gray-500">〜</span>
-                <select id="exec-end" class="flex-1 px-2 py-3 border border-gray-300 rounded-lg text-base"></select>
-            </div>
-        </div>
-        <div id="exec-msg" class="text-sm text-red-600 mb-2"></div>
+
+        <div id="plan-rows" class="space-y-2 mb-2"></div>
+        <button type="button" onclick="addPlanRow()"
+                class="w-full border border-dashed border-teal-400 text-teal-700 font-bold py-2 rounded-lg mb-3">
+            ＋ 予定を追加
+        </button>
+        <p class="text-[11px] text-gray-500 mb-2">
+            例）9:00〜10:00 デイ面接 ／ 10:00〜17:00 本社。時間を空にすると終日の予定になります。
+        </p>
+        <div id="plan-msg" class="text-sm text-red-600 mb-2"></div>
         <div class="flex items-center gap-2">
-            <button onclick="saveExecPlan()"
-                    class="flex-1 bg-teal-600 hover:bg-teal-700 text-white font-bold py-3 rounded-lg">決定</button>
-            <button onclick="clearExecPlan()"
-                    class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-3 px-4 rounded-lg">空にする</button>
-            <button onclick="closeExecPlan()"
+            <button type="button" onclick="savePlans()"
+                    class="flex-1 bg-teal-600 hover:bg-teal-700 text-white font-bold py-3 rounded-lg">保存</button>
+            <button type="button" onclick="closePlanEditor()"
                     class="bg-white border border-gray-300 text-gray-600 font-bold py-3 px-4 rounded-lg">やめる</button>
         </div>
     </div>

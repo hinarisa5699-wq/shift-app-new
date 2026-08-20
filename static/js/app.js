@@ -957,6 +957,17 @@ function renderCalendar(data, year, month) {
     const oncallMap = data.oncall || {};  // {date: 氏名} オンコール担当
     const dayOffMap = data.day_off_requests || {};  // {date: [staff_id,...]} 休み希望
     const parkingMap = data.parking || {};  // 駐車場 {date: {staff_id: "4"/"7"/"8"/"コイン"}}
+    // 手入力のスケジュール {date: {staff_id: [{label}, ...]}}（ユーザー依頼 2026-08）
+    const planMap = data.plans || {};
+    const PLAN_PLACEHOLDER = '<span style="color:#d1d5db;font-size:10px">＋</span>';
+
+    // その日の手入力スケジュールを小さく並べる（勤務の下に付ける）
+    function planLines(dateStr, staffId) {
+        const list = (planMap[dateStr] || {})[String(staffId)] || [];
+        return list.map(pl =>
+            `<div style="font-size:9px;font-weight:700;color:#047857">${escapeHtml(pl.label)}</div>`
+        ).join('');
+    }
 
     // 駐車場バッジ（車通勤・出勤者のみ map に存在）
     function parkingBadge(dateStr, staffId) {
@@ -1116,8 +1127,16 @@ function renderCalendar(data, year, month) {
         return '<span class="badge badge-off">休</span>';
     }
 
-    // ケアスタッフ 1 セルの中身
+    // ケアスタッフ 1 セルの中身（勤務＋手入力のスケジュール）
     function careCellHtml(dateStr, s) {
+        const plans = planLines(dateStr, s.id);
+        const base = careShiftCellHtml(dateStr, s);
+        // 予定だけ入っている役員・事務のセルは「＋」を出さない
+        return ((plans && base === PLAN_PLACEHOLDER) ? '' : base) + plans;
+    }
+
+    // ケアスタッフ 1 セルの勤務部分
+    function careShiftCellHtml(dateStr, s) {
         const assignment = shiftMap[dateStr] ? shiftMap[dateStr][s.id] : null;
         if (isPlanOnlyStaff(s)) {
             // 役員・事務は自動作成の対象外。クリックで予定を選んで入れる
@@ -1126,7 +1145,7 @@ function renderCalendar(data, year, month) {
                 return `<span class="badge" style="background:#fef3c7;color:#92400e">`
                      + `${escapeHtml(assignment.slice(5))}</span>`;
             }
-            return '<span style="color:#d1d5db;font-size:10px">＋</span>';
+            return PLAN_PLACEHOLDER;
         }
         if (!assignment || assignment === 'off') {
             return offCellHtml(dateStr, s);
@@ -1284,6 +1303,7 @@ function renderCalendar(data, year, month) {
                 } else {
                     cell = offCellHtml(m.dateStr, s);
                 }
+                cell += planLines(m.dateStr, s.id);
                 const _drag = (a && a !== 'cook_off') ? ' draggable="true"' : '';
                 r += `<td class="staff-cell shift-cell ${m.colClass}" data-date="${m.dateStr}" data-staff="${s.id}"`
                    + ` data-group="cooking" data-assignment="${a || ''}"${_drag}>${cell}</td>`;

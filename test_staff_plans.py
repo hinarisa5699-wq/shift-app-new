@@ -203,17 +203,19 @@ def test_deleting_staff_removes_their_plans(tmp_path, monkeypatch):
         assert StaffPlan.query.filter_by(staff_id=ids["care"]).count() == 0
 
 
-def test_cooking_pattern_9_to_16_exists(tmp_path, monkeypatch):
-    """調理シフトに 9:00-16:00 の種類がある。
+def test_cooking_patterns_9_to_16_and_9_to_19_exist(tmp_path, monkeypatch):
+    """調理シフトに 9:00-16:00 と 9:00-19:00 の種類がある。
 
-    ユーザー依頼 2026-08:「調理のシフト 9時から16時 項目追加」。
+    ユーザー依頼 2026-08:「調理のシフト 9時から16時 項目追加」
+    「調理9時から19時も追加」。
     コード番号ではなく時間帯で保証するので、番号がずれている環境でも入る。
     """
     from models import ShiftPattern
 
     flask_app = _make_app(tmp_path, monkeypatch)
     with flask_app.app_context():
-        rows = ShiftPattern.query.filter_by(
-            staff_group="cooking", start_time="09:00", end_time="16:00").all()
-        assert len(rows) == 1
-        assert "9:00-16:00" in rows[0].label
+        for start, end in (("09:00", "16:00"), ("09:00", "19:00")):
+            rows = ShiftPattern.query.filter_by(
+                staff_group="cooking", start_time=start, end_time=end).all()
+            assert len(rows) == 1, (start, end)
+            assert "{}-{}".format(start.lstrip("0"), end) in rows[0].label

@@ -1375,6 +1375,47 @@ function renderWarnings(warnings) {
 }
 
 /* ============================================
+   Googleカレンダー取り込み（読み取りのみ）
+   職員の編集画面で「Googleカレンダー連携」にURLを入れた職員ぶんをまとめて取り込む。
+   ユーザー依頼 2026-08:「前垣茜のみGoogleカレンダー連動して」。
+   ボタンは常に出し、URL未登録なら押したときに設定手順を出す
+   （隠すと「取り込みはどこ？」となって設定に辿り着けないため）。
+   ============================================ */
+function showGcalMessage(text, ok) {
+    const box = document.getElementById('gcal-msg');
+    if (!box) return;
+    box.textContent = text;
+    box.className = 'mb-4 px-4 py-3 rounded-lg border font-medium ' + (ok
+        ? 'bg-green-50 border-green-300 text-green-800'
+        : 'bg-red-50 border-red-300 text-red-800');
+    box.classList.remove('hidden');
+}
+
+function importGoogleCalendar() {
+    const btn = document.getElementById('gcal-import-btn');
+    const year = parseInt(document.getElementById('year-select').value);
+    const month = parseInt(document.getElementById('month-select').value);
+    if (btn) btn.disabled = true;
+    showGcalMessage('Googleカレンダーを読み込んでいます...', true);
+
+    fetchWithCsrf('/api/staff-plans/google-import-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ year: year, month: month }),
+    })
+        .then(res => res.json().then(j => ({ ok: res.ok, j: j })))
+        .then(({ ok, j }) => {
+            if (!ok) throw new Error(j.error || '取り込めませんでした。');
+            const done = (j.results || []).map(x => `${x.name}さん ${x.imported}件`
+                + (x.private ? `（うち私用 ${x.private}件）` : ''));
+            showGcalMessage(`${month}月の予定を取り込みました：` + done.join(' / '), true);
+            loadShifts(year, month);
+        })
+        .catch(err => showGcalMessage(err.message, false))
+        .finally(() => { if (btn) btn.disabled = false; });
+}
+
+/* ============================================
    エクスポート
    ============================================ */
 function exportShift(format) {

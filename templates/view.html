@@ -548,13 +548,11 @@ function removePlanRow(btn) {
    Googleカレンダーの取り込み（読み取りのみ）
    職員マスタにURLを入れた職員だけが対象。ボタンは対象がいるときだけ出す。
    ============================================ */
-function gcalTargets(staffList) {
-    return (staffList || []).filter(s => s.has_google_calendar
-        && (PLAN_EDITABLE_IDS === null || PLAN_EDITABLE_IDS.indexOf(s.id) !== -1));
-}
-
+// ボタンは常に出す。URL未登録のときは押したときに「次に何をすればよいか」を出す
+//   （隠すと「取り込みはどこ？」となって設定に辿り着けないため）。
 function updateGcalButton(staffList) {
-    el('gcal-import').classList.toggle('hidden', gcalTargets(staffList).length === 0);
+    const canEdit = (PLAN_EDITABLE_IDS === null || PLAN_EDITABLE_IDS.length > 0);
+    el('gcal-import').classList.toggle('hidden', !canEdit);
 }
 
 function showGcalMsg(text, ok) {
@@ -565,28 +563,21 @@ function showGcalMsg(text, ok) {
 }
 
 async function importGoogleCalendar() {
-    const targets = gcalTargets((state.data || {}).staff_list);
-    if (!targets.length) return;
     const btn = el('gcal-import');
     btn.disabled = true;
     showGcalMsg('取り込み中...', true);
     const token = document.querySelector('meta[name="csrf-token"]').content;
-    const head = { 'Content-Type': 'application/json', 'X-CSRFToken': token };
-    const done = [];
     try {
-        for (const st of targets) {
-            const r = await fetch('/api/staff-plans/google-import', {
-                method: 'POST', headers: head,
-                body: JSON.stringify({
-                    staff_id: st.id, year: state.year, month: state.month,
-                }),
-            });
-            const j = await r.json();
-            if (!r.ok) throw new Error(`${st.name}さん: ${j.error || '取り込めませんでした'}`);
-            done.push(`${st.name}さん ${j.imported}件`
-                + (j.private ? `（うち私用 ${j.private}件）` : ''));
-        }
+        const r = await fetch('/api/staff-plans/google-import-all', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': token },
+            body: JSON.stringify({ year: state.year, month: state.month }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || '取り込めませんでした');
         await load();
+        const done = (j.results || []).map(x => `${x.name}さん ${x.imported}件`
+            + (x.private ? `（うち私用 ${x.private}件）` : ''));
         showGcalMsg(`${state.month}月の予定を取り込みました：` + done.join(' / '), true);
     } catch (e) {
         showGcalMsg(e.message, false);

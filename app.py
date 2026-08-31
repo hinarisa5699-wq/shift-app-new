@@ -387,6 +387,54 @@ def _normalize_plan_time(raw) -> str:
     return "{:02d}:{:02d}".format(hour, minute)
 
 
+def _import_google_plans(staff, year, month):
+    """1人ぶんのGoogleカレンダーを対象月に取り込む（commit は呼び出し側）。
+
+    その月の取り込み済み(source="google")を消してから入れ直すので、
+    何度実行しても増えない。手入力(source="manual")には触らない。
+    URL未登録・取得失敗は gcal.GoogleCalendarError を投げる。
+    """
+    url = (getattr(staff, "google_ics_url", "") or "").strip()
+    if not url:
+        raise gcal.GoogleCalendarError(
+            "{}さんにGoogleカレンダーのURLが登録されていません。"
+            "職員の編集画面で設定してください。".format(staff.name))
+
+    first_day = date(year, month, 1)
+    last_day = date(year, month, calendar.monthrange(year, month)[1])
+    rows = gcal.import_month(url, first_day, last_day)
+
+    StaffPlan.query.filter(
+        StaffPlan.staff_id == staff.id,
+        StaffPlan.date >= first_day,
+        StaffPlan.date <= last_day,
+        StaffPlan.source == "google",
+    ).delete(synchronize_session=False)
+
+    per_day = {}
+    added = 0
+    skipped = 0
+    for row in rows:
+        n = per_day.get(row["date"], 0)
+        if n >= PLAN_MAX_PER_DAY:
+            skipped += 1          # 1日の上限を超えるぶんは入れない
+            continue
+        per_day[row["date"]] = n + 1
+        db.session.add(StaffPlan(
+            staff_id=staff.id, date=row["date"],
+            start_time=row["start_time"], end_time=row["end_time"],
+            title=row["title"], display_order=n,
+            source="google", external_uid=(row.get("uid") or "")[:200],
+        ))
+        added += 1
+
+    return {
+        "imported": added,
+        "skipped": skipped,
+        "private": sum(1 for r in rows if r["title"] == gcal.PRIVATE_TITLE),
+    }
+
+
 def _normalize_google_ics_url(raw, fallback=""):
     """職員フォームのGoogleカレンダーURLを検証する。
 
@@ -1395,13 +1443,13 @@ _VIEWER_ENDPOINTS = {
 # 役員・事務ロールは閲覧に加えて「自分たちの予定」の保存だけできる
 _EXEC_ENDPOINTS = _VIEWER_ENDPOINTS | {
     "api_shift_cells_update", "api_staff_plans_update", "api_staff_plans_get",
-    "api_staff_plans_google_import",
+    "api_staff_plans_google_import", "api_staff_plans_google_import_all",
 }
 # 職員ごとのアカウント（閲覧ロール）でも、自分の予定だけは入れられる。
 #   実際に誰のどの内容を変えられるかは各APIの中でもう一度確かめる。
 _OWN_PLAN_ENDPOINTS = {
     "api_staff_plans_update", "api_staff_plans_get", "api_shift_cells_update",
-    "api_staff_plans_google_import",
+    "api_staff_plans_google_import", "api_staff_plans_google_import_all",
 }
 
 
@@ -1569,7 +1617,8 @@ def create_app():
             ok = endpoint in _EXEC_ENDPOINTS and (
                 request.method == "GET"
                 or endpoint in ("api_shift_cells_update", "api_staff_plans_update",
-                                "api_staff_plans_google_import")
+                                "api_staff_plans_google_import",
+                                "api_staff_plans_google_import_all")
             )
             if not ok:
                 if request.path.startswith("/api/"):
@@ -4145,45 +4194,79 @@ def create_app():
                          "職員の編集画面で設定してください。".format(staff.name),
             }), 400
 
-        first_day = date(year, month, 1)
-        last_day = date(year, month, calendar.monthrange(year, month)[1])
         try:
-            rows = gcal.import_month(url, first_day, last_day)
+            result = _import_google_plans(staff, year, month)
         except gcal.GoogleCalendarError as e:
             return jsonify({"error": str(e)}), 400
         except Exception:
             app.logger.exception("Googleカレンダーの取り込みに失敗")
             return jsonify({"error": "取り込みに失敗しました。"}), 500
+        db.session.commit()
 
-        StaffPlan.query.filter(
-            StaffPlan.staff_id == staff_id,
-            StaffPlan.date >= first_day,
-            StaffPlan.date <= last_day,
-            StaffPlan.source == "google",
-        ).delete(synchronize_session=False)
+        result["plans"] = _plans_payload(year, month)
+        return jsonify(result)
 
-        per_day = {}
-        added = 0
-        skipped = 0
-        for row in rows:
-            n = per_day.get(row["date"], 0)
-            if n >= PLAN_MAX_PER_DAY:
-                skipped += 1          # 1日の上限を超えるぶんは入れない
-                continue
-            per_day[row["date"]] = n + 1
-            db.session.add(StaffPlan(
-                staff_id=staff_id, date=row["date"],
-                start_time=row["start_time"], end_time=row["end_time"],
-                title=row["title"], display_order=n,
-                source="google", external_uid=(row.get("uid") or "")[:200],
-            ))
-            added += 1
+    @app.route("/api/staff-plans/google-import-all", methods=["POST"])
+    def api_staff_plans_google_import_all():
+        """URLが登録されている職員ぶんをまとめて取り込む。
+
+        {"year": 2026, "month": 9}
+
+        画面側に「誰が対象か」を持たせないための入口。管理画面(/calendar)と
+        閲覧ページ(/view)の両方から同じものを呼ぶ。
+        対象が1人もいないときは、次に何をすればよいかを文言で返す
+        （ボタンを隠すと「取り込みはどこ？」となって辿り着けないため）。
+        """
+        data = request.get_json(silent=True) or {}
+        year = safe_int(data.get("year"), 0)
+        month = safe_int(data.get("month"), 0)
+        if not (2000 <= year <= 2100 and 1 <= month <= 12):
+            return jsonify({"error": "年月が正しくありません"}), 400
+
+        allowed = _plan_editable_staff_ids()
+        with_url = [
+            st for st in Staff.query.order_by(Staff.display_order, Staff.id).all()
+            if (getattr(st, "google_ics_url", "") or "").strip()
+        ]
+        targets = [
+            st for st in with_url if allowed is None or st.id in allowed
+        ]
+        if not targets:
+            if with_url:
+                return jsonify({
+                    "error": "このアカウントでは取り込めません。"
+                             "管理者アカウントか、ご本人のアカウントでログインしてください。",
+                }), 403
+            return jsonify({
+                "error": "Googleカレンダーのアドレスを登録した職員がまだいません。"
+                         "「職員」→ 対象の方の「編集」→「Googleカレンダー連携」に"
+                         "非公開URL（iCal形式）を貼って保存してください。",
+            }), 400
+
+        results = []
+        for staff in targets:
+            try:
+                res = _import_google_plans(staff, year, month)
+            except gcal.GoogleCalendarError as e:
+                db.session.rollback()
+                return jsonify({
+                    "error": "{}さん: {}".format(staff.name, e),
+                }), 400
+            except Exception:
+                db.session.rollback()
+                app.logger.exception("Googleカレンダーの取り込みに失敗")
+                return jsonify({
+                    "error": "{}さん: 取り込みに失敗しました。".format(staff.name),
+                }), 500
+            res["staff_id"] = staff.id
+            res["name"] = staff.name
+            results.append(res)
         db.session.commit()
 
         return jsonify({
-            "imported": added,
-            "skipped": skipped,
-            "private": sum(1 for r in rows if r["title"] == gcal.PRIVATE_TITLE),
+            "results": results,
+            "imported": sum(r["imported"] for r in results),
+            "private": sum(r["private"] for r in results),
             "plans": _plans_payload(year, month),
         })
 

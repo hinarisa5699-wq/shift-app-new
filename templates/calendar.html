@@ -49,6 +49,12 @@
             シフト生成
         </button>
 
+        <!-- Googleカレンダー取り込み（URLを登録した職員ぶん。読み取りのみ） -->
+        <button id="gcal-import-btn" onclick="importGoogleCalendar()"
+                class="bg-white border border-primary-500 hover:bg-primary-50 text-primary-700 font-bold py-3 px-6 rounded-lg shadow transition-colors text-base">
+            Googleカレンダー取り込み
+        </button>
+
         <!-- 出力ボタン（シフトデータがある時に表示） -->
         <div id="export-buttons" class="hidden flex items-center gap-2 sm:ml-auto">
             <button id="confirm-btn" onclick="confirmShift()"
@@ -98,6 +104,9 @@
     </div>
 
 </div>
+
+<!-- Googleカレンダー取り込みの結果・案内 -->
+<div id="gcal-msg" class="hidden mb-4 px-4 py-3 rounded-lg border font-medium"></div>
 
 <!-- 確定ステータス表示 -->
 <div id="confirmation-status" class="hidden mb-4 px-4 py-3 rounded-lg bg-green-50 border border-green-300 text-green-800 font-medium"></div>

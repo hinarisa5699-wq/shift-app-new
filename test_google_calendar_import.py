@@ -222,6 +222,48 @@ def test_import_is_idempotent_and_keeps_manual_plans(tmp_path, monkeypatch):
         ]
 
 
+def test_import_all_guides_when_no_url_is_registered(tmp_path, monkeypatch):
+    """URL未登録でも押せる。押したら次に何をすればよいかを返す。
+
+    ユーザー指摘 2026-08:「取込どこ？」。ボタンを隠していると設定に辿り着けないため、
+    ボタンは常に出し、この文言で職員編集画面へ誘導する。
+    """
+    app_module, flask_app = _load_app(tmp_path, monkeypatch)
+    _make_staff(app_module, flask_app, url="")
+    client = flask_app.test_client()
+    _login_admin(client, app_module)
+
+    res = client.post("/api/staff-plans/google-import-all",
+                      json={"year": 2026, "month": 9})
+    assert res.status_code == 400
+    msg = res.get_json()["error"]
+    assert "職員" in msg and "Googleカレンダー連携" in msg
+
+
+def test_import_all_imports_every_staff_with_a_url(tmp_path, monkeypatch):
+    app_module, flask_app = _load_app(tmp_path, monkeypatch)
+    url = ("https://calendar.google.com/calendar/ical/x%40group.calendar.google.com"
+           "/private-abc/basic.ics")
+    staff_id = _make_staff(app_module, flask_app, url=url)
+
+    text = _ics(
+        _event("a", ";TZID=Asia/Tokyo:20260903T090000",
+               ";TZID=Asia/Tokyo:20260903T100000", "デイ面接"),
+        _event("b", ";TZID=Asia/Tokyo:20260904T140000",
+               ";TZID=Asia/Tokyo:20260904T150000", "⭐通院"),
+    )
+    monkeypatch.setattr(gcal, "fetch_ics", lambda _url, timeout=20: text)
+
+    client = flask_app.test_client()
+    _login_admin(client, app_module)
+    res = client.post("/api/staff-plans/google-import-all",
+                      json={"year": 2026, "month": 9})
+    assert res.status_code == 200, res.get_data(as_text=True)
+    j = res.get_json()
+    assert j["imported"] == 2 and j["private"] == 1
+    assert [(r["staff_id"], r["name"]) for r in j["results"]] == [(staff_id, "前垣茜")]
+
+
 def test_staff_form_saves_and_validates_the_url(tmp_path, monkeypatch):
     """職員の編集画面でURLを保存できる／おかしいURLは弾いて元の値を残す。"""
     app_module, flask_app = _load_app(tmp_path, monkeypatch)

@@ -141,6 +141,9 @@ def test_fallback_reports_understaffed_at_13_when_only_half_day_cover_exists():
     settings = {
         # 13時在籍は min_day_service と同数を要求する。終日勤務できるのは4名
         # （残りは午前のみ/午後のみ）なので、5名要求で必ず不足になる。
+        # ※ 午後のみの2名はデイ④(13:30-17:30)に限定する（下の allowed_patterns）。
+        #    デイ⑦(12:30-16:30) を許可すると13時に在席できてしまい、
+        #    「午後半日しか埋められないので13時が不足」という前提が崩れるため。
         "min_day_service": 5,
         "max_day_service": 0,
         "min_visit_am": 0,
@@ -166,7 +169,7 @@ def test_fallback_reports_understaffed_at_13_when_only_half_day_cover_exists():
         staff,
         [],
         settings,
-        allowed_patterns={},
+        allowed_patterns={7: ["day_pattern4"], 8: ["day_pattern4"]},
     )
 
     assert shifts is not None

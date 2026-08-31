@@ -22,6 +22,7 @@ CARE_ASSIGNMENTS = [
     "day_pattern2",      # デイ② 9:00-16:00
     "day_pattern3",      # デイ③ 8:30-12:30（午前半日）
     "day_pattern4",      # デイ④ 13:30-17:30（午後半日）
+    "day_pattern5",      # デイ⑦ 12:30-16:30（午後半日・1時間前倒し）
     "visit_am",          # 訪問介護午前
     "visit_pm",          # 訪問介護午後
     "day_p3_visit_pm",   # ③デイ+PM訪問（兼務パターンA）
@@ -50,7 +51,7 @@ _COUNSELOR_DESK_SEAT_PATTERNS = {"day_pattern1", "day_pattern2"}
 #   ハード: これら＋desk席超過(2人目のday_pattern1/2)を相談員に割り当てない。
 #   ソフト: 「働く相談員のうち desk役1名を超える人数」を介護参加とみなし最小化。
 COUNSELOR_CARE_DUTY_ASSIGNMENTS = {
-    "day_pattern3", "day_pattern4", "visit_am", "visit_pm",
+    "day_pattern3", "day_pattern4", "day_pattern5", "visit_am", "visit_pm",
     "day_p3_visit_pm", "visit_am_day_p4", "early", "late", "nurse_short",
 }
 
@@ -59,7 +60,8 @@ COUNSELOR_CARE_DUTY_ASSIGNMENTS = {
 #   AM側(DAY_AM/VISIT_AM/PRESENT_AT_9/11)へは静的集合に含めず、_solve_care 内で日別に加算する。
 #   late(遅番 9:30-18:30) は終日デイ扱い（9時半から在席）。
 DAY_AM_ASSIGNMENTS = {"day_pattern1", "day_pattern2", "day_pattern3", "day_p3_visit_pm", "late"}
-DAY_PM_ASSIGNMENTS = {"day_pattern1", "day_pattern2", "day_pattern4", "visit_am_day_p4", "early", "late"}
+DAY_PM_ASSIGNMENTS = {"day_pattern1", "day_pattern2", "day_pattern4", "day_pattern5",
+                      "visit_am_day_p4", "early", "late"}
 VISIT_AM_ASSIGNMENTS = {"visit_am", "visit_am_day_p4"}
 VISIT_PM_ASSIGNMENTS = {"visit_pm", "day_p3_visit_pm"}
 
@@ -79,14 +81,15 @@ PRESENT_AT_11 = {
     "day_p3_visit_pm", "late",
 }
 
-# 13時在籍（昼食介助帯。午後半日/午後兼務は13:30開始のため含めない）
+# 13時在籍（昼食介助帯。デイ④/午後兼務は13:30開始のため含めない。
+#   デイ⑦ day_pattern5 は12:30開始のため13時には在席している）
 PRESENT_AT_13 = {
-    "day_pattern1", "day_pattern2", "early", "late",
+    "day_pattern1", "day_pattern2", "day_pattern5", "early", "late",
 }
 
 # 15時在籍（事業所に物理的にいる人。訪問外出中は含まない）
 PRESENT_AT_15 = {
-    "day_pattern1", "day_pattern2", "day_pattern4",
+    "day_pattern1", "day_pattern2", "day_pattern4", "day_pattern5",
     "visit_am_day_p4",     # AM訪問→PM事業所、15時は事業所にいる
     "early", "late",       # 早番・遅番ともPMは事業所
 }
@@ -100,7 +103,7 @@ PRESENT_AT_14 = set(PRESENT_AT_15)
 
 # 時間帯制限: am_only の職員が取れないアサインメント（午後を含む全パターン）
 AM_ONLY_FORBIDDEN = {
-    "day_pattern1", "day_pattern2", "day_pattern4", "visit_pm",
+    "day_pattern1", "day_pattern2", "day_pattern4", "day_pattern5", "visit_pm",
     "day_p3_visit_pm", "visit_am_day_p4", "early", "late", "nurse_short",
 }
 # 時間帯制限: pm_only の職員が取れないアサインメント（午前を含む全パターン）
@@ -111,7 +114,7 @@ PM_ONLY_FORBIDDEN = {
 
 # 事業所にいるアサインメント（電話当番可能 = デイ系のみ）
 DAY_SERVICE_ASSIGNMENTS = {
-    "day_pattern1", "day_pattern2", "day_pattern3", "day_pattern4",
+    "day_pattern1", "day_pattern2", "day_pattern3", "day_pattern4", "day_pattern5",
 }
 DAY_PATTERN_ASSIGNMENTS = set(DAY_SERVICE_ASSIGNMENTS)
 
@@ -128,6 +131,7 @@ ASSIGNMENT_TIME_RANGES = {
     "day_pattern2":    (9 * 60,      16 * 60),        # 9:00-16:00
     "day_pattern3":    (8 * 60 + 30, 12 * 60 + 30),   # 8:30-12:30
     "day_pattern4":    (13 * 60 + 30, 17 * 60 + 30),  # 13:30-17:30
+    "day_pattern5":    (12 * 60 + 30, 16 * 60 + 30),  # 12:30-16:30
     "visit_am":        (8 * 60 + 30, 12 * 60 + 30),   # 訪問午前
     "visit_pm":        (13 * 60 + 30, 17 * 60 + 30),  # 訪問午後
     "day_p3_visit_pm": (8 * 60 + 30, 17 * 60 + 30),   # 兼務A(午前デイ→午後訪問)
@@ -465,7 +469,7 @@ def _care_allowable_working_assignments(staff: dict, allowed_set: set) -> set:
                 allow.discard(a)
     if allowed_set:  # 非空＝制限あり（空集合は全許可セマンティクス）
         for a in ("day_pattern1", "day_pattern2", "day_pattern3",
-                  "day_pattern4", "early", "late"):
+                  "day_pattern4", "day_pattern5", "early", "late"):
             if a not in allowed_set:
                 allow.discard(a)
         for dual, base in (("day_p3_visit_pm", "day_pattern3"),
@@ -477,6 +481,10 @@ def _care_allowable_working_assignments(staff: dict, allowed_set: set) -> set:
             for a in VISIT_ASSIGNMENTS:
                 if a not in allowed_visit:
                     allow.discard(a)
+    # デイ⑦(12:30-16:30) はチェックした職員だけの枠。
+    #   「チェックなし＝全パターン許可」にも含めない（solver の割当条件と揃える）。
+    if "day_pattern5" not in allowed_set:
+        allow.discard("day_pattern5")
     return allow
 
 
@@ -1336,6 +1344,7 @@ def _is_onsite_at(assignment, check_min):
         "day_pattern2":    (540, 960),    # 9:00-16:00
         "day_pattern3":    (510, 750),    # 8:30-12:30
         "day_pattern4":    (810, 1050),   # 13:30-17:30
+        "day_pattern5":    (750, 990),    # 12:30-16:30
         "day_p3_visit_pm": (510, 750),    # 午前のみ施設
         "visit_am_day_p4": (810, 1050),   # 午後のみ施設
     }
@@ -2213,14 +2222,23 @@ def _solve_care(
     #       day_pattern4 が唯一の勤務形のため、その職員には許可（締め出さない）。
     #     - 固定/手動でピン留めした半日(locked)は対象外＝尊重して消さない。
     #   （兼務パターン day_p3_visit_pm / visit_am_day_p4 は別コードのため影響しない）
+    #
+    #   ユーザー依頼 2026-08:「12:30-16:30 はチェックした人だけあてる」。
+    #     デイ⑦(day_pattern5) は「許可シフトパターンで明示チェックした職員」だけに
+    #     自動割当する。この枠だけは opt-in 専用なので、「チェックなし＝全パターン許可」
+    #     の職員にも付けない（勝手に増やさない）。午後のみ勤務(pm_only)でも
+    #     チェックが無ければ従来どおりデイ④になる。
     # ==================================================================
     for s in free_staff_ids:
         ts = staff_by_id[s].get("available_time_slots", "full_day")
+        dp5_opted_in = "day_pattern5" in set((allowed_patterns or {}).get(s, ()) or ())
         for d_idx in range(num_days):
             if ts != "am_only":
                 model.add(x[s, d_idx, "day_pattern3"] == 0)
             if ts != "pm_only":
                 model.add(x[s, d_idx, "day_pattern4"] == 0)
+            if not dp5_opted_in:
+                model.add(x[s, d_idx, "day_pattern5"] == 0)
 
     # ==================================================================
     # 追加出勤日（振替）: 出勤可能日を「通常に加えて出勤」で登録した日
@@ -2471,7 +2489,8 @@ def _solve_care(
                 # ※ このコードに存在しないアサインメント(旧バージョンの early/late 等)は
                 #   CARE_WORKING_ASSIGNMENTS ガードでスキップし、KeyError を避ける。
                 for a in ("day_pattern1", "day_pattern2", "day_pattern3",
-                          "day_pattern4", "early", "late", "nurse_short"):
+                          "day_pattern4", "day_pattern5", "early", "late",
+                          "nurse_short"):
                     if a in CARE_WORKING_ASSIGNMENTS and a not in allowed:
                         for d_idx in range(num_days):
                             model.add(x[s, d_idx, a] == 0)

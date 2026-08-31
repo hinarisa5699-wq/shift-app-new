@@ -53,8 +53,11 @@
             <select id="month" class="px-3 py-2 border border-gray-300 rounded-lg text-base"></select>
             <button id="next" class="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 font-bold">▶</button>
             <button id="reload" class="px-3 py-2 rounded-lg bg-teal-600 text-white font-bold">最新に更新</button>
+            <button id="gcal-import" type="button"
+                    class="hidden px-3 py-2 rounded-lg bg-white border border-teal-500 text-teal-700 font-bold">Googleカレンダー取り込み</button>
             <span id="status" class="text-sm px-2 py-1 rounded-full"></span>
         </div>
+        <div id="gcal-msg" class="hidden mt-2 text-sm"></div>
         <div class="mt-3 flex flex-wrap items-center gap-2">
             <div class="inline-flex rounded-lg overflow-hidden border border-gray-300">
                 <button id="tab-person" class="px-4 py-2 text-sm font-bold bg-teal-600 text-white">個人</button>
@@ -101,7 +104,8 @@ const LABELS = {
     day_pattern1: 'デイ 8:30-17:30',
     day_pattern2: 'デイ 9:00-16:00',
     day_pattern3: 'デイ午前 8:30-12:30',
-    day_pattern4: 'デイ午後 12:30-17:30',
+    day_pattern4: 'デイ午後 13:30-17:30',
+    day_pattern5: 'デイ午後 12:30-16:30',
     early: '早番 7:30-16:30',
     late: '遅番 9:30-18:30',
     nurse_short: '看護 9:30-13:30',
@@ -141,6 +145,7 @@ function initSelectors() {
     el('prev').onclick = () => shiftMonth(-1);
     el('next').onclick = () => shiftMonth(1);
     el('reload').onclick = () => load();
+    el('gcal-import').onclick = () => importGoogleCalendar();
     el('tab-person').onclick = () => setMode('person');
     el('tab-care').onclick = () => setMode('care');
     el('tab-cook').onclick = () => setMode('cook');
@@ -342,6 +347,7 @@ function render() {
         (conf ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800');
 
     const staffList = data.staff_list || [];
+    updateGcalButton(staffList);
     const sel = el('person');
     alignGroupToMe();
     const sig = String(staffList.length) + ':' + staffList.map(s => s.id).join(',');
@@ -538,6 +544,57 @@ function removePlanRow(btn) {
     if (row && row.parentNode) row.parentNode.removeChild(row);
 }
 
+/* ============================================
+   Googleカレンダーの取り込み（読み取りのみ）
+   職員マスタにURLを入れた職員だけが対象。ボタンは対象がいるときだけ出す。
+   ============================================ */
+function gcalTargets(staffList) {
+    return (staffList || []).filter(s => s.has_google_calendar
+        && (PLAN_EDITABLE_IDS === null || PLAN_EDITABLE_IDS.indexOf(s.id) !== -1));
+}
+
+function updateGcalButton(staffList) {
+    el('gcal-import').classList.toggle('hidden', gcalTargets(staffList).length === 0);
+}
+
+function showGcalMsg(text, ok) {
+    const box = el('gcal-msg');
+    box.textContent = text;
+    box.className = 'mt-2 text-sm ' + (ok ? 'text-teal-700' : 'text-red-600');
+    box.classList.remove('hidden');
+}
+
+async function importGoogleCalendar() {
+    const targets = gcalTargets((state.data || {}).staff_list);
+    if (!targets.length) return;
+    const btn = el('gcal-import');
+    btn.disabled = true;
+    showGcalMsg('取り込み中...', true);
+    const token = document.querySelector('meta[name="csrf-token"]').content;
+    const head = { 'Content-Type': 'application/json', 'X-CSRFToken': token };
+    const done = [];
+    try {
+        for (const st of targets) {
+            const r = await fetch('/api/staff-plans/google-import', {
+                method: 'POST', headers: head,
+                body: JSON.stringify({
+                    staff_id: st.id, year: state.year, month: state.month,
+                }),
+            });
+            const j = await r.json();
+            if (!r.ok) throw new Error(`${st.name}さん: ${j.error || '取り込めませんでした'}`);
+            done.push(`${st.name}さん ${j.imported}件`
+                + (j.private ? `（うち私用 ${j.private}件）` : ''));
+        }
+        await load();
+        showGcalMsg(`${state.month}月の予定を取り込みました：` + done.join(' / '), true);
+    } catch (e) {
+        showGcalMsg(e.message, false);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
 function openPlanEditor(dateStr, staffId) {
     const data = state.data || {};
     const staff = (data.staff_list || []).find(x => x.id === staffId);
@@ -548,7 +605,15 @@ function openPlanEditor(dateStr, staffId) {
         canOff: canEditExecCell(staff),
     };
     el('plan-rows').innerHTML = '';
-    plansOf(data, dateStr, staffId).forEach(pl => addPlanRow(pl.start_time, pl.end_time, pl.title));
+    // Googleカレンダーから取り込んだ予定は読み取り専用（消して保存すると取り込み直すまで戻らない）
+    const all = plansOf(data, dateStr, staffId);
+    const fromGoogle = all.filter(pl => pl.source === 'google');
+    el('plan-google').innerHTML = fromGoogle.map(pl =>
+        `<div class="text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1">${esc(pl.label)}</div>`
+    ).join('');
+    el('plan-google-box').classList.toggle('hidden', !fromGoogle.length);
+    all.filter(pl => pl.source !== 'google')
+       .forEach(pl => addPlanRow(pl.start_time, pl.end_time, pl.title));
     // 旧いやり方（勤務欄に入れた「exec:9:00-12:00 デイ面接」）は予定として引き継ぐ
     if (planEdit.canOff && current.indexOf('exec:') === 0) {
         const text = current.slice(5);
@@ -642,6 +707,15 @@ async function savePlans() {
                 <input id="plan-off" type="checkbox" class="w-5 h-5">
                 この日は終日休み
             </label>
+        </div>
+
+        <!-- Googleカレンダーから取り込んだ予定（ここでは直せない。取り込み直しで更新） -->
+        <div id="plan-google-box" class="hidden mb-3">
+            <div class="text-xs font-bold text-gray-600 mb-1">Googleカレンダーの予定</div>
+            <div id="plan-google" class="space-y-1"></div>
+            <p class="text-[11px] text-gray-500 mt-1">
+                この予定はGoogleカレンダー側で直してください。直したあと「Googleカレンダー取り込み」を押すと反映されます。
+            </p>
         </div>
 
         <div id="plan-rows" class="space-y-2 mb-2"></div>

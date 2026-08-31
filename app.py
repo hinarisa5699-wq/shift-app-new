@@ -44,6 +44,7 @@ from flask_wtf.csrf import CSRFProtect, CSRFError
 from werkzeug.security import generate_password_hash, check_password_hash
 
 import jpholiday
+import gcal
 from config import Config
 from models import (
     db, Staff, DayOffRequest, ShiftSettings, GeneratedShift, ShiftWarning,
@@ -293,6 +294,7 @@ _PATTERN_CODE_TO_ASSIGNMENT = {
     "care_4": "day_pattern4",
     "care_5": "early",
     "care_6": "late",
+    "care_7": "day_pattern5",
     "cooking_1": "cooking_1",
     "cooking_2": "cooking_2",
     "cooking_3": "cooking_3",
@@ -383,6 +385,18 @@ def _normalize_plan_time(raw) -> str:
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
         return ""
     return "{:02d}:{:02d}".format(hour, minute)
+
+
+def _normalize_google_ics_url(raw, fallback=""):
+    """職員フォームのGoogleカレンダーURLを検証する。
+
+    形式が違うときは理由を画面に出し、元の値を残す（他の項目の保存は止めない）。
+    """
+    try:
+        return gcal.normalize_ics_url(raw)
+    except gcal.GoogleCalendarError as e:
+        flash(str(e), "error")
+        return fallback
 
 
 def _plans_for_day(staff_id, d):
@@ -915,6 +929,33 @@ def _run_migrations(app):
         if "max_day_service" not in columns:
             cursor.execute("ALTER TABLE shift_settings ADD COLUMN max_day_service INTEGER DEFAULT 0")
 
+    # Staff: Googleカレンダーの限定公開URL（ユーザー依頼 2026-08）
+    columns = [row[1] for row in cursor.execute("PRAGMA table_info(staff)").fetchall()]
+    if columns and "google_ics_url" not in columns:
+        cursor.execute(
+            "ALTER TABLE staff ADD COLUMN google_ics_url VARCHAR(500) NOT NULL DEFAULT ''"
+        )
+
+    # StaffPlan: 手入力かGoogleカレンダー取り込みかの区別（既存の行はすべて手入力）
+    tables = {
+        row[0] for row in cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    if "staff_plan" in tables:
+        columns = [
+            row[1] for row in cursor.execute("PRAGMA table_info(staff_plan)").fetchall()
+        ]
+        if "source" not in columns:
+            cursor.execute(
+                "ALTER TABLE staff_plan ADD COLUMN source VARCHAR(10) "
+                "NOT NULL DEFAULT 'manual'"
+            )
+        if "external_uid" not in columns:
+            cursor.execute(
+                "ALTER TABLE staff_plan ADD COLUMN external_uid VARCHAR(200) "
+                "NOT NULL DEFAULT ''"
+            )
+
     conn.commit()
     conn.close()
 
@@ -1017,6 +1058,12 @@ _INITIAL_PATTERNS = [
     {"code": "care_6", "staff_group": "care", "label": "⑥ 遅番 9:30-18:30",
      "start_time": "09:30", "end_time": "18:30", "has_break": False, "break_minutes": 0,
      "display_order": 11, "period": "full", "covers_am": True, "covers_pm": True},
+    # ユーザー依頼 2026-08:「13:30-17:30 はそのままで 12:30-16:30 を看護・介護へ追加」。
+    #   ④(13:30-17:30) を1時間前倒しした午後半日枠。看護も介護も staff_group="care"
+    #   なので、この1件で両方の「許可シフトパターン」欄に出る。
+    {"code": "care_7", "staff_group": "care", "label": "⑦ 12:30-16:30",
+     "start_time": "12:30", "end_time": "16:30", "has_break": False, "break_minutes": 0,
+     "display_order": 12, "period": "pm", "covers_am": False, "covers_pm": True},
     {"code": "cooking_1", "staff_group": "cooking", "label": "(1) 6:00-8:00",
      "start_time": "06:00", "end_time": "08:00", "has_break": False, "break_minutes": 0,
      "display_order": 5, "period": "full", "covers_am": True, "covers_pm": False},
@@ -1348,11 +1395,13 @@ _VIEWER_ENDPOINTS = {
 # 役員・事務ロールは閲覧に加えて「自分たちの予定」の保存だけできる
 _EXEC_ENDPOINTS = _VIEWER_ENDPOINTS | {
     "api_shift_cells_update", "api_staff_plans_update", "api_staff_plans_get",
+    "api_staff_plans_google_import",
 }
 # 職員ごとのアカウント（閲覧ロール）でも、自分の予定だけは入れられる。
 #   実際に誰のどの内容を変えられるかは各APIの中でもう一度確かめる。
 _OWN_PLAN_ENDPOINTS = {
     "api_staff_plans_update", "api_staff_plans_get", "api_shift_cells_update",
+    "api_staff_plans_google_import",
 }
 
 
@@ -1519,7 +1568,8 @@ def create_app():
             # 閲覧＋「役員の予定」の保存のみ（中身のチェックは保存時に行う）
             ok = endpoint in _EXEC_ENDPOINTS and (
                 request.method == "GET"
-                or endpoint in ("api_shift_cells_update", "api_staff_plans_update")
+                or endpoint in ("api_shift_cells_update", "api_staff_plans_update",
+                                "api_staff_plans_google_import")
             )
             if not ok:
                 if request.path.startswith("/api/"):
@@ -2129,6 +2179,10 @@ def create_app():
             backup_only="backup_only" in request.form,
             oncall_when_off_ok="oncall_when_off_ok" in request.form if is_care else False,
             public_holiday_count=max(0, safe_int(request.form.get("public_holiday_count"), 0)),
+            # Googleカレンダー連携（URLを入れた職員だけが取り込み対象）
+            google_ics_url=_normalize_google_ics_url(
+                request.form.get("google_ics_url", "")
+            ),
             car_commute="car_commute" in request.form,
             parking_slot=(request.form.get("parking_slot", "") or "").strip(),
             # 調理スタッフのみ新人/ベテランを保持（それ以外は未設定）
@@ -2243,6 +2297,11 @@ def create_app():
         staff.fixed_days_off = fixed_days_off
         staff.required_days = ",".join(request.form.getlist("required_days"))
         staff.weekend_constraint = request.form.get("weekend_constraint", "")
+        # Googleカレンダー連携（空欄にすれば連携解除。取り込み済みの予定は残る）
+        staff.google_ics_url = _normalize_google_ics_url(
+            request.form.get("google_ics_url", ""),
+            fallback=(staff.google_ics_url or ""),
+        )
         staff.holiday_ng = "holiday_ng" in request.form
         staff.on_leave = "on_leave" in request.form
         staff.retired = "retired" in request.form
@@ -3873,6 +3932,9 @@ def create_app():
                         "car_commute": st.car_commute or False,
                         # 訪問に出られる職員か（手直し画面で訪問NGの人を弾くため）
                         "can_visit": bool(st.can_visit),
+                        # Googleカレンダー連携済みか（取り込みボタンの出し分け用）
+                        "has_google_calendar": bool(
+                            (getattr(st, "google_ics_url", "") or "").strip()),
                         # 画面で直接編集したときの公休チェック用
                         "public_holiday_target": _public_holiday_target(st, year, month),
                     }
@@ -3888,6 +3950,7 @@ def create_app():
                             ("day_pattern2", ASSIGNMENT_LABELS["day_pattern2"]),
                             ("day_pattern3", ASSIGNMENT_LABELS["day_pattern3"]),
                             ("day_pattern4", ASSIGNMENT_LABELS["day_pattern4"]),
+                            ("day_pattern5", ASSIGNMENT_LABELS["day_pattern5"]),
                             ("early", ASSIGNMENT_LABELS["early"]),
                             ("late", ASSIGNMENT_LABELS["late"]),
                             ("nurse_short", ASSIGNMENT_LABELS["nurse_short"]),
@@ -4035,15 +4098,94 @@ def create_app():
                 continue     # 空の行は保存しない
             rows.append((start, end, title, i))
 
-        StaffPlan.query.filter_by(staff_id=staff_id, date=d).delete()
+        # Googleカレンダーから取り込んだ行(source="google")は画面から編集させないので
+        #   ここでは消さない（消すと取り込み直すまで戻らないため）。
+        StaffPlan.query.filter_by(
+            staff_id=staff_id, date=d, source="manual").delete()
         for start, end, title, i in rows:
             db.session.add(StaffPlan(
                 staff_id=staff_id, date=d, start_time=start, end_time=end,
-                title=title, display_order=i,
+                title=title, display_order=i, source="manual",
             ))
         db.session.commit()
         saved = _plans_for_day(staff_id, d)
         return jsonify({"saved": len(saved), "items": saved})
+
+    @app.route("/api/staff-plans/google-import", methods=["POST"])
+    def api_staff_plans_google_import():
+        """Googleカレンダー（限定公開URL）から対象月の予定を取り込む。
+
+        {"staff_id": 2, "year": 2026, "month": 9}
+
+        ユーザー依頼 2026-08:「前垣茜のみGoogleカレンダー連動して。
+        ★がついてるものは私用で変換」。
+        - 対象は「職員の編集画面でURLを入れた職員」だけ（名前では判定しない）。
+        - その月の取り込み済み(source="google")を消してから入れ直すので、
+          何度押しても増えない。手入力の予定には触らない。
+        - 読み取り専用。Googleカレンダー側には何も書かない・消さない。
+        """
+        data = request.get_json(silent=True) or {}
+        staff_id = safe_int(data.get("staff_id"), 0)
+        year = safe_int(data.get("year"), 0)
+        month = safe_int(data.get("month"), 0)
+        if not (2000 <= year <= 2100 and 1 <= month <= 12):
+            return jsonify({"error": "年月が正しくありません"}), 400
+        staff = Staff.query.get(staff_id)
+        if staff is None:
+            return jsonify({"error": "職員が見つかりません"}), 404
+        allowed = _plan_editable_staff_ids()
+        if allowed is not None and staff_id not in allowed:
+            return jsonify(
+                {"error": "このアカウントで取り込めるのは自分の予定だけです"}), 403
+
+        url = (staff.google_ics_url or "").strip()
+        if not url:
+            return jsonify({
+                "error": "{}さんにGoogleカレンダーのURLが登録されていません。"
+                         "職員の編集画面で設定してください。".format(staff.name),
+            }), 400
+
+        first_day = date(year, month, 1)
+        last_day = date(year, month, calendar.monthrange(year, month)[1])
+        try:
+            rows = gcal.import_month(url, first_day, last_day)
+        except gcal.GoogleCalendarError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception:
+            app.logger.exception("Googleカレンダーの取り込みに失敗")
+            return jsonify({"error": "取り込みに失敗しました。"}), 500
+
+        StaffPlan.query.filter(
+            StaffPlan.staff_id == staff_id,
+            StaffPlan.date >= first_day,
+            StaffPlan.date <= last_day,
+            StaffPlan.source == "google",
+        ).delete(synchronize_session=False)
+
+        per_day = {}
+        added = 0
+        skipped = 0
+        for row in rows:
+            n = per_day.get(row["date"], 0)
+            if n >= PLAN_MAX_PER_DAY:
+                skipped += 1          # 1日の上限を超えるぶんは入れない
+                continue
+            per_day[row["date"]] = n + 1
+            db.session.add(StaffPlan(
+                staff_id=staff_id, date=row["date"],
+                start_time=row["start_time"], end_time=row["end_time"],
+                title=row["title"], display_order=n,
+                source="google", external_uid=(row.get("uid") or "")[:200],
+            ))
+            added += 1
+        db.session.commit()
+
+        return jsonify({
+            "imported": added,
+            "skipped": skipped,
+            "private": sum(1 for r in rows if r["title"] == gcal.PRIVATE_TITLE),
+            "plans": _plans_payload(year, month),
+        })
 
     @app.route("/api/shift/cells", methods=["POST"])
     def api_shift_cells_update():

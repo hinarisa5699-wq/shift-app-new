@@ -38,7 +38,8 @@ ASSIGNMENT_LABELS = {
     "day_pattern1":    "デイ8:30-17:30",
     "day_pattern2":    "デイ9:00-16:00",
     "day_pattern3":    "デイ午前のみ",
-    "day_pattern4":    "デイ午後のみ",
+    "day_pattern4":    "デイ午後13:30-17:30",
+    "day_pattern5":    "デイ午後12:30-16:30",
     "early":           "早番7:30-16:30",
     "late":            "遅番9:30-18:30",
     "nurse_short":     "看護9:30-13:30",
@@ -64,6 +65,7 @@ ASSIGNMENT_FILL = {
     "day_pattern2":    PatternFill(start_color="BFDBFE", end_color="BFDBFE", fill_type="solid"),
     "day_pattern3":    PatternFill(start_color="E0F2FE", end_color="E0F2FE", fill_type="solid"),
     "day_pattern4":    PatternFill(start_color="BAE6FD", end_color="BAE6FD", fill_type="solid"),
+    "day_pattern5":    PatternFill(start_color="7DD3FC", end_color="7DD3FC", fill_type="solid"),
     "early":           PatternFill(start_color="DBEAFE", end_color="DBEAFE", fill_type="solid"),
     "late":            PatternFill(start_color="BFDBFE", end_color="BFDBFE", fill_type="solid"),
     "nurse_short":     PatternFill(start_color="FCE7F3", end_color="FCE7F3", fill_type="solid"),
@@ -189,8 +191,8 @@ _NO_COUNSELOR_PATTERNS = {"day_p3_visit_pm", "visit_am_day_p4"}
 _DAY_AM_SET = {"day_pattern1", "day_pattern2", "day_pattern3", "day_p3_visit_pm",
                "day_am", "day_am_visit_pm", "late", "early"}
 # デイ午後に寄与するアサインメント
-_DAY_PM_SET = {"day_pattern1", "day_pattern2", "day_pattern4", "visit_am_day_p4",
-               "day_pm", "visit_am_day_pm", "early", "late"}
+_DAY_PM_SET = {"day_pattern1", "day_pattern2", "day_pattern4", "day_pattern5",
+               "visit_am_day_p4", "day_pm", "visit_am_day_pm", "early", "late"}
 # 訪問午前
 _VISIT_AM_SET = {"visit_am", "visit_am_day_p4", "visit_am_day_pm"}
 # 訪問午後
@@ -1649,7 +1651,9 @@ _LABEL_TO_ASSIGNMENT = {
     "デイ8:30-17:30": "day_pattern1",
     "デイ9:00-16:00": "day_pattern2",
     "デイ午前のみ": "day_pattern3",
-    "デイ午後のみ": "day_pattern4",
+    "デイ午後13:30-17:30": "day_pattern4",
+    "デイ午後12:30-16:30": "day_pattern5",
+    "デイ午後のみ": "day_pattern4",   # 旧表記（時刻を書いていなかった頃のファイル用）
     "早番7:30-16:30": "early",
     "遅番9:30-18:30": "late",
     "遅番9:00-18:30": "late",   # 旧表記（9:00開始だった頃のファイル用）

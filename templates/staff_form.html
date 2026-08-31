@@ -231,6 +231,23 @@
                 <p class="text-gray-500 text-sm mt-1 ml-8">チェックを入れると、シフト（出勤）は一切割り当てず、オンコール（電話当番）だけを担当します。</p>
             </div>
 
+            <!-- Googleカレンダー連携（URLを入れた職員だけが取り込み対象） -->
+            <div class="mb-6">
+                <label class="block text-lg font-semibold text-gray-700 mb-2">
+                    Googleカレンダー連携（任意）
+                </label>
+                <input type="url" name="google_ics_url" maxlength="500"
+                       value="{{ staff.google_ics_url if staff else '' }}"
+                       placeholder="https://calendar.google.com/calendar/ical/.../basic.ics"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-lg text-base">
+                <div class="text-gray-500 text-sm mt-2 ml-1 space-y-1">
+                    <p>Googleカレンダーの予定を、この職員の「スケジュール」欄に取り込めるようになります（<strong>読み取りだけ</strong>。カレンダー側は一切書き換えません）。</p>
+                    <p>取り出し方：Googleカレンダー →（左側でカレンダー名の「⋮」）→ <strong>設定と共有</strong> → 一番下の <strong>カレンダーの統合</strong> → <strong>非公開URL（iCal形式）</strong> をコピー。</p>
+                    <p>予定名に <strong>⭐</strong>（★・☆でも可）を入れておくと、シフト表には中身を出さず <strong>「私用」</strong> とだけ表示します。</p>
+                    <p class="text-orange-600">このURLを知っている人は予定を見られます。人には教えないでください。空欄にすると連携を解除します。</p>
+                </div>
+            </div>
+
             <!-- 応援（人手が足りないときだけ） -->
             <div class="mb-6">
                 <label class="flex items-center cursor-pointer">
@@ -375,6 +392,7 @@
                 許可シフトパターン
             </label>
             <p class="text-gray-500 text-sm mb-3">この職員に許可するパターンを選択してください。<strong>チェックなし＝全パターン許可</strong>（制限不要の場合はそのまま）。</p>
+            <p class="text-gray-500 text-sm mb-3">※ <strong>⑦ 12:30-16:30</strong> だけは例外で、<strong>チェックを入れた職員にしか自動で割り当てません</strong>（チェックなしのままでは入りません）。</p>
 
             <!-- ケアスタッフ用パターン -->
             <div id="allowed-care-patterns" class="mb-2">

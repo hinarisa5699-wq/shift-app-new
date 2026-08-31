@@ -88,6 +88,10 @@ class Staff(db.Model):
     # （ユーザー依頼 2026-08: 「前垣茜はオンコールのみ当番」）。
     public_holiday_count = db.Column(db.Integer, default=0, nullable=False)
     # 月の公休日数（=勤務以外の日数の目標。0=指定なし＝制約なし）。ソフトで==Nを目指す。
+    google_ics_url = db.Column(db.String(500), default="", nullable=False)
+    # Googleカレンダーの限定公開URL（iCal形式）。空＝連携なし。
+    #   ユーザー依頼 2026-08:「前垣茜のみGoogleカレンダー連動して」。
+    #   名前で判定せず「URLを入れた職員だけ」を取り込み対象にする（読み取り専用）。
 
     # --- 追加カラム (v3) ---
     job_category = db.Column(db.String(20), default="caregiver", nullable=False)
@@ -838,10 +842,19 @@ class StaffPlan(db.Model):
     title = db.Column(db.String(40), nullable=False, default="")
     # 同じ日の並び順（画面で入れた順）
     display_order = db.Column(db.Integer, nullable=False, default=0)
+    # "manual" = 画面で手入力したもの / "google" = Googleカレンダーから取り込んだもの。
+    #   取り込みは「その月の google 行を消して入れ直す」ので、手入力の行は消えない。
+    source = db.Column(db.String(10), nullable=False, default="manual")
+    # 取り込み元の予定ID（Googleカレンダーの UID）。手入力は空。
+    external_uid = db.Column(db.String(200), nullable=False, default="")
 
     __table_args__ = (
         db.Index("ix_staff_plan_staff_date", "staff_id", "date"),
     )
+
+    def is_from_google(self):
+        """Googleカレンダーから取り込んだ予定か（画面では編集させない）。"""
+        return self.source == "google"
 
     @staticmethod
     def _hm(value):
@@ -875,4 +888,5 @@ class StaffPlan(db.Model):
             "end_time": self.end_time or "",
             "title": self.title or "",
             "label": self.label(),
+            "source": self.source or "manual",
         }

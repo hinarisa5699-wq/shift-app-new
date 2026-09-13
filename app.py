@@ -51,7 +51,7 @@ from models import (
     ShiftPattern, Qualification, StaffQualification, PlacementRule, CookingComboRule,
     StaffAllowedPattern, StaffWorkableDate, OncallAssignment, ShiftConfirmation,
     ParkingSlot, ParkingAssignment, ShiftFix, StaffPlan, RequestDeadline,
-    format_jst,
+    RequestSubmission, format_jst,
 )
 from parking import assign_parking
 from solver import (
@@ -1515,6 +1515,7 @@ def _plan_editable_staff_ids():
 # 職員本人のアカウントだけが呼べるAPI（中身の staff_id は必ずセッションから取る）
 _OWN_REQUEST_ENDPOINTS = {
     "api_my_requests_get", "api_my_requests_update", "api_my_requests_mode",
+    "api_my_requests_submit",
 }
 
 
@@ -1539,6 +1540,26 @@ def _requests_closed(year, month):
     """
     deadline = _request_deadline_at(year, month)
     return bool(deadline) and _now_jst() > deadline
+
+
+def _submission_row(staff_id, year, month, create=False):
+    """その職員・その月の提出記録。無ければ None（create=True なら作る）。"""
+    row = RequestSubmission.query.filter_by(
+        staff_id=staff_id, year=year, month=month).first()
+    if row is None and create:
+        row = RequestSubmission(staff_id=staff_id, year=year, month=month)
+        db.session.add(row)
+        db.session.flush()
+    return row
+
+
+def _mark_requests_changed(staff_id, year, month):
+    """希望を足した／消したことを記録する（提出後に変えたら出し直してもらう）。
+
+    消したときも拾えるよう、件数ではなく「最後に触った日時」で持つ。
+    """
+    row = _submission_row(staff_id, year, month, create=True)
+    row.changed_at = _now_jst()
 
 
 # ログイン不要でアクセスできるエンドポイント
@@ -2887,6 +2908,7 @@ def create_app():
             .order_by(StaffWorkableDate.date).all()
         )
         deadline = _request_deadline_at(year, month)
+        sub = _submission_row(staff.id, year, month)
         return {
             "staff_id": staff.id,
             "staff_name": staff.name,
@@ -2897,6 +2919,9 @@ def create_app():
             "closed": _requests_closed(year, month),
             "day_offs": [d.to_dict() for d in offs],
             "workable_dates": [w.to_dict() for w in works],
+            # 提出（希望が0件でも「希望なしで提出」できる）
+            "submit_state": sub.state() if sub else "none",
+            "submitted_at": format_jst(sub.submitted_at) if sub else "",
         }
 
     @app.route("/api/my-shift-requests/<int:year>/<int:month>", methods=["GET"])
@@ -2955,6 +2980,7 @@ def create_app():
         if action == "remove":
             if existing is not None:
                 db.session.delete(existing)
+                _mark_requests_changed(staff.id, d.year, d.month)
                 db.session.commit()
         else:
             if existing is None:
@@ -2962,6 +2988,7 @@ def create_app():
                     staff_id=staff.id, date=d,
                     created_at=_now_jst(), created_by="staff",
                 ))
+                _mark_requests_changed(staff.id, d.year, d.month)
                 db.session.commit()
         return jsonify(_my_requests_payload(staff, d.year, d.month))
 
@@ -2993,6 +3020,40 @@ def create_app():
                 "closed": True,
             }), 409
         staff.workable_dates_mode = mode
+        _mark_requests_changed(staff.id, year, month)
+        db.session.commit()
+        return jsonify(_my_requests_payload(staff, year, month))
+
+    @app.route("/api/my-shift-requests/submit", methods=["POST"])
+    def api_my_requests_submit():
+        """「この内容で提出する」。希望が0件でも押せる（＝希望なしの提出）。
+
+        {"year": 2026, "month": 10}
+
+        ユーザー依頼 2026-09:「希望なしでも 提出ボタン作って」。
+        これが無いと、事務所から見て「まだ出していない人」と
+        「希望なしの人」の区別がつかない。
+        """
+        sid = _my_staff_id()
+        if not sid:
+            return jsonify({"error": "個人のアカウントでログインしてください"}), 403
+        staff = Staff.query.get(sid)
+        if staff is None:
+            return jsonify({"error": "職員が見つかりません"}), 404
+
+        data = request.get_json(silent=True) or {}
+        year = safe_int(data.get("year"), 0)
+        month = safe_int(data.get("month"), 0)
+        if not (2000 <= year <= 2100 and 1 <= month <= 12):
+            return jsonify({"error": "年月が正しくありません"}), 400
+        if _requests_closed(year, month):
+            return jsonify({
+                "error": "{}月分は締め切りました。".format(month),
+                "closed": True,
+            }), 409
+
+        row = _submission_row(sid, year, month, create=True)
+        row.submitted_at = _now_jst()
         db.session.commit()
         return jsonify(_my_requests_payload(staff, year, month))
 
@@ -3018,6 +3079,11 @@ def create_app():
                 StaffWorkableDate.date <= last).all():
             work_map.setdefault(r.staff_id, []).append(r)
 
+        sub_map = {
+            r.staff_id: r for r in RequestSubmission.query.filter_by(
+                year=year, month=month).all()
+        }
+
         rows = []
         for st in _ordered_staff().all():
             if not _is_staff_active_in_month(st, year, month):
@@ -3025,6 +3091,7 @@ def create_app():
             offs = off_map.get(st.id, [])
             works = work_map.get(st.id, [])
             stamps = [r.created_at for r in (offs + works) if r.created_at]
+            sub = sub_map.get(st.id)
             rows.append({
                 "staff_id": st.id,
                 "name": st.name,
@@ -3036,6 +3103,11 @@ def create_app():
                 "submitted_by_staff": any(
                     (r.created_by or "admin") == "staff" for r in (offs + works)),
                 "last_submitted_at": format_jst(max(stamps)) if stamps else "",
+                # 「この内容で提出する」を押したか（希望0件でも押せる）
+                "submit_state": sub.state() if sub else "none",
+                "submitted_at": format_jst(sub.submitted_at) if sub else "",
+                # 職員本人がログインして出せる人かどうか（未提出を追うときの目印）
+                "can_login": bool(st.login_id and st.login_password_hash),
             })
         return jsonify({
             "year": year, "month": month,
@@ -3043,6 +3115,8 @@ def create_app():
             "deadline_input": (
                 row.deadline_at.strftime("%Y-%m-%dT%H:%M") if row else ""),
             "closed": _requests_closed(year, month),
+            "submitted_count": sum(
+                1 for r in rows if r["submit_state"] != "none"),
             "staff": rows,
         })
 

@@ -153,6 +153,9 @@ class Staff(db.Model):
     plans = db.relationship(
         "StaffPlan", backref="staff", lazy=True, cascade="all, delete-orphan"
     )
+    request_submissions = db.relationship(
+        "RequestSubmission", backref="staff", lazy=True, cascade="all, delete-orphan"
+    )
 
     def to_dict(self):
         """辞書形式に変換"""
@@ -947,4 +950,50 @@ class RequestDeadline(db.Model):
             "deadline_input": (
                 self.deadline_at.strftime("%Y-%m-%dT%H:%M") if self.deadline_at else ""
             ),
+        }
+
+
+class RequestSubmission(db.Model):
+    """希望の「提出」（職員が「この内容で出します」と押した記録）。職員×月で1行。
+
+    ユーザー依頼 2026-09:「希望なしでも 提出ボタン作って」。
+    休み希望が0件の人も押せる。これが無いと事務所から見て
+    「まだ出していない人」と「希望なしの人」の区別がつかない。
+
+    submitted_at … 提出を押した日時（空＝まだ提出していない）
+    changed_at   … 最後に希望を足した／消した日時。
+                   submitted_at より後なら「提出後に変えた」＝出し直しが要る。
+                   消したときも記録できるよう、件数ではなくここで持つ。
+    """
+    __tablename__ = "request_submission"
+
+    id = db.Column(db.Integer, primary_key=True)
+    staff_id = db.Column(db.Integer, db.ForeignKey("staff.id"), nullable=False)
+    year = db.Column(db.Integer, nullable=False)
+    month = db.Column(db.Integer, nullable=False)
+    submitted_at = db.Column(db.DateTime, nullable=True)
+    changed_at = db.Column(db.DateTime, nullable=True)
+
+    __table_args__ = (
+        db.UniqueConstraint("staff_id", "year", "month",
+                            name="uq_request_submission_staff_ym"),
+    )
+
+    def needs_resubmit(self):
+        """提出したあとに希望を変えたか（＝もう一度出してほしい状態）。"""
+        if not self.submitted_at:
+            return False
+        return bool(self.changed_at) and self.changed_at > self.submitted_at
+
+    def state(self):
+        """"none"=未提出 / "submitted"=提出済み / "changed"=提出後に変更"""
+        if not self.submitted_at:
+            return "none"
+        return "changed" if self.needs_resubmit() else "submitted"
+
+    def to_dict(self):
+        return {
+            "state": self.state(),
+            "submitted_at": format_jst(self.submitted_at),
+            "changed_at": format_jst(self.changed_at),
         }

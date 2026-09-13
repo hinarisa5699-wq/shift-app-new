@@ -133,6 +133,18 @@
                 <div id="req-work-list" class="space-y-1"></div>
             </div>
 
+            <!-- 提出（希望が0件でも押せる）。ユーザー依頼 2026-09:
+                 「希望なしでも 提出ボタン作って」。押さないと事務所からは
+                 「まだ出していない人」と区別がつかない。 -->
+            <div id="req-submit-box" class="mt-4 border-t border-gray-200 pt-3">
+                <div id="req-submit-state" class="text-sm mb-2"></div>
+                <button type="button" id="req-submit"
+                        class="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-3 rounded-lg"></button>
+                <p class="text-[11px] text-gray-500 mt-1 text-center">
+                    休みたい日が無い月も、これを押して「希望なし」と知らせてください。
+                </p>
+            </div>
+
             <div id="req-msg" class="mt-2 text-sm"></div>
         </div>
     </div>
@@ -849,6 +861,8 @@ function renderMyRequests() {
         closedBox.classList.add('hidden');
     }
 
+    renderMyRequestSubmit(locked);
+
     el('req-off-list').innerHTML = reqRows(reqData.day_offs, 'dayoff', locked);
     el('req-work-list').innerHTML = reqRows(reqData.workable_dates, 'workable', locked);
 
@@ -872,6 +886,35 @@ function renderMyRequests() {
         if (!n) return;
         n.min = min; n.max = max;
     });
+}
+
+function renderMyRequestSubmit(locked) {
+    const empty = !reqData.day_offs.length && !reqData.workable_dates.length;
+    const state = el('req-submit-state');
+    const btn = el('req-submit');
+    if (!state || !btn) return;
+
+    if (reqData.submit_state === 'submitted') {
+        state.innerHTML =
+            `<span class="font-bold text-teal-700">提出しました</span>`
+            + `<span class="text-gray-500">（${esc(reqData.submitted_at)}）</span>`;
+    } else if (reqData.submit_state === 'changed') {
+        state.innerHTML =
+            `<span class="font-bold text-amber-700">提出したあとに変えています。</span>`
+            + `<span class="text-gray-600">もう一度提出してください。</span>`;
+    } else {
+        state.innerHTML =
+            '<span class="font-bold text-amber-700">まだ提出していません。</span>'
+            + '<span class="text-gray-600">下のボタンを押すと事務所に届きます。</span>';
+    }
+
+    btn.textContent = (reqData.submit_state === 'none' && empty)
+        ? '希望なしで提出する'
+        : (reqData.submit_state === 'changed' ? 'もう一度提出する' : 'この内容で提出する');
+    btn.disabled = locked || reqData.submit_state === 'submitted';
+    btn.className = btn.disabled
+        ? 'w-full bg-gray-200 text-gray-500 font-bold py-3 rounded-lg'
+        : 'w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-3 rounded-lg';
 }
 
 function reqHeaders() {
@@ -920,6 +963,23 @@ async function sendMyRequestMode(mode) {
     }
 }
 
+async function submitMyRequests() {
+    try {
+        const r = await fetch('/api/my-shift-requests/submit', {
+            method: 'POST', headers: reqHeaders(),
+            body: JSON.stringify({
+                year: reqMonthState.year, month: reqMonthState.month }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || '提出できませんでした');
+        reqData = j;
+        renderMyRequests();
+        showReqMsg(`${j.month}月分の希望を提出しました`, true);
+    } catch (e) {
+        showReqMsg(e.message, false);
+    }
+}
+
 function initMyRequests() {
     if (!REQ_ON) return;
     el('req-toggle').onclick = () => {
@@ -931,6 +991,7 @@ function initMyRequests() {
         () => sendMyRequest('dayoff', el('req-off-date').value, 'add');
     el('req-work-add').onclick =
         () => sendMyRequest('workable', el('req-work-date').value, 'add');
+    el('req-submit').onclick = () => submitMyRequests();
     el('req-prev-month').onclick = () => reqShiftMonth(-1);
     el('req-next-month').onclick = () => reqShiftMonth(1);
     document.querySelectorAll('.req-mode').forEach(r => {

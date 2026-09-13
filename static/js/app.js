@@ -2240,7 +2240,7 @@ function loadRequestDeadline() {
             const rows = document.getElementById('req-admin-rows');
             if (rows) {
                 rows.innerHTML =
-                    '<tr><td colspan="6" class="px-3 py-4 text-red-500">受付状況の読み込みに失敗しました。</td></tr>';
+                    '<tr><td colspan="7" class="px-3 py-4 text-red-500">受付状況の読み込みに失敗しました。</td></tr>';
             }
         });
 }
@@ -2266,11 +2266,21 @@ function renderRequestPanel(data) {
         }
     }
 
+    // 何人が提出したか（希望が0件でも「提出」を押せば1人と数える）
+    const summary = document.getElementById('req-admin-summary');
+    if (summary) {
+        const total = (data.staff || []).length;
+        const done = data.submitted_count || 0;
+        summary.textContent =
+            `${data.month}月分の提出: ${done}人 / ${total}人`
+            + (done < total ? `（未提出 ${total - done}人）` : '（全員そろいました）');
+    }
+
     const rows = document.getElementById('req-admin-rows');
     if (!rows) return;
     const staff = data.staff || [];
     if (!staff.length) {
-        rows.innerHTML = '<tr><td colspan="6" class="px-3 py-4 text-gray-400">職員がいません。</td></tr>';
+        rows.innerHTML = '<tr><td colspan="7" class="px-3 py-4 text-gray-400">職員がいません。</td></tr>';
         return;
     }
     rows.innerHTML = staff.map(s => {
@@ -2288,9 +2298,24 @@ function renderRequestPanel(data) {
                 ? '<span class="text-gray-400">登録日時なし（以前に入れたぶん）</span>'
                 : '<span class="text-gray-400">まだ登録なし</span>');
         const num = n => n ? `<span class="font-bold text-gray-800">${n}</span>` : '<span class="text-gray-400">0</span>';
+        // 提出（ユーザー依頼 2026-09:「希望なしでも 提出ボタン作って」）。
+        //   ログインできない職員は本人提出のしようがないので「—」にする。
+        let submit;
+        if (!s.can_login) {
+            submit = '<span class="text-gray-400" title="この職員はログインIDが未発行です">—</span>';
+        } else if (s.submit_state === 'submitted') {
+            submit = `<span class="text-green-700 font-bold">提出済み</span>`
+                + `<span class="block text-xs text-gray-500">${escapeHtml(s.submitted_at)}</span>`;
+        } else if (s.submit_state === 'changed') {
+            submit = '<span class="text-amber-700 font-bold">提出後に変更</span>'
+                + `<span class="block text-xs text-gray-500">${escapeHtml(s.submitted_at)} に提出</span>`;
+        } else {
+            submit = '<span class="text-red-600 font-bold">未提出</span>';
+        }
         return `<tr class="border-b border-gray-100">
             <td class="px-3 py-2"><a class="text-primary-700 underline" href="/staff/${s.staff_id}/edit">${escapeHtml(s.name)}</a></td>
             <td class="px-3 py-2 text-gray-500">${escapeHtml(s.login_id)}</td>
+            <td class="px-3 py-2">${submit}</td>
             <td class="px-3 py-2 text-center">${num(s.day_off_count)}</td>
             <td class="px-3 py-2 text-center">${num(s.workable_count)}</td>
             <td class="px-3 py-2 text-sm">${modeLabel}</td>

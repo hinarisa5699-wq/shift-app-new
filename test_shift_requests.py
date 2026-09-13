@@ -471,3 +471,130 @@ def test_submitted_day_off_is_honored_by_generation(tmp_path, monkeypatch):
     # 画面にも「希望休」として出る
     j = admin.get("/api/shifts/2026/9").get_json()
     assert "2026-09-02" in (j.get("day_off_requests") or {})
+
+
+# ---------------------------------------------------------------------------
+# 提出ボタン（希望なしでも出せる）
+#   ユーザー依頼 2026-09:「希望なしでも 提出ボタン作って」
+# ---------------------------------------------------------------------------
+def test_can_submit_with_no_requests(tmp_path, monkeypatch):
+    """1件も入れていなくても「提出」を押せて、事務所から見て提出済みになる。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    ids = _seed_two_staff(flask_app)
+    client = _as_staff(flask_app, "S002")
+
+    j = client.get(f"/api/my-shift-requests/{YEAR}/{MONTH}").get_json()
+    assert j["submit_state"] == "none"
+
+    r = client.post("/api/my-shift-requests/submit",
+                    json={"year": YEAR, "month": MONTH})
+    assert r.status_code == 200, r.get_json()
+    j = r.get_json()
+    assert j["submit_state"] == "submitted"
+    assert j["submitted_at"]
+    assert j["day_offs"] == [] and j["workable_dates"] == []
+
+    admin = _as_admin(flask_app)
+    a = admin.get(f"/api/request-deadline/{YEAR}/{MONTH}").get_json()
+    row = next(x for x in a["staff"] if x["staff_id"] == ids["me"])
+    assert row["submit_state"] == "submitted"
+    assert row["day_off_count"] == 0          # 希望なしでも提出済み
+    assert a["submitted_count"] == 1
+
+
+def test_submit_then_change_asks_for_resubmit(tmp_path, monkeypatch):
+    """提出したあとに希望を足すと「提出後に変更」になり、出し直せる。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    ids = _seed_two_staff(flask_app)
+    client = _as_staff(flask_app, "S002")
+
+    client.post("/api/my-shift-requests/submit", json={"year": YEAR, "month": MONTH})
+    r = client.post("/api/my-shift-requests",
+                    json={"kind": "dayoff", "date": "2026-10-05", "action": "add"})
+    assert r.get_json()["submit_state"] == "changed"
+
+    admin = _as_admin(flask_app)
+    a = admin.get(f"/api/request-deadline/{YEAR}/{MONTH}").get_json()
+    row = next(x for x in a["staff"] if x["staff_id"] == ids["me"])
+    assert row["submit_state"] == "changed"
+
+    r = client.post("/api/my-shift-requests/submit", json={"year": YEAR, "month": MONTH})
+    assert r.get_json()["submit_state"] == "submitted"
+
+
+def test_removing_a_request_also_asks_for_resubmit(tmp_path, monkeypatch):
+    """消したときも「提出後に変更」になる（件数ではなく操作日時で見ているため）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed_two_staff(flask_app)
+    client = _as_staff(flask_app, "S002")
+
+    client.post("/api/my-shift-requests",
+                json={"kind": "dayoff", "date": "2026-10-05", "action": "add"})
+    client.post("/api/my-shift-requests/submit", json={"year": YEAR, "month": MONTH})
+    r = client.post("/api/my-shift-requests",
+                    json={"kind": "dayoff", "date": "2026-10-05", "action": "remove"})
+    assert r.get_json()["submit_state"] == "changed"
+    assert r.get_json()["day_offs"] == []
+
+
+def test_submit_is_per_month(tmp_path, monkeypatch):
+    """10月分を提出しても、11月分は未提出のまま。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed_two_staff(flask_app)
+    client = _as_staff(flask_app, "S002")
+
+    client.post("/api/my-shift-requests/submit", json={"year": YEAR, "month": MONTH})
+    assert client.get(
+        f"/api/my-shift-requests/{YEAR}/{MONTH}").get_json()["submit_state"] == "submitted"
+    assert client.get(
+        f"/api/my-shift-requests/{YEAR}/11").get_json()["submit_state"] == "none"
+
+
+def test_cannot_submit_after_deadline(tmp_path, monkeypatch):
+    """締め切り後は提出も押せない。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed_two_staff(flask_app)
+    import app as app_module
+    _set_deadline(flask_app, app_module._now_jst() - timedelta(minutes=1))
+
+    client = _as_staff(flask_app, "S002")
+    r = client.post("/api/my-shift-requests/submit", json={"year": YEAR, "month": MONTH})
+    assert r.status_code == 409
+
+
+def test_shared_viewer_cannot_submit(tmp_path, monkeypatch):
+    """共通の閲覧アカウントは提出できない（誰の提出か決まらないため）。"""
+    monkeypatch.setenv("SHIFT_STAFF_PASSWORD", "viewpass")
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed_two_staff(flask_app)
+    client = flask_app.test_client()
+    assert _login(client, "staff", "viewpass").status_code in (301, 302)
+
+    r = client.post("/api/my-shift-requests/submit", json={"year": YEAR, "month": MONTH})
+    assert r.status_code == 403
+
+
+def test_submission_is_removed_with_the_staff(tmp_path, monkeypatch):
+    """職員を消したら提出記録も残らない。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    ids = _seed_two_staff(flask_app)
+    client = _as_staff(flask_app, "S002")
+    client.post("/api/my-shift-requests/submit", json={"year": YEAR, "month": MONTH})
+
+    from models import db, Staff, RequestSubmission
+    with flask_app.app_context():
+        assert RequestSubmission.query.count() == 1
+        db.session.delete(Staff.query.get(ids["me"]))
+        db.session.commit()
+        assert RequestSubmission.query.count() == 0
+
+
+def test_view_page_shows_submit_button(tmp_path, monkeypatch):
+    """個人アカウントの画面に提出ボタンが出る。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed_two_staff(flask_app)
+    client = _as_staff(flask_app, "S002")
+
+    html = client.get("/view").get_data(as_text=True)
+    assert "req-submit" in html
+    assert "希望なしと知らせて" in html or "「希望なし」と知らせて" in html

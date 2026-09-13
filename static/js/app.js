@@ -139,6 +139,9 @@ function loadShifts(year, month) {
     year = year || parseInt(yearSelect.value);
     month = month || parseInt(monthSelect.value);
 
+    // 希望の受付状況・締め切りも同じ月に合わせる（畳んでいても札は出す）
+    if (document.getElementById('req-admin-chip')) loadRequestDeadline(year, month);
+
     showLoading('シフトデータを読み込み中...');
 
     fetch(`/api/shifts/${year}/${month}`)
@@ -1739,6 +1742,15 @@ function unconfirmShift() {
    休み希望管理（職員フォーム用）
    ============================================ */
 
+// 希望（休み希望・出勤可能日）の「いつ・誰が入れたか」の1行。
+//   ユーザー依頼 2026-09:「登録したら登録日時も出るように」。
+//   created_at が空なのは、この機能より前から入っている行。
+function requestStampHtml(d) {
+    const who = d.created_by === 'staff' ? '本人が登録' : '事務所が登録';
+    const when = d.created_at ? d.created_at : '登録日時 —';
+    return `<span class="block text-xs text-gray-500 mt-0.5">${when}・${who}</span>`;
+}
+
 function loadDayoffs(staffId) {
     const container = document.getElementById('dayoff-list');
     if (!container) return;
@@ -1765,7 +1777,9 @@ function loadDayoffs(staffId) {
                 const dow = DAY_NAMES[dateObj.getDay()];
 
                 html += `<div class="flex items-center justify-between bg-gray-50 rounded-lg px-4 py-3 border border-gray-200">`;
-                html += `<span class="text-base font-medium text-gray-700">${displayDate}(${dow})</span>`;
+                html += `<span class="text-base font-medium text-gray-700">${displayDate}(${dow})`;
+                html += requestStampHtml(d);
+                html += `</span>`;
                 html += `<button onclick="deleteDayoff(${staffId}, ${d.id})" `;
                 html += `class="bg-red-100 hover:bg-red-200 text-red-700 font-medium py-1 px-4 rounded-lg transition-colors text-sm">`;
                 html += '削除</button>';
@@ -1859,7 +1873,9 @@ function loadWorkableDates(staffId) {
                 const dow = DAY_NAMES[dateObj.getDay()];
 
                 html += `<div class="flex items-center justify-between bg-gray-50 rounded-lg px-4 py-3 border border-gray-200">`;
-                html += `<span class="text-base font-medium text-gray-700">${displayDate}(${dow})</span>`;
+                html += `<span class="text-base font-medium text-gray-700">${displayDate}(${dow})`;
+                html += requestStampHtml(d);
+                html += `</span>`;
                 html += `<button onclick="deleteWorkableDate(${staffId}, ${d.id})" `;
                 html += `class="bg-red-100 hover:bg-red-200 text-red-700 font-medium py-1 px-4 rounded-lg transition-colors text-sm">`;
                 html += '削除</button>';
@@ -2164,4 +2180,134 @@ function isNurseOrPtStaff(staff) {
     return qualificationNames.has('看護師')
         || qualificationNames.has('PT')
         || qualificationNames.has('理学療法士');
+}
+
+/* ============================================
+   希望の受付（休み希望・出勤可能日）と締め切り
+     ユーザー依頼 2026-09:「登録したら登録日時も出るように」
+     「締め切り設定できるようにしたい」。
+     職員は個人ログインの画面から出し、ここで締め切りと提出状況を見る。
+   ============================================ */
+function requestPanelYearMonth() {
+    const y = document.getElementById('year-select');
+    const m = document.getElementById('month-select');
+    if (!y || !m) return null;
+    return { year: parseInt(y.value), month: parseInt(m.value) };
+}
+
+function toggleRequestPanel() {
+    const body = document.getElementById('req-admin-body');
+    if (!body) return;
+    body.classList.toggle('hidden');
+    const caret = document.getElementById('req-admin-caret');
+    if (caret) caret.textContent = body.classList.contains('hidden') ? '▼' : '▲';
+    if (!body.classList.contains('hidden')) loadRequestDeadline();
+}
+
+function showRequestMsg(text, ok) {
+    const n = document.getElementById('req-admin-msg');
+    if (!n) return;
+    n.textContent = text;
+    n.className = 'text-base font-medium ' + (ok ? 'text-green-700' : 'text-red-600');
+}
+
+function loadRequestDeadline(year, month) {
+    const ym = requestPanelYearMonth();
+    if (!ym) return;
+    const y = year || ym.year, m = month || ym.month;
+    fetch(`/api/request-deadline/${y}/${m}`, { cache: 'no-store' })
+        .then(r => { if (!r.ok) throw new Error('取得に失敗しました'); return r.json(); })
+        .then(renderRequestPanel)
+        .catch(() => {
+            const rows = document.getElementById('req-admin-rows');
+            if (rows) {
+                rows.innerHTML =
+                    '<tr><td colspan="6" class="px-3 py-4 text-red-500">受付状況の読み込みに失敗しました。</td></tr>';
+            }
+        });
+}
+
+function renderRequestPanel(data) {
+    const monthLabel = document.getElementById('req-deadline-month');
+    if (monthLabel) monthLabel.textContent = `${data.year}年${data.month}月`;
+
+    const input = document.getElementById('req-deadline-input');
+    if (input) input.value = data.deadline_input || '';
+
+    const chip = document.getElementById('req-admin-chip');
+    if (chip) {
+        if (data.closed) {
+            chip.textContent = `${data.month}月分 締め切り済み`;
+            chip.className = 'text-sm px-3 py-1 rounded-full bg-red-100 text-red-700 font-bold';
+        } else if (data.deadline) {
+            chip.textContent = `${data.month}月分 ${data.deadline} まで`;
+            chip.className = 'text-sm px-3 py-1 rounded-full bg-amber-100 text-amber-800 font-bold';
+        } else {
+            chip.textContent = `${data.month}月分 締め切りなし`;
+            chip.className = 'text-sm px-3 py-1 rounded-full bg-gray-100 text-gray-600 font-bold';
+        }
+    }
+
+    const rows = document.getElementById('req-admin-rows');
+    if (!rows) return;
+    const staff = data.staff || [];
+    if (!staff.length) {
+        rows.innerHTML = '<tr><td colspan="6" class="px-3 py-4 text-gray-400">職員がいません。</td></tr>';
+        return;
+    }
+    rows.innerHTML = staff.map(s => {
+        const modeLabel = s.workable_count === 0
+            ? '<span class="text-gray-400">—</span>'
+            : (s.mode === 'extra'
+                ? '追加・振替（いつものシフトに加えて出勤）'
+                : '<span class="text-amber-700 font-bold">限定（この日しか出勤しない）</span>');
+        // この機能より前から入っている希望は登録日時を持たないので、
+        //   「まだ登録なし」ではなく「登録日時なし」と出す（件数はあるため）。
+        const hasAny = s.day_off_count + s.workable_count > 0;
+        const when = s.last_submitted_at
+            ? escapeHtml(s.last_submitted_at) + (s.submitted_by_staff ? '（本人）' : '（事務所）')
+            : (hasAny
+                ? '<span class="text-gray-400">登録日時なし（以前に入れたぶん）</span>'
+                : '<span class="text-gray-400">まだ登録なし</span>');
+        const num = n => n ? `<span class="font-bold text-gray-800">${n}</span>` : '<span class="text-gray-400">0</span>';
+        return `<tr class="border-b border-gray-100">
+            <td class="px-3 py-2"><a class="text-primary-700 underline" href="/staff/${s.staff_id}/edit">${escapeHtml(s.name)}</a></td>
+            <td class="px-3 py-2 text-gray-500">${escapeHtml(s.login_id)}</td>
+            <td class="px-3 py-2 text-center">${num(s.day_off_count)}</td>
+            <td class="px-3 py-2 text-center">${num(s.workable_count)}</td>
+            <td class="px-3 py-2 text-sm">${modeLabel}</td>
+            <td class="px-3 py-2 text-sm">${when}</td>
+        </tr>`;
+    }).join('');
+}
+
+function putRequestDeadline(value) {
+    const ym = requestPanelYearMonth();
+    if (!ym) return;
+    fetchWithCsrf(`/api/request-deadline/${ym.year}/${ym.month}`, {
+        method: 'POST',
+        body: JSON.stringify({ deadline: value }),
+    })
+        .then(r => r.json().then(j => {
+            if (!r.ok) throw new Error(j.error || '保存に失敗しました');
+            return j;
+        }))
+        .then(() => {
+            showRequestMsg(value ? '締め切りを決めました' : '締め切りなしに戻しました', true);
+            loadRequestDeadline();
+        })
+        .catch(e => showRequestMsg(e.message, false));
+}
+
+function saveRequestDeadline() {
+    const input = document.getElementById('req-deadline-input');
+    if (!input || !input.value) {
+        showRequestMsg('締め切りの日時を入れてください', false);
+        return;
+    }
+    putRequestDeadline(input.value);
+}
+
+function clearRequestDeadline() {
+    putRequestDeadline('');
 }

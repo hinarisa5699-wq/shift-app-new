@@ -9,6 +9,17 @@ from flask_sqlalchemy import SQLAlchemy
 db = SQLAlchemy()
 
 
+def format_jst(value):
+    """登録日時を画面用の文字列にする（例: "2026/09/13 14:05"）。空なら ""。
+
+    保存しているのは JST の wall-clock（app.py の _now_jst）なので、
+    ここでは時差の計算はしない。
+    """
+    if not value:
+        return ""
+    return value.strftime("%Y/%m/%d %H:%M")
+
+
 class Staff(db.Model):
     """職員マスタ"""
     __tablename__ = "staff"
@@ -192,6 +203,11 @@ class DayOffRequest(db.Model):
         db.Integer, db.ForeignKey("staff.id"), nullable=False
     )
     date = db.Column(db.Date, nullable=False)  # 休み希望日
+    # いつ登録したか（JST wall-clock）。ユーザー依頼 2026-09:「登録したら登録日時も出るように」。
+    #   以前から入っている行は空（画面では「—」と出す）。
+    created_at = db.Column(db.DateTime, nullable=True)
+    # 誰が入れたか: "staff"=職員本人が自分のログインから / "admin"=管理側の画面から
+    created_by = db.Column(db.String(10), nullable=False, default="admin")
 
     def to_dict(self):
         """辞書形式に変換"""
@@ -199,6 +215,8 @@ class DayOffRequest(db.Model):
             "id": self.id,
             "staff_id": self.staff_id,
             "date": self.date.isoformat(),
+            "created_at": format_jst(self.created_at),
+            "created_by": self.created_by or "admin",
         }
 
 
@@ -206,7 +224,8 @@ class StaffWorkableDate(db.Model):
     """出勤可能日（whitelist）
     エントリがある職員 → 指定された日付のみ出勤可（それ以外は休み）。
     エントリが無い職員 → 制約なし（従来通り全日出勤可能）。
-    ※ 実際のシフト生成での適用は次段階で対応。今は入力・保存・表示のみ。
+    シフト生成では Staff.workable_dates_mode に従って適用する
+    （only=登録日のみ出勤 / extra=通常のシフトに加えて必ず出勤）。
     """
     __tablename__ = "staff_workable_date"
 
@@ -215,6 +234,10 @@ class StaffWorkableDate(db.Model):
         db.Integer, db.ForeignKey("staff.id"), nullable=False
     )
     date = db.Column(db.Date, nullable=False)  # 出勤可能日
+    # いつ登録したか（JST wall-clock）。以前から入っている行は空。
+    created_at = db.Column(db.DateTime, nullable=True)
+    # 誰が入れたか: "staff"=職員本人 / "admin"=管理側
+    created_by = db.Column(db.String(10), nullable=False, default="admin")
 
     __table_args__ = (
         db.UniqueConstraint("staff_id", "date", name="uq_staff_workable_date"),
@@ -226,6 +249,8 @@ class StaffWorkableDate(db.Model):
             "id": self.id,
             "staff_id": self.staff_id,
             "date": self.date.isoformat(),
+            "created_at": format_jst(self.created_at),
+            "created_by": self.created_by or "admin",
         }
 
 
@@ -889,4 +914,37 @@ class StaffPlan(db.Model):
             "title": self.title or "",
             "label": self.label(),
             "source": self.source or "manual",
+        }
+
+
+class RequestDeadline(db.Model):
+    """希望（休み希望・出勤可能日）の提出締め切り。対象の月ごとに1行。
+
+    ユーザー依頼 2026-09:「締め切り設定できるようにしたい」。
+    締め切りを過ぎると職員本人の画面からは追加・削除ができなくなる
+    （管理側の画面からは今まで通りいつでも入れられる）。
+    行が無い月＝締め切りなし＝いつでも出せる。
+    """
+    __tablename__ = "request_deadline"
+
+    id = db.Column(db.Integer, primary_key=True)
+    year = db.Column(db.Integer, nullable=False)    # 希望を出す対象の年
+    month = db.Column(db.Integer, nullable=False)   # 希望を出す対象の月
+    # 締め切り日時（JST wall-clock）。この時刻を過ぎたら締め切り。
+    deadline_at = db.Column(db.DateTime, nullable=False)
+    updated_at = db.Column(db.DateTime, nullable=True)
+
+    __table_args__ = (
+        db.UniqueConstraint("year", "month", name="uq_request_deadline_ym"),
+    )
+
+    def to_dict(self):
+        return {
+            "year": self.year,
+            "month": self.month,
+            "deadline_at": format_jst(self.deadline_at),
+            # <input type="datetime-local"> にそのまま入れられる形
+            "deadline_input": (
+                self.deadline_at.strftime("%Y-%m-%dT%H:%M") if self.deadline_at else ""
+            ),
         }

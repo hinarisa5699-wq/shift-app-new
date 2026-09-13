@@ -68,6 +68,72 @@
         </div>
     </div>
 
+    <!-- シフトの希望（個人アカウントだけに出す）。ユーザー依頼 2026-09:
+         「シフト個人のIDから 出勤不可の日、または出勤可能な日 登録出来るようにして
+          シフト作成へ連動したい」。入れた希望はそのまま自動作成に効く。 -->
+    {% if is_viewer and my_staff_id %}
+    <div class="bg-white card p-3 mb-3">
+        <button type="button" id="req-toggle" class="w-full flex items-center justify-between text-left gap-2">
+            <span class="text-base font-bold text-teal-800">シフトの希望を出す</span>
+            <span class="flex items-center gap-2">
+                <span id="req-chip" class="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-600"></span>
+                <span id="req-caret" class="text-gray-400 font-bold">▼</span>
+            </span>
+        </button>
+
+        <div id="req-body" class="hidden mt-3">
+            <p id="req-target" class="text-sm font-bold text-gray-700"></p>
+            <div class="flex flex-wrap items-center gap-2 mb-3">
+                <p class="text-[11px] text-gray-500">上の「年」「月」を変えると、その月の希望になります。</p>
+                <button type="button" id="req-next-month"
+                        class="text-xs px-3 py-1 rounded-full bg-teal-50 border border-teal-300 text-teal-700 font-bold"></button>
+            </div>
+            <div id="req-closed"
+                 class="hidden mb-3 text-sm font-bold text-red-700 bg-red-50 border border-red-200 rounded-lg p-2"></div>
+
+            <!-- ① 休み希望 -->
+            <div class="border border-gray-200 rounded-xl p-3 mb-3">
+                <div class="font-bold text-gray-800">① 休み希望（出勤できない日）</div>
+                <p class="text-[11px] text-gray-500 mt-1 mb-2">この日は休みたい、という日を入れてください。</p>
+                <div class="flex items-center gap-2 mb-2">
+                    <input type="date" id="req-off-date"
+                           class="px-3 py-2 border border-gray-300 rounded-lg text-base flex-1 min-w-0">
+                    <button type="button" id="req-off-add"
+                            class="px-4 py-2 rounded-lg bg-green-600 text-white font-bold whitespace-nowrap">追加</button>
+                </div>
+                <div id="req-off-list" class="space-y-1"></div>
+            </div>
+
+            <!-- ②③ 出勤可能日 -->
+            <div class="border border-gray-200 rounded-xl p-3">
+                <div class="font-bold text-gray-800">出勤できる日</div>
+                <div class="bg-amber-50 border border-amber-200 rounded-lg p-2 my-2">
+                    <div class="text-xs font-bold text-gray-700 mb-1">登録した日の扱い</div>
+                    <label class="flex items-start gap-2 text-sm mb-2">
+                        <input type="radio" name="req-mode" value="only" class="mt-1 req-mode">
+                        <span><b>② この日しか出勤しない（限定）</b><br>
+                            <span class="text-[11px] text-gray-600">登録した日だけ出勤し、ほかの日は自動的に休みになります。スポット勤務の方向け。</span></span>
+                    </label>
+                    <label class="flex items-start gap-2 text-sm">
+                        <input type="radio" name="req-mode" value="extra" class="mt-1 req-mode">
+                        <span><b>③ いつものシフトに加えて出勤する（追加・振替）</b><br>
+                            <span class="text-[11px] text-gray-600">「10日を休んで11日に振替出勤」なら、10日を①に、11日をここに入れてください。</span></span>
+                    </label>
+                </div>
+                <div class="flex items-center gap-2 mb-2">
+                    <input type="date" id="req-work-date"
+                           class="px-3 py-2 border border-gray-300 rounded-lg text-base flex-1 min-w-0">
+                    <button type="button" id="req-work-add"
+                            class="px-4 py-2 rounded-lg bg-green-600 text-white font-bold whitespace-nowrap">追加</button>
+                </div>
+                <div id="req-work-list" class="space-y-1"></div>
+            </div>
+
+            <div id="req-msg" class="mt-2 text-sm"></div>
+        </div>
+    </div>
+    {% endif %}
+
     <div id="week-bar" class="hidden bg-white card p-2 mb-3">
         <div class="flex items-center gap-2">
             <button id="week-prev" class="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 font-bold">◀</button>
@@ -94,6 +160,12 @@
 </main>
 
 <script>
+// シフトの希望の欄を出すか（個人アカウントのときだけ true）。
+//   initMyRequests() をスクリプト前半で呼ぶので、宣言もここに置く
+//   （const は宣言より前で読むと ReferenceError になり、以降のJSが全部止まる）。
+const REQ_ON = {{ 'true' if (is_viewer and my_staff_id) else 'false' }};
+let reqData = null;
+
 const PLAN_EDIT_CATEGORIES = {{ plan_edit_categories | tojson }};
 // 手入力のスケジュールを入れてよい職員ID（null = 全員入れられる）
 const PLAN_EDITABLE_IDS = {{ plan_editable_staff_ids | tojson }};
@@ -245,6 +317,7 @@ function setMode(mode) {
 }
 
 async function load() {
+    loadMyRequests();          // その月の希望と締め切りも取り直す
     const res = await fetch(`/api/shifts/${state.year}/${state.month}`, { cache: 'no-store' });
     if (!res.ok) { el('status').textContent = '読み込みに失敗しました'; return; }
     state.data = await res.json();
@@ -482,6 +555,7 @@ function renderAll(data, map, dates, visitSet, group) {
 }
 
 initSelectors();
+initMyRequests();
 setMode('person');
 
 // 実際にシフトがある月を開く（今日の月に無ければ直近の月）
@@ -680,6 +754,175 @@ async function savePlans() {
     } catch (e) {
         el('plan-msg').textContent = e.message;
     }
+}
+
+// ---------------------------------------------------------------------
+// シフトの希望（休み希望・出勤できる日）。個人アカウントのときだけ動く。
+//   保存先は事務所の画面と同じなので、出した希望はそのまま自動作成に効く。
+// ---------------------------------------------------------------------
+function reqDateLabel(iso) {
+    const d = new Date(iso + 'T00:00:00');
+    return `${d.getMonth() + 1}月${d.getDate()}日(${'日月火水木金土'[d.getDay()]})`;
+}
+
+function reqWho(by) { return by === 'staff' ? '本人' : '事務所'; }
+
+async function loadMyRequests() {
+    if (!REQ_ON) return;
+    try {
+        const r = await fetch(`/api/my-shift-requests/${state.year}/${state.month}`,
+                              { cache: 'no-store' });
+        if (!r.ok) return;
+        reqData = await r.json();
+        renderMyRequests();
+    } catch (e) { /* 表示だけなので、取れなければ黙って前の内容を残す */ }
+}
+
+function reqRows(items, kind, locked) {
+    if (!items.length) {
+        return '<p class="text-xs text-gray-400">まだ登録されていません。</p>';
+    }
+    return items.map(it => `
+        <div class="flex items-center justify-between gap-2 bg-gray-50 rounded-lg px-3 py-2">
+            <div class="min-w-0">
+                <div class="font-bold text-gray-800">${esc(reqDateLabel(it.date))}</div>
+                <div class="text-[11px] text-gray-500">
+                    ${it.created_at ? '登録 ' + esc(it.created_at) : '登録日時 —'}
+                    ・${esc(reqWho(it.created_by))}
+                </div>
+            </div>
+            ${locked ? '' : `<button type="button" class="px-2 text-2xl leading-none text-gray-400"
+                     title="消す" onclick="sendMyRequest('${kind}', '${it.date}', 'remove')">×</button>`}
+        </div>`).join('');
+}
+
+function renderMyRequests() {
+    if (!reqData) return;
+    const locked = !!reqData.closed;
+
+    // 見出しの右に出す締め切りの札
+    const chip = el('req-chip');
+    const mm = reqData.month + '月分';
+    if (locked) {
+        chip.textContent = mm + ' 締め切りました';
+        chip.className = 'text-xs px-2 py-1 rounded-full bg-red-100 text-red-700 font-bold';
+    } else if (reqData.deadline) {
+        chip.textContent = `${mm} ${reqData.deadline} まで`;
+        chip.className = 'text-xs px-2 py-1 rounded-full bg-amber-100 text-amber-800 font-bold';
+    } else {
+        chip.textContent = mm + ' 締め切りなし';
+        chip.className = 'text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-600';
+    }
+
+    el('req-target').textContent =
+        `${reqData.year}年${reqData.month}月分の希望（${reqData.staff_name} さん）`;
+
+    const nextBtn = el('req-next-month');
+    if (nextBtn) {
+        const nm = reqData.month === 12 ? 1 : reqData.month + 1;
+        nextBtn.textContent = `${nm}月分にする`;
+    }
+
+    const closedBox = el('req-closed');
+    if (locked) {
+        closedBox.textContent =
+            `${reqData.month}月分は${reqData.deadline}で締め切りました。`
+            + '変更したいときは担当者にご連絡ください。';
+        closedBox.classList.remove('hidden');
+    } else {
+        closedBox.classList.add('hidden');
+    }
+
+    el('req-off-list').innerHTML = reqRows(reqData.day_offs, 'dayoff', locked);
+    el('req-work-list').innerHTML = reqRows(reqData.workable_dates, 'workable', locked);
+
+    document.querySelectorAll('.req-mode').forEach(r => {
+        r.checked = (r.value === reqData.mode);
+        r.disabled = locked;
+    });
+    ['req-off-date', 'req-off-add', 'req-work-date', 'req-work-add'].forEach(id => {
+        const n = el(id);
+        if (n) n.disabled = locked;
+        if (n) n.classList.toggle('opacity-50', locked);
+    });
+
+    // 日付入力はその月の中だけ選べるようにしておく（別の月を入れてしまう事故を防ぐ）
+    const last = new Date(reqData.year, reqData.month, 0).getDate();
+    const p2 = n => String(n).padStart(2, '0');
+    const min = `${reqData.year}-${p2(reqData.month)}-01`;
+    const max = `${reqData.year}-${p2(reqData.month)}-${p2(last)}`;
+    ['req-off-date', 'req-work-date'].forEach(id => {
+        const n = el(id);
+        if (!n) return;
+        n.min = min; n.max = max;
+    });
+}
+
+function reqHeaders() {
+    const token = document.querySelector('meta[name="csrf-token"]').content;
+    return { 'Content-Type': 'application/json', 'X-CSRFToken': token };
+}
+
+function showReqMsg(text, ok) {
+    const n = el('req-msg');
+    n.textContent = text;
+    n.className = 'mt-2 text-sm ' + (ok ? 'text-teal-700' : 'text-red-600');
+}
+
+async function sendMyRequest(kind, dateStr, action) {
+    if (!dateStr) { showReqMsg('日付を選んでください', false); return; }
+    try {
+        const r = await fetch('/api/my-shift-requests', {
+            method: 'POST', headers: reqHeaders(),
+            body: JSON.stringify({ kind: kind, date: dateStr, action: action }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || '登録できませんでした');
+        reqData = j;
+        renderMyRequests();
+        showReqMsg(action === 'remove' ? '消しました' : '登録しました', true);
+    } catch (e) {
+        showReqMsg(e.message, false);
+    }
+}
+
+async function sendMyRequestMode(mode) {
+    try {
+        const r = await fetch('/api/my-shift-requests/mode', {
+            method: 'POST', headers: reqHeaders(),
+            body: JSON.stringify({ mode: mode, year: state.year, month: state.month }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || '変えられませんでした');
+        reqData = j;
+        renderMyRequests();
+        showReqMsg('扱いを変えました', true);
+    } catch (e) {
+        showReqMsg(e.message, false);
+        renderMyRequests();      // 画面のラジオを元に戻す
+    }
+}
+
+function initMyRequests() {
+    if (!REQ_ON) return;
+    el('req-toggle').onclick = () => {
+        const body = el('req-body');
+        body.classList.toggle('hidden');
+        el('req-caret').textContent = body.classList.contains('hidden') ? '▼' : '▲';
+    };
+    el('req-off-add').onclick =
+        () => sendMyRequest('dayoff', el('req-off-date').value, 'add');
+    el('req-work-add').onclick =
+        () => sendMyRequest('workable', el('req-work-date').value, 'add');
+    el('req-next-month').onclick = () => {
+        shiftMonth(1);              // 上の年月セレクタごと翌月へ（表もいっしょに動く）
+        el('req-body').classList.remove('hidden');
+        el('req-caret').textContent = '▲';
+        showReqMsg('', true);
+    };
+    document.querySelectorAll('.req-mode').forEach(r => {
+        r.onchange = () => { if (r.checked) sendMyRequestMode(r.value); };
+    });
 }
 </script>
 

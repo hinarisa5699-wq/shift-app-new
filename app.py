@@ -50,7 +50,8 @@ from models import (
     db, Staff, DayOffRequest, ShiftSettings, GeneratedShift, ShiftWarning,
     ShiftPattern, Qualification, StaffQualification, PlacementRule, CookingComboRule,
     StaffAllowedPattern, StaffWorkableDate, OncallAssignment, ShiftConfirmation,
-    ParkingSlot, ParkingAssignment, ShiftFix, StaffPlan,
+    ParkingSlot, ParkingAssignment, ShiftFix, StaffPlan, RequestDeadline,
+    format_jst,
 )
 from parking import assign_parking
 from solver import (
@@ -1004,6 +1005,25 @@ def _run_migrations(app):
                 "NOT NULL DEFAULT ''"
             )
 
+    # 希望（休み希望・出勤可能日）に「いつ・誰が入れたか」を持たせる。
+    #   ユーザー依頼 2026-09:「登録したら登録日時も出るように」。
+    #   以前から入っている行は created_at が空のまま（画面では「—」と出す）。
+    for _table in ("day_off_request", "staff_workable_date"):
+        if _table not in tables:
+            continue
+        columns = [
+            row[1] for row in cursor.execute(
+                "PRAGMA table_info({})".format(_table)).fetchall()
+        ]
+        if "created_at" not in columns:
+            cursor.execute(
+                "ALTER TABLE {} ADD COLUMN created_at DATETIME".format(_table))
+        if "created_by" not in columns:
+            cursor.execute(
+                "ALTER TABLE {} ADD COLUMN created_by VARCHAR(10) "
+                "NOT NULL DEFAULT 'admin'".format(_table)
+            )
+
     conn.commit()
     conn.close()
 
@@ -1479,6 +1499,48 @@ def _plan_editable_staff_ids():
     return None
 
 
+# -----------------------------------------------------------------------
+# 希望（休み希望・出勤可能日）の提出
+#   ユーザー依頼 2026-09:「シフト個人のIDから 出勤不可の日、または出勤可能な日
+#   登録出来るようにして シフト作成へ連動したい。登録したら登録日時も出るように。
+#   締め切り設定できるようにしたい」
+#
+#   入れ先は管理側の画面と同じ DayOffRequest / StaffWorkableDate なので、
+#   職員が出した希望はそのままシフト自動作成に効く（別テーブルを作らない）。
+#   出し方は管理画面と同じ3通り:
+#     ① 休み希望              … DayOffRequest
+#     ② 出勤可能日（限定）    … StaffWorkableDate + workable_dates_mode="only"
+#     ③ 出勤可能日（追加・振替）… StaffWorkableDate + workable_dates_mode="extra"
+# -----------------------------------------------------------------------
+# 職員本人のアカウントだけが呼べるAPI（中身の staff_id は必ずセッションから取る）
+_OWN_REQUEST_ENDPOINTS = {
+    "api_my_requests_get", "api_my_requests_update", "api_my_requests_mode",
+}
+
+
+def _my_staff_id():
+    """職員ごとのアカウントでログイン中なら、その職員ID。それ以外は None。"""
+    if session.get("role") != VIEWER_ROLE:
+        return None
+    sid = session.get("staff_id")
+    return int(sid) if sid else None
+
+
+def _request_deadline_at(year, month):
+    """その月の希望提出の締め切り日時。設定が無ければ None（＝締め切り無し）。"""
+    row = RequestDeadline.query.filter_by(year=year, month=month).first()
+    return row.deadline_at if row else None
+
+
+def _requests_closed(year, month):
+    """その月の希望提出が締め切り済みか。
+
+    締め切り後に止めるのは職員本人の画面だけ。管理側は今まで通りいつでも入れられる。
+    """
+    deadline = _request_deadline_at(year, month)
+    return bool(deadline) and _now_jst() > deadline
+
+
 # ログイン不要でアクセスできるエンドポイント
 _PUBLIC_ENDPOINTS = {"login", "static"}
 
@@ -1606,8 +1668,9 @@ def create_app():
                 return redirect(url_for("login"))
         # 閲覧専用ロールは閲覧ページと読み取りAPIのみ（編集・生成・設定は一切不可）
         if session.get("role") == VIEWER_ROLE:
-            # 職員ごとのアカウントは「自分の予定」の保存だけ追加で許す
-            _own_plan_ok = bool(_sid) and endpoint in _OWN_PLAN_ENDPOINTS
+            # 職員ごとのアカウントは「自分の予定」と「自分の希望」の保存だけ追加で許す
+            _own_plan_ok = bool(_sid) and endpoint in (
+                _OWN_PLAN_ENDPOINTS | _OWN_REQUEST_ENDPOINTS)
             if not _own_plan_ok and (
                     endpoint not in _VIEWER_ENDPOINTS or request.method != "GET"):
                 if request.path.startswith("/api/"):
@@ -2720,7 +2783,8 @@ def create_app():
         if existing:
             return jsonify({"error": "この日付の休み希望は既に登録されています"}), 409
 
-        day_off = DayOffRequest(staff_id=staff_id, date=req_date)
+        day_off = DayOffRequest(staff_id=staff_id, date=req_date,
+                                created_at=_now_jst(), created_by="admin")
         db.session.add(day_off)
         db.session.commit()
         return jsonify(day_off.to_dict()), 201
@@ -2763,7 +2827,8 @@ def create_app():
         if existing:
             return jsonify({"error": "この日付は既に登録されています"}), 409
 
-        wd = StaffWorkableDate(staff_id=staff_id, date=d)
+        wd = StaffWorkableDate(staff_id=staff_id, date=d,
+                               created_at=_now_jst(), created_by="admin")
         db.session.add(wd)
         db.session.commit()
         return jsonify(wd.to_dict()), 201
@@ -2798,6 +2863,224 @@ def create_app():
             .all()
         )
         return jsonify([w.to_dict() for w in dates])
+
+    # -----------------------------------------------------------------
+    # API ルート — 職員本人が出す希望（休み希望・出勤可能日）
+    #   ユーザー依頼 2026-09:「シフト個人のIDから 出勤不可の日、または
+    #   出勤可能な日 登録出来るようにして シフト作成へ連動したい」。
+    #   保存先は管理画面と同じテーブルなので、そのままシフト作成に効く。
+    # -----------------------------------------------------------------
+    def _my_requests_payload(staff, year, month):
+        """その職員・その月の希望をまとめて返す（画面はこれだけで描ける）。"""
+        first = date(year, month, 1)
+        last = date(year, month, calendar.monthrange(year, month)[1])
+        offs = (
+            DayOffRequest.query.filter(
+                DayOffRequest.staff_id == staff.id,
+                DayOffRequest.date >= first, DayOffRequest.date <= last)
+            .order_by(DayOffRequest.date).all()
+        )
+        works = (
+            StaffWorkableDate.query.filter(
+                StaffWorkableDate.staff_id == staff.id,
+                StaffWorkableDate.date >= first, StaffWorkableDate.date <= last)
+            .order_by(StaffWorkableDate.date).all()
+        )
+        deadline = _request_deadline_at(year, month)
+        return {
+            "staff_id": staff.id,
+            "staff_name": staff.name,
+            "year": year,
+            "month": month,
+            "mode": getattr(staff, "workable_dates_mode", "only") or "only",
+            "deadline": format_jst(deadline),
+            "closed": _requests_closed(year, month),
+            "day_offs": [d.to_dict() for d in offs],
+            "workable_dates": [w.to_dict() for w in works],
+        }
+
+    @app.route("/api/my-shift-requests/<int:year>/<int:month>", methods=["GET"])
+    def api_my_requests_get(year, month):
+        """自分のその月の希望（休み希望・出勤可能日）と締め切りを返す。"""
+        if not (2000 <= year <= 2100 and 1 <= month <= 12):
+            return jsonify({"error": "年月が正しくありません"}), 400
+        sid = _my_staff_id()
+        if not sid:
+            return jsonify({"error": "個人のアカウントでログインしてください"}), 403
+        staff = Staff.query.get(sid)
+        if staff is None:
+            return jsonify({"error": "職員が見つかりません"}), 404
+        return jsonify(_my_requests_payload(staff, year, month))
+
+    @app.route("/api/my-shift-requests", methods=["POST"])
+    def api_my_requests_update():
+        """自分の希望を1日ぶん足す／消す。
+
+        {"kind": "dayoff" | "workable", "date": "2026-10-05",
+         "action": "add" | "remove"}
+
+        締め切りを過ぎた月は、この画面からは足すことも消すこともできない
+        （管理側の画面からはいつでも直せる）。
+        """
+        sid = _my_staff_id()
+        if not sid:
+            return jsonify({"error": "個人のアカウントでログインしてください"}), 403
+        staff = Staff.query.get(sid)
+        if staff is None:
+            return jsonify({"error": "職員が見つかりません"}), 404
+
+        data = request.get_json(silent=True) or {}
+        kind = (data.get("kind") or "").strip()
+        action = (data.get("action") or "add").strip()
+        if kind not in ("dayoff", "workable"):
+            return jsonify({"error": "kind は dayoff / workable のいずれかです"}), 400
+        if action not in ("add", "remove"):
+            return jsonify({"error": "action は add / remove のいずれかです"}), 400
+        try:
+            d = datetime.strptime(str(data.get("date")), "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return jsonify({"error": "日付が正しくありません"}), 400
+
+        if _requests_closed(d.year, d.month):
+            deadline = format_jst(_request_deadline_at(d.year, d.month))
+            return jsonify({
+                "error": "{}月分の希望は{}で締め切りました。"
+                         "変更したいときは担当者にご連絡ください。".format(
+                             d.month, deadline),
+                "closed": True,
+            }), 409
+
+        model = DayOffRequest if kind == "dayoff" else StaffWorkableDate
+        existing = model.query.filter_by(staff_id=staff.id, date=d).first()
+        if action == "remove":
+            if existing is not None:
+                db.session.delete(existing)
+                db.session.commit()
+        else:
+            if existing is None:
+                db.session.add(model(
+                    staff_id=staff.id, date=d,
+                    created_at=_now_jst(), created_by="staff",
+                ))
+                db.session.commit()
+        return jsonify(_my_requests_payload(staff, d.year, d.month))
+
+    @app.route("/api/my-shift-requests/mode", methods=["POST"])
+    def api_my_requests_mode():
+        """自分の「出勤可能日の扱い」を切り替える（only=限定 / extra=追加・振替）。
+
+        {"mode": "only" | "extra", "year": 2026, "month": 10}
+        year/month は締め切り判定にだけ使う（扱い自体は月をまたいで共通）。
+        """
+        sid = _my_staff_id()
+        if not sid:
+            return jsonify({"error": "個人のアカウントでログインしてください"}), 403
+        staff = Staff.query.get(sid)
+        if staff is None:
+            return jsonify({"error": "職員が見つかりません"}), 404
+
+        data = request.get_json(silent=True) or {}
+        mode = (data.get("mode") or "").strip()
+        if mode not in ("only", "extra"):
+            return jsonify({"error": "mode は only / extra のいずれかです"}), 400
+        year = safe_int(data.get("year"), 0)
+        month = safe_int(data.get("month"), 0)
+        if not (2000 <= year <= 2100 and 1 <= month <= 12):
+            return jsonify({"error": "年月が正しくありません"}), 400
+        if _requests_closed(year, month):
+            return jsonify({
+                "error": "{}月分の希望は締め切りました。".format(month),
+                "closed": True,
+            }), 409
+        staff.workable_dates_mode = mode
+        db.session.commit()
+        return jsonify(_my_requests_payload(staff, year, month))
+
+    # -----------------------------------------------------------------
+    # API ルート — 希望提出の締め切り（管理側）
+    #   ユーザー依頼 2026-09:「締め切り設定できるようにしたい」
+    # -----------------------------------------------------------------
+    @app.route("/api/request-deadline/<int:year>/<int:month>", methods=["GET"])
+    def api_request_deadline_get(year, month):
+        """その月の締め切りと、職員ごとの提出状況を返す（管理画面用）。"""
+        if not (2000 <= year <= 2100 and 1 <= month <= 12):
+            return jsonify({"error": "年月が正しくありません"}), 400
+        row = RequestDeadline.query.filter_by(year=year, month=month).first()
+        first = date(year, month, 1)
+        last = date(year, month, calendar.monthrange(year, month)[1])
+
+        off_map, work_map = {}, {}
+        for r in DayOffRequest.query.filter(
+                DayOffRequest.date >= first, DayOffRequest.date <= last).all():
+            off_map.setdefault(r.staff_id, []).append(r)
+        for r in StaffWorkableDate.query.filter(
+                StaffWorkableDate.date >= first,
+                StaffWorkableDate.date <= last).all():
+            work_map.setdefault(r.staff_id, []).append(r)
+
+        rows = []
+        for st in _ordered_staff().all():
+            if not _is_staff_active_in_month(st, year, month):
+                continue
+            offs = off_map.get(st.id, [])
+            works = work_map.get(st.id, [])
+            stamps = [r.created_at for r in (offs + works) if r.created_at]
+            rows.append({
+                "staff_id": st.id,
+                "name": st.name,
+                "login_id": st.login_id or "",
+                "day_off_count": len(offs),
+                "workable_count": len(works),
+                "mode": getattr(st, "workable_dates_mode", "only") or "only",
+                # 本人が出したものが1件でもあれば「本人提出」
+                "submitted_by_staff": any(
+                    (r.created_by or "admin") == "staff" for r in (offs + works)),
+                "last_submitted_at": format_jst(max(stamps)) if stamps else "",
+            })
+        return jsonify({
+            "year": year, "month": month,
+            "deadline": format_jst(row.deadline_at) if row else "",
+            "deadline_input": (
+                row.deadline_at.strftime("%Y-%m-%dT%H:%M") if row else ""),
+            "closed": _requests_closed(year, month),
+            "staff": rows,
+        })
+
+    @app.route("/api/request-deadline/<int:year>/<int:month>", methods=["POST"])
+    def api_request_deadline_set(year, month):
+        """その月の締め切りを決める／消す。
+
+        {"deadline": "2026-09-20T17:00"} … 設定
+        {"deadline": ""}                 … 締め切り無しに戻す
+        """
+        if not (2000 <= year <= 2100 and 1 <= month <= 12):
+            return jsonify({"error": "年月が正しくありません"}), 400
+        data = request.get_json(silent=True) or {}
+        raw = (data.get("deadline") or "").strip()
+        row = RequestDeadline.query.filter_by(year=year, month=month).first()
+        if not raw:
+            if row is not None:
+                db.session.delete(row)
+                db.session.commit()
+            return jsonify({"year": year, "month": month, "deadline": "",
+                            "deadline_input": "", "closed": False})
+        try:
+            at = datetime.strptime(raw[:16], "%Y-%m-%dT%H:%M")
+        except ValueError:
+            return jsonify({"error": "締め切りの日時が正しくありません"}), 400
+        if row is None:
+            row = RequestDeadline(year=year, month=month, deadline_at=at)
+            db.session.add(row)
+        else:
+            row.deadline_at = at
+        row.updated_at = _now_jst()
+        db.session.commit()
+        return jsonify({
+            "year": year, "month": month,
+            "deadline": format_jst(at),
+            "deadline_input": at.strftime("%Y-%m-%dT%H:%M"),
+            "closed": _requests_closed(year, month),
+        })
 
     # -----------------------------------------------------------------
     # API ルート — シフト設定

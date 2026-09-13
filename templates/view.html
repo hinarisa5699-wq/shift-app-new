@@ -82,12 +82,16 @@
         </button>
 
         <div id="req-body" class="hidden mt-3">
-            <p id="req-target" class="text-sm font-bold text-gray-700"></p>
-            <div class="flex flex-wrap items-center gap-2 mb-3">
-                <p class="text-[11px] text-gray-500">上の「年」「月」を変えると、その月の希望になります。</p>
+            <div class="flex items-center gap-2 mb-1">
+                <button type="button" id="req-prev-month"
+                        class="px-3 py-1 rounded-lg bg-gray-100 text-gray-700 font-bold">◀</button>
+                <p id="req-target" class="flex-1 text-center text-sm font-bold text-gray-700"></p>
                 <button type="button" id="req-next-month"
-                        class="text-xs px-3 py-1 rounded-full bg-teal-50 border border-teal-300 text-teal-700 font-bold"></button>
+                        class="px-3 py-1 rounded-lg bg-gray-100 text-gray-700 font-bold">▶</button>
             </div>
+            <p class="text-[11px] text-gray-500 mb-3 text-center">
+                ふつうは翌月分を出します（下の表の月とは別に動きます）。
+            </p>
             <div id="req-closed"
                  class="hidden mb-3 text-sm font-bold text-red-700 bg-red-50 border border-red-200 rounded-lg p-2"></div>
 
@@ -165,6 +169,22 @@
 //   （const は宣言より前で読むと ReferenceError になり、以降のJSが全部止まる）。
 const REQ_ON = {{ 'true' if (is_viewer and my_staff_id) else 'false' }};
 let reqData = null;
+// 希望を出す対象の年月。シフト表の月とは別に持つ。
+//   ユーザー指摘 2026-09:「9月に聞くのは10月のシフトです」。
+//   9月にシフト表（9月）を見ながら出す希望は10月分なので、既定を翌月にする。
+const reqMonthState = (() => {
+    const now = new Date();
+    const d = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    return { year: d.getFullYear(), month: d.getMonth() + 1 };
+})();
+
+function reqShiftMonth(delta) {
+    const d = new Date(reqMonthState.year, reqMonthState.month - 1 + delta, 1);
+    reqMonthState.year = d.getFullYear();
+    reqMonthState.month = d.getMonth() + 1;
+    showReqMsg('', true);
+    loadMyRequests();
+}
 
 const PLAN_EDIT_CATEGORIES = {{ plan_edit_categories | tojson }};
 // 手入力のスケジュールを入れてよい職員ID（null = 全員入れられる）
@@ -770,8 +790,9 @@ function reqWho(by) { return by === 'staff' ? '本人' : '事務所'; }
 async function loadMyRequests() {
     if (!REQ_ON) return;
     try {
-        const r = await fetch(`/api/my-shift-requests/${state.year}/${state.month}`,
-                              { cache: 'no-store' });
+        const r = await fetch(
+            `/api/my-shift-requests/${reqMonthState.year}/${reqMonthState.month}`,
+            { cache: 'no-store' });
         if (!r.ok) return;
         reqData = await r.json();
         renderMyRequests();
@@ -817,11 +838,6 @@ function renderMyRequests() {
     el('req-target').textContent =
         `${reqData.year}年${reqData.month}月分の希望（${reqData.staff_name} さん）`;
 
-    const nextBtn = el('req-next-month');
-    if (nextBtn) {
-        const nm = reqData.month === 12 ? 1 : reqData.month + 1;
-        nextBtn.textContent = `${nm}月分にする`;
-    }
 
     const closedBox = el('req-closed');
     if (locked) {
@@ -890,7 +906,8 @@ async function sendMyRequestMode(mode) {
     try {
         const r = await fetch('/api/my-shift-requests/mode', {
             method: 'POST', headers: reqHeaders(),
-            body: JSON.stringify({ mode: mode, year: state.year, month: state.month }),
+            body: JSON.stringify({
+                mode: mode, year: reqMonthState.year, month: reqMonthState.month }),
         });
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || '変えられませんでした');
@@ -914,12 +931,8 @@ function initMyRequests() {
         () => sendMyRequest('dayoff', el('req-off-date').value, 'add');
     el('req-work-add').onclick =
         () => sendMyRequest('workable', el('req-work-date').value, 'add');
-    el('req-next-month').onclick = () => {
-        shiftMonth(1);              // 上の年月セレクタごと翌月へ（表もいっしょに動く）
-        el('req-body').classList.remove('hidden');
-        el('req-caret').textContent = '▲';
-        showReqMsg('', true);
-    };
+    el('req-prev-month').onclick = () => reqShiftMonth(-1);
+    el('req-next-month').onclick = () => reqShiftMonth(1);
     document.querySelectorAll('.req-mode').forEach(r => {
         r.onchange = () => { if (r.checked) sendMyRequestMode(r.value); };
     });

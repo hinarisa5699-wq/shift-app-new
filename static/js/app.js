@@ -139,8 +139,12 @@ function loadShifts(year, month) {
     year = year || parseInt(yearSelect.value);
     month = month || parseInt(monthSelect.value);
 
-    // 希望の受付状況・締め切りも同じ月に合わせる（畳んでいても札は出す）
-    if (document.getElementById('req-admin-chip')) loadRequestDeadline(year, month);
+    // 希望の受付は別の月（既定＝翌月）を見るので、シフト表の月には合わせない。
+    //   札だけは畳んでいても出したいので、最初の1回はここで取りに行く。
+    if (document.getElementById('req-admin-chip') && !requestPanelLoaded) {
+        requestPanelLoaded = true;
+        loadRequestDeadline();
+    }
 
     showLoading('シフトデータを読み込み中...');
 
@@ -2188,11 +2192,25 @@ function isNurseOrPtStaff(staff) {
      「締め切り設定できるようにしたい」。
      職員は個人ログインの画面から出し、ここで締め切りと提出状況を見る。
    ============================================ */
+// 希望を受け付ける対象の年月。シフト表の年月とは別に持つ。
+//   ユーザー指摘 2026-09:「9月に聞くのは10月のシフトです」。
+//   9月にシフトを見ている最中でも、集めているのは10月分の希望なので既定は翌月。
+const requestPanelState = (() => {
+    const now = new Date();
+    const d = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    return { year: d.getFullYear(), month: d.getMonth() + 1 };
+})();
+
 function requestPanelYearMonth() {
-    const y = document.getElementById('year-select');
-    const m = document.getElementById('month-select');
-    if (!y || !m) return null;
-    return { year: parseInt(y.value), month: parseInt(m.value) };
+    return { year: requestPanelState.year, month: requestPanelState.month };
+}
+
+function shiftRequestPanelMonth(delta) {
+    const d = new Date(requestPanelState.year, requestPanelState.month - 1 + delta, 1);
+    requestPanelState.year = d.getFullYear();
+    requestPanelState.month = d.getMonth() + 1;
+    showRequestMsg('', true);
+    loadRequestDeadline();
 }
 
 function toggleRequestPanel() {
@@ -2211,11 +2229,11 @@ function showRequestMsg(text, ok) {
     n.className = 'text-base font-medium ' + (ok ? 'text-green-700' : 'text-red-600');
 }
 
-function loadRequestDeadline(year, month) {
+let requestPanelLoaded = false;
+
+function loadRequestDeadline() {
     const ym = requestPanelYearMonth();
-    if (!ym) return;
-    const y = year || ym.year, m = month || ym.month;
-    fetch(`/api/request-deadline/${y}/${m}`, { cache: 'no-store' })
+    fetch(`/api/request-deadline/${ym.year}/${ym.month}`, { cache: 'no-store' })
         .then(r => { if (!r.ok) throw new Error('取得に失敗しました'); return r.json(); })
         .then(renderRequestPanel)
         .catch(() => {

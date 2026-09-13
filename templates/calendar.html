@@ -125,6 +125,13 @@
                 <label for="req-deadline-input" class="block text-sm font-medium text-gray-700 mb-1">
                     <span id="req-deadline-month">この月</span>分の締め切り
                 </label>
+                <div class="flex items-center gap-2 mb-2">
+                    <button type="button" onclick="shiftRequestPanelMonth(-1)"
+                            class="px-3 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold">◀</button>
+                    <span class="text-sm text-gray-500">受け付ける月を選ぶ</span>
+                    <button type="button" onclick="shiftRequestPanelMonth(1)"
+                            class="px-3 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold">▶</button>
+                </div>
                 <input type="datetime-local" id="req-deadline-input"
                        class="px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500">
             </div>
@@ -141,7 +148,8 @@
         <p class="text-sm text-gray-600 mb-4">
             締め切りを過ぎると、職員は自分の画面から希望を出せなくなります
             （この画面と職員の編集画面からは、締め切り後もいつでも入れられます）。
-            上の「年」「月」を変えて「表示」を押すと、その月の受付状況になります。
+            はじめは翌月分が出ます（9月に集めるのは10月分の希望のため）。
+            別の月を見るときは上の ◀ ▶ で変えてください。シフト表の年月とは別に動きます。
         </p>
 
         <div class="overflow-x-auto">

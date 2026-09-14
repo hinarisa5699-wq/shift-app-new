@@ -14,6 +14,37 @@ from ortools.sat.python import cp_model
 
 
 # ===========================================================================
+# 公休日数の警告文（ソルバー・画面編集・Excel出力で同じ文言を使う）
+# ===========================================================================
+def public_holiday_warning(name, set_off, min_off, actual_off, warn=True):
+    """公休日数の警告文を返す（目標どおりなら None）。
+
+    設定した公休日数より「休み希望・固定休で必ず休みになる日数」が多い月は、
+    そちらを実効目標にする。設定15日・希望休17日で実際22日、のようなケースを
+    「差+7日の未達」と赤く出しても直しようがないため。
+    （ユーザー指摘 2026-09:「竹下さんは希望休を17日出しているのになぜエラー？」）
+    """
+    if not warn:
+        # パート等の自動算出は目安なので、シフトの目標には使うが警告は出さない
+        return None
+    set_off = int(set_off or 0)
+    if set_off <= 0:
+        return None
+    min_off = int(min_off or 0)
+    effective = max(set_off, min_off)
+    if actual_off == effective:
+        return None
+    diff = actual_off - effective
+    if effective > set_off:
+        return (
+            f"公休日数: {name} 目標{effective}日"
+            f"（設定{set_off}日／休み希望・固定休で今月は最低{effective}日）"
+            f" / 実際{actual_off}日（差{diff:+d}日）"
+        )
+    return f"公休日数: {name} 目標{set_off}日 / 実際{actual_off}日（差{diff:+d}日）"
+
+
+# ===========================================================================
 # 介護職員向け アサインメント定数
 # ===========================================================================
 CARE_ASSIGNMENTS = [
@@ -1639,6 +1670,9 @@ def _solve_care_with_fallback(
             "work_end_time": s.get("work_end_time", ""),
             "can_bath_assist": s.get("can_bath_assist", False),
             "public_holiday_count": int(s.get("public_holiday_count", 0) or 0),
+            # 休み希望・固定休で必ず休みになる日数（公休目標の下限）
+            "public_holiday_min_off": int(s.get("public_holiday_min_off", 0) or 0),
+            "public_holiday_warn": bool(s.get("public_holiday_warn", True)),
         }
 
     staff_ids = list(staff_by_id.keys())
@@ -1894,6 +1928,57 @@ def _solve_care_with_fallback(
             warnings_data.append(_phone_no_eligible_warning)
         return shifts_data, warnings_data
 
+    # Phase 2b: 看護師配置のハード化を解いて再試行（Phase 2 が無解のときだけ）
+    #   看護師を必ず置くと他の条件と両立しない月でも、生成は続けられるようにする。
+    shifts_data, warnings_data = _solve_care(
+        year, month, all_dates, staff_ids, staff_by_id,
+        off_request_set, min_day_service, min_visit_am, min_visit_pm,
+        closed_days_set, visit_operating_days,
+        closed_dates_set=closed_dates_set,
+        am_preferred_gender=am_preferred_gender,
+        phone_duty_enabled=phone_duty_enabled,
+        phone_duty_max_consecutive=phone_duty_max_consecutive,
+        min_staff_at_9=min_staff_at_9,
+        min_staff_at_11=min_staff_at_11,
+        min_staff_at_13=min_staff_at_13,
+        min_staff_at_15=min_staff_at_15,
+        male_am_constraint_mode=male_am_constraint_mode,
+        placement_rules=placement_rules,
+        counselor_staff_ids=counselor_staff_ids,
+        counselor_care_mode=counselor_care_mode,
+        allowed_patterns=allowed_patterns or {},
+        max_day_service=max_day_service,
+        no_service_day_indices=no_service_day_indices,
+        care_headcount_by_day=care_headcount_by_day,
+        day_service_by_day=day_service_by_day,
+        present_floor_by_day=present_floor_by_day,
+        oncall_forced_off=oncall_forced_off,
+        oncall_work_days=oncall_work_days,
+        forced_work_dates=forced_work_dates,
+        oncall_must_work=oncall_must_work,
+        require_early_late=True,
+        min_early_staff=min_early_staff,
+        min_late_staff=min_late_staff,
+        bath_supply_target=bath_supply_target,
+        late_oncall_mode=late_oncall_mode,
+        nurse_early_late_mode=nurse_early_late_mode,
+        visit_fairness_mode=visit_fairness_mode,
+        visit_fairness_max=visit_fairness_max,
+        late_consecutive_mode=late_consecutive_mode,
+        late_fairness_mode=late_fairness_mode,
+        early_consecutive_mode=early_consecutive_mode,
+        early_fairness_mode=early_fairness_mode,
+        early_fairness_max=early_fairness_max,
+        late_fairness_max=late_fairness_max,
+        use_slack=True,
+        nurse_hard=False,
+        locked_assignments=locked_assignments or {},
+    )
+    if shifts_data is not None:
+        if _phone_no_eligible_warning:
+            warnings_data.append(_phone_no_eligible_warning)
+        return shifts_data, warnings_data
+
     # Phase 3: 配置ルールの hard を soft に緩和して再試行
     relaxed_rules = []
     relaxed_rule_names = []
@@ -1946,6 +2031,7 @@ def _solve_care_with_fallback(
         early_fairness_max=early_fairness_max,
         late_fairness_max=late_fairness_max,
         use_slack=True,
+        nurse_hard=False,   # ここまで来たら「作れること」を優先する
         locked_assignments=locked_assignments or {},
     )
     if shifts_data is not None:
@@ -2021,6 +2107,7 @@ def _solve_care(
     late_fairness_max: int = 1,
     use_slack: bool = False,
     locked_assignments: dict = None,
+    nurse_hard: bool = True,
 ):
     """
     介護職員の CP-SAT モデルを構築し解を求める。
@@ -3018,16 +3105,60 @@ def _solve_care(
     #   別制約で厳守済み。どうしても満たせない日はスラックで許容し報告する。
     # ==================================================================
     if nurse_ids:
+        # ユーザー依頼（2026-09）:「大山さんが出られない日は池田さんを配置すればすむ。
+        #   看護師不在はNG」。その日に物理的に出勤できる看護師が1人でもいる日は
+        #   スラック（不在の許容）を閉じて必ず配置させる。スラックのままだと重みは
+        #   高くても探索打ち切り時に不在の解が残ることがあるため、制約で押さえる。
+        #   全員が休み希望・勤務不可曜日・出勤可能日外・祝日不可の日だけ不在を許す。
+        _oncall_off_pairs = set()
+        for _entry in oncall_forced_off:
+            try:
+                _sid, _diso = _entry
+            except (ValueError, TypeError):
+                continue
+            _oncall_off_pairs.add((
+                _sid,
+                datetime.date.fromisoformat(_diso) if isinstance(_diso, str) else _diso,
+            ))
+
+        def _nurse_available(s, d_idx, dt):
+            """その看護師をその日に出勤させられるか（ハード制約だけで判定）。"""
+            info = staff_by_id[s]
+            if d_idx in forced_work_by_staff.get(s, set()):
+                return True
+            if s in locked_staff_ids:
+                # 固定職員は既存シフトを温存するので新たな配置枠としては数えない
+                return False
+            if (s, dt) in off_request_set:
+                return False
+            if (s, dt) in _oncall_off_pairs:
+                return False
+            _wl = info.get("workable_dates") or set()
+            if _wl and dt.isoformat() not in _wl:
+                return False
+            _avail = set(info.get("available_days") or [])
+            if _avail and dt.weekday() not in _avail:
+                return False
+            _req = set(info.get("required_days") or [])
+            if (dt.weekday() in set(info.get("fixed_days_off") or [])
+                    and dt.weekday() not in _req):
+                return False
+            if info.get("holiday_ng") and jpholiday.is_holiday(dt):
+                return False
+            return True
+
         for d_idx in non_closed_days:
             # デイ非営業日（訪問のみ・無サービス日）は看護師の配置を要求しない
             #   （ユーザー依頼: 看護師はデイ営業日のみ出勤でよい）。警告も出さない。
             if d_idx in no_service_day_indices:
                 continue
+            dt = all_dates[d_idx]
             nurse_minutes = sum(
                 x[s, d_idx, a] * ASSIGNMENT_MINUTES.get(a, 0)
                 for s in nurse_ids for a in CARE_WORKING_ASSIGNMENTS
             )
-            if use_slack:
+            _can_place = any(_nurse_available(s, d_idx, dt) for s in nurse_ids)
+            if use_slack and not (nurse_hard and _can_place):
                 # slack_nurse=1 で 120分ぶんを充足扱いにする（=その日は警告）
                 model.add(nurse_minutes + slack_nurse[d_idx] * 120 >= 120)
             else:
@@ -3190,15 +3321,19 @@ def _solve_care(
     #   ＝ work_count[s] を (num_days - 目標) に合わせる。過不足はソフトに最小化し、
     #   人員不足等で満たせない月は警告のみ（無解化しない）。固定職員は対象外。
     public_holiday_penalties = []
-    public_holiday_trackers = []  # (staff_id, target_off, over_var, under_var)
+    public_holiday_trackers = []  # (staff_id, set_off, min_off, warn)
     # 1日の配置人数の枠が足りない月は、誰かが必ず目標未達になる。
     #   ユーザー依頼（2026-08）:「菊地さん正社員なのに出勤日数足りないと困る」
     #   → 常勤・正社員の不足を強く優先して埋める（パートより重い重み）。
     _FULLTIME_EMPLOYMENT = ("常勤", "正社員", "時短正社員", "管理者")
     for s in free_staff_ids:
-        target_off = int(staff_by_id[s].get("public_holiday_count", 0) or 0)
-        if target_off <= 0:
+        set_off = int(staff_by_id[s].get("public_holiday_count", 0) or 0)
+        if set_off <= 0:
             continue
+        # 休み希望・固定休で必ず休みになる日数が設定より多い月は、そちらを実効目標に
+        #   する（届かない目標に引っ張られて他の職員の配置が歪むのを防ぐ）。
+        min_off = int(staff_by_id[s].get("public_holiday_min_off", 0) or 0)
+        target_off = max(set_off, min_off)
         target_work = num_days - target_off
         if target_work < 0:
             target_work = 0
@@ -3209,7 +3344,10 @@ def _solve_care(
         _mult = 3 if _emp in _FULLTIME_EMPLOYMENT else 1
         public_holiday_penalties.append(over * _mult)
         public_holiday_penalties.append(under * _mult)
-        public_holiday_trackers.append((s, target_off, over, under))
+        public_holiday_trackers.append((
+            s, set_off, min_off,
+            bool(staff_by_id[s].get("public_holiday_warn", True)),
+        ))
     # 重み: 週下限と同等(num_days+1)*5。人員確保スラックより十分小さく、
     #   総出勤日数最小化(headcount)は上回るので目標日数へ寄せられる。
     public_holiday_weight = (num_days + 1) * 5
@@ -3780,20 +3918,20 @@ def _solve_care(
     # ------------------------------------------------------------------
     # 公休日数: 目標とずれた職員を警告（実公休＝num_days−実勤務日数）
     # ------------------------------------------------------------------
-    for (s, target_off, over, under) in public_holiday_trackers:
+    for (s, set_off, min_off, _warn) in public_holiday_trackers:
         actual_work = sum(
             solver.value(x[s, d_idx, a])
             for d_idx in range(num_days)
             for a in CARE_WORKING_ASSIGNMENTS
         )
         actual_off = num_days - actual_work
-        if actual_off != target_off:
-            nm = staff_by_id[s].get("name", f"Staff_{s}")
+        nm = staff_by_id[s].get("name", f"Staff_{s}")
+        msg = public_holiday_warning(nm, set_off, min_off, actual_off, _warn)
+        if msg:
             warnings_data.append({
                 "date": all_dates[0].strftime("%Y-%m-%d"),
                 "warning_type": "public_holiday_unmet",
-                "message": f"公休日数: {nm} 目標{target_off}日 / 実際{actual_off}日"
-                           f"（差{actual_off - target_off:+d}日）",
+                "message": msg,
             })
 
     return shifts_data, warnings_data
@@ -3944,6 +4082,9 @@ def _solve_cooking_with_fallback(
             # 初出勤日（依頼文36・教育期間の起点）。"YYYY-MM-DD" or None
             "first_work_date": s.get("first_work_date") or None,
             "public_holiday_count": int(s.get("public_holiday_count", 0) or 0),
+            # 休み希望・固定休で必ず休みになる日数（公休目標の下限）
+            "public_holiday_min_off": int(s.get("public_holiday_min_off", 0) or 0),
+            "public_holiday_warn": bool(s.get("public_holiday_warn", True)),
         }
 
     staff_ids = list(staff_by_id.keys())
@@ -4754,18 +4895,24 @@ def _solve_cooking(
     # --- ソフト制約: 公休日数（月の休み日数を職員ごとに指定・ちょうど==N） ---
     #   公休＝勤務以外の全日。off日数 = num_days - work_count[s]。固定職員は対象外。
     cook_ph_penalties = []
-    cook_ph_trackers = []  # (staff_id, target_off, over, under)
+    cook_ph_trackers = []  # (staff_id, set_off, min_off, warn)
     for s in free_staff_ids:
-        target_off = int(staff_by_id[s].get("public_holiday_count", 0) or 0)
-        if target_off <= 0:
+        set_off = int(staff_by_id[s].get("public_holiday_count", 0) or 0)
+        if set_off <= 0:
             continue
+        # 休み希望・固定休で必ず休みになる日数のほうが多い月はそちらを実効目標にする
+        min_off = int(staff_by_id[s].get("public_holiday_min_off", 0) or 0)
+        target_off = max(set_off, min_off)
         target_work = max(0, num_days - target_off)
         over = model.new_int_var(0, num_days, f"cook_ph_over_s{s}")
         under = model.new_int_var(0, num_days, f"cook_ph_under_s{s}")
         model.add(work_count[s] - target_work == over - under)
         cook_ph_penalties.append(over)
         cook_ph_penalties.append(under)
-        cook_ph_trackers.append((s, target_off, over, under))
+        cook_ph_trackers.append((
+            s, set_off, min_off,
+            bool(staff_by_id[s].get("public_holiday_warn", True)),
+        ))
     public_holiday_penalty = (
         sum(cook_ph_penalties) * (num_days + 1) * 5 if cook_ph_penalties else 0
     )
@@ -4903,20 +5050,20 @@ def _solve_cooking(
             })
 
     # 公休日数: 目標とずれた調理職員を警告（実公休＝num_days−実勤務日数）
-    for (s, target_off, over, under) in cook_ph_trackers:
+    for (s, set_off, min_off, _warn) in cook_ph_trackers:
         actual_work = sum(
             solver.value(x[s, d_idx, a])
             for d_idx in range(num_days)
             for a in cook_working
         )
         actual_off = num_days - actual_work
-        if actual_off != target_off:
-            nm = staff_by_id[s].get("name", f"Cook_{s}")
+        nm = staff_by_id[s].get("name", f"Cook_{s}")
+        msg = public_holiday_warning(nm, set_off, min_off, actual_off, _warn)
+        if msg:
             warnings_data.append({
                 "date": all_dates[0].strftime("%Y-%m-%d"),
                 "warning_type": "public_holiday_unmet",
-                "message": f"公休日数: {nm} 目標{target_off}日 / 実際{actual_off}日"
-                           f"（差{actual_off - target_off:+d}日）",
+                "message": msg,
             })
 
     # ------------------------------------------------------------------

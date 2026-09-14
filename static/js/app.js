@@ -511,13 +511,23 @@ function checkPublicHolidayLocally() {
     (currentShiftData.staff_list || []).forEach(s => {
         const target = s.public_holiday_target || 0;
         if (!target) return;
+        // パート等の自動算出の目標は目安なので警告は出さない（サーバー側と同じ扱い）
+        if (s.public_holiday_warn === false) return;
+        // 休み希望・固定休で必ず休みになる日数のほうが多い月は、そちらが実効目標
+        //   （設定15日・希望休17日で「差+7日」と出しても直しようがないため）
+        const minOff = s.public_holiday_min_off || 0;
+        const eff = Math.max(target, minOff);
         const off = days - (work[s.id] || 0);
-        if (off !== target) {
-            const diff = off - target;
+        if (off !== eff) {
+            const diff = off - eff;
+            const sign = diff > 0 ? '+' : '';
+            const head = eff > target
+                ? `公休日数: ${s.name} 目標${eff}日（設定${target}日／休み希望・固定休で今月は最低${eff}日）`
+                : `公休日数: ${s.name} 目標${target}日`;
             extra.push({
                 date: `${currentYear}-${String(currentMonth).padStart(2, '0')}-01`,
                 warning_type: 'public_holiday_unmet',
-                message: `公休日数: ${s.name} 目標${target}日 / 実際${off}日（差${diff > 0 ? '+' : ''}${diff}日）`,
+                message: `${head} / 実際${off}日（差${sign}${diff}日）`,
             });
         }
     });

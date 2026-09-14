@@ -80,68 +80,194 @@ def _parse_retired_month(raw):
     return None
 
 
-def _public_holiday_target(st, year=None, month=None) -> int:
-    """職員の公休目標日数。自動算出ONなら平日日数ベース（生成時と同じ）。"""
+# 公休日数の自動算出（平日日数ベース）の対象にする雇用形態。
+#   自動算出は「正社員の所定労働日数＝その月の平日日数」という考え方なので、
+#   パート等に当てはめると常勤と同じ出勤日数が目標になってしまう。
+#   （ユーザー指摘 2026-09:「ヘルプさんが目標9日/実際20日で毎回警告が出る」）
+_FULLTIME_EMPLOYMENT = ("常勤", "正社員", "時短正社員", "管理者")
+
+
+def _is_cooking_staff(st) -> bool:
+    return (
+        (getattr(st, "job_category", "") or "") == "cooking"
+        or (getattr(st, "staff_group", "") or "") == "cooking"
+    )
+
+
+def _workable_whitelist(st, year, month):
+    """出勤可能日（登録日のみ出勤する職員）の当月分。未登録・振替出勤なら None。"""
+    if (getattr(st, "workable_dates_mode", "only") or "only") != "only":
+        return None
+    cal_days = calendar.monthrange(year, month)[1]
+    rows = StaffWorkableDate.query.filter(
+        StaffWorkableDate.staff_id == st.id,
+        StaffWorkableDate.date >= date(year, month, 1),
+        StaffWorkableDate.date <= date(year, month, cal_days),
+    ).all()
+    return [r.date for r in rows] or None
+
+
+def _forced_work_dates(st, year, month):
+    """振替出勤（通常のシフトに加えて必ず出勤する日）の当月分。"""
+    if (getattr(st, "workable_dates_mode", "only") or "only") != "extra":
+        return set()
+    cal_days = calendar.monthrange(year, month)[1]
+    rows = StaffWorkableDate.query.filter(
+        StaffWorkableDate.staff_id == st.id,
+        StaffWorkableDate.date >= date(year, month, 1),
+        StaffWorkableDate.date <= date(year, month, cal_days),
+    ).all()
+    return {r.date for r in rows}
+
+
+def _month_workable_dates(st, year, month, settings_obj,
+                          whitelist=None, forced=None):
+    """その職員が当月に物理的に出勤しうる日（date のリスト）。
+
+    勤務可能曜日・勤務不可曜日（固定休）・休業曜日・休業日（日付指定）・祝日不可・
+    出勤可能日(whitelist) をすべて突き合わせる。ソルバーのハード制約と同じ判定。
+      ・調理は休業曜日には従わない（毎日稼働）。日付指定の休業日は全員休み。
+      ・「必ず出勤する曜日」は固定休より優先される（ソルバーと同じ）。
+      ・振替出勤(extra)の日は他の条件にかかわらず出勤日として数える。
+    """
+    cal_days = calendar.monthrange(year, month)[1]
+    avail = {int(x) for x in (st.available_days or "").split(",") if x.strip()}
+    fixed = {int(x) for x in (st.fixed_days_off or "").split(",") if x.strip()}
+    required = {
+        int(x) for x in (getattr(st, "required_days", "") or "").split(",")
+        if x.strip().isdigit()
+    }
+    hol_ng = bool(getattr(st, "holiday_ng", False))
+    closed_wd = set()
+    closed_iso = set()
+    if settings_obj is not None:
+        closed_iso = {
+            x.strip()
+            for x in (getattr(settings_obj, "closed_dates", "") or "").split(",")
+            if x.strip()
+        }
+        if not _is_cooking_staff(st):
+            closed_wd = {
+                int(x) for x in (settings_obj.closed_days or "").split(",")
+                if x.strip()
+            }
+    wl = set(whitelist) if whitelist else None
+    forced = set(forced or ())
+    out = []
+    for d in range(1, cal_days + 1):
+        dt = date(year, month, d)
+        if dt in forced:
+            out.append(dt)
+            continue
+        if dt.isoformat() in closed_iso:
+            continue
+        if avail and dt.weekday() not in avail:
+            continue
+        if dt.weekday() in fixed and dt.weekday() not in required:
+            continue
+        if dt.weekday() in closed_wd:
+            continue
+        if hol_ng and jpholiday.is_holiday(dt):
+            continue
+        # 出勤可能日を登録している職員は、登録日のうち実際に出られる日だけが出勤枠
+        #   （ユーザー指摘 2026-09:「土山さんは目標28日/実際29日で毎回警告」＝
+        #     登録日の1日が固定休と重なっていて、そもそも出られない）
+        if wl is not None and dt not in wl:
+            continue
+        out.append(dt)
+    return out
+
+
+def _public_holiday_target(st, year=None, month=None, settings_obj=None) -> int:
+    """職員の公休目標日数（0＝目標なし＝ソフト制約も警告も出さない）。"""
     if getattr(st, "oncall_only", False):
         # オンコールのみ当番の職員は出勤枠を持たないので公休の目標も課さない
         return 0
     if _is_plan_only_staff(st):
         # 役員・事務は自動作成の対象外なので公休の目標も持たない
         return 0
-    settings_obj = ShiftSettings.query.first()
+    if getattr(st, "backup_only", False):
+        # 応援（人手が足りないときだけ入る）職員は出勤日数が読めないので目標なし
+        return 0
     manual = int(getattr(st, "public_holiday_count", 0) or 0)
     if manual > 0:
         # 職員ごとに公休日数を入れてある場合はその日数を優先する
         #   （ユーザー指摘 2026-08:「郡さんは公休18と入れているのに目標8日になる」）
         return manual
+    if settings_obj is None:
+        settings_obj = ShiftSettings.query.first()
     if not settings_obj or not getattr(settings_obj, "auto_public_holidays", False):
-        return manual
+        return 0
     if not (year and month):
-        return manual
+        return 0
     cal_days = calendar.monthrange(year, month)[1]
+    whitelist = _workable_whitelist(st, year, month)
+    forced = _forced_work_dates(st, year, month)
+    # 固定休・勤務可能曜日・休業日・出勤可能日で物理的に出られない日を除いた出勤枠
+    max_workable = len(_month_workable_dates(
+        st, year, month, settings_obj, whitelist, forced))
+    if whitelist:
+        # 出勤可能日を登録した職員は出勤日がその日だけに決まっているので、
+        #   その日数がそのまま所定日数（ユーザー指摘 2026-08:
+        #   「土山さんは5日と26日しか出ない設定なのに入っていない」＝
+        #   目標がないとソルバーが入れなくてよいと判断してしまう）。
+        return max(0, cal_days - max_workable)
     include_hol = bool(getattr(settings_obj, "auto_ph_include_holidays", False))
     fulltime = sum(
         1 for d in range(1, cal_days + 1)
         if date(year, month, d).weekday() < 5
         and not (include_hol and jpholiday.is_holiday(date(year, month, d)))
     )
-    # 週の勤務日数は廃止したため、自動算出は平日日数そのものを所定日数とする
-    week_days = 7
-    shotei = fulltime
-    # 出勤可能日(whitelist)を登録している職員は、その月の登録日数が出勤日数の上限
-    if (getattr(st, "workable_dates_mode", "only") or "only") == "only":
-        _first = date(year, month, 1)
-        _last = date(year, month, cal_days)
-        _wl = StaffWorkableDate.query.filter(
-            StaffWorkableDate.staff_id == st.id,
-            StaffWorkableDate.date >= _first,
-            StaffWorkableDate.date <= _last,
-        ).count()
-        if _wl:
-            shotei = min(shotei, _wl)
-    # 固定休・勤務可能曜日・休業日で物理的に出られない分は差し引く
-    avail = {int(x) for x in (st.available_days or "").split(",") if x.strip()}
-    fixed = {int(x) for x in (st.fixed_days_off or "").split(",") if x.strip()}
-    closed_wd = {
-        int(x) for x in (settings_obj.closed_days or "").split(",") if x.strip()
-    }
-    closed_iso = {
-        x.strip() for x in (getattr(settings_obj, "closed_dates", "") or "").split(",")
-        if x.strip()
-    }
-    hol_ng = bool(getattr(st, "holiday_ng", False))
-    by_week = {}
-    for d in range(1, cal_days + 1):
-        dt = date(year, month, d)
-        if avail and dt.weekday() not in avail:
-            continue
-        if dt.weekday() in fixed or dt.weekday() in closed_wd or dt.isoformat() in closed_iso:
-            continue
-        if hol_ng and jpholiday.is_holiday(dt):
-            continue
-        by_week[dt.isocalendar()[1]] = by_week.get(dt.isocalendar()[1], 0) + 1
-    max_workable = sum(by_week.values())   # 週の上限は廃止（出られる日数がそのまま上限）
-    return max(0, cal_days - min(shotei, max_workable))
+    return max(0, cal_days - min(fulltime, max_workable))
+
+
+def _public_holiday_is_warned(st) -> bool:
+    """公休日数のズレを警告する職員か。
+
+    自動算出は「正社員の所定労働日数＝その月の平日日数」という考え方なので、
+    パート等に当てはめた目標は目安にすぎない。シフトを組むときの目標としては
+    使う（使わないと出勤日が極端に減る）が、ズレても警告は出さない。
+    （ユーザー指摘 2026-09:「ヘルプさんが目標9日/実際20日で毎回警告が出る」）
+    公休日数を手で入れてある職員は、雇用形態にかかわらず警告する。
+    """
+    if int(getattr(st, "public_holiday_count", 0) or 0) > 0:
+        return True
+    return str(getattr(st, "employment_type", "") or "") in _FULLTIME_EMPLOYMENT
+
+
+def _public_holiday_min_off(st, year=None, month=None, settings_obj=None,
+                            dayoff_dates=None) -> int:
+    """休み希望・固定休・休業日などで、その月に必ず休みになる日数。
+
+    公休の実績はこの日数より少なくできない。公休日数の設定がこれを下回るのは
+    シフトの組み方の問題ではなく「設定と希望休が合っていない」だけなので、
+    実効目標に使って余計な警告を出さないようにする。
+    （ユーザー指摘 2026-09:「竹下さんは希望休を17日出しているのに
+      目標15日/実際22日でエラー扱いされる」）
+    """
+    if not (year and month):
+        return 0
+    if settings_obj is None:
+        settings_obj = ShiftSettings.query.first()
+    cal_days = calendar.monthrange(year, month)[1]
+    forced = _forced_work_dates(st, year, month)
+    workable = _month_workable_dates(
+        st, year, month, settings_obj,
+        _workable_whitelist(st, year, month), forced,
+    )
+    if dayoff_dates is None:
+        dayoff_dates = {
+            r.date for r in DayOffRequest.query.filter(
+                DayOffRequest.staff_id == st.id,
+                DayOffRequest.date >= date(year, month, 1),
+                DayOffRequest.date <= date(year, month, cal_days),
+            ).all()
+        }
+    # 振替出勤の日は休み希望より優先して出勤になる（ソルバーと同じ）
+    left = [dt for dt in workable if dt in forced or dt not in dayoff_dates]
+    return max(0, cal_days - len(left))
+
+
 
 
 def _is_staff_active_in_month(st, year, month) -> bool:
@@ -3721,94 +3847,35 @@ def create_app():
         }
         workable_dates_map = {}
         forced_work_dates = []      # [(staff_id, "YYYY-MM-DD"), ...] 追加出勤日
-        for w in StaffWorkableDate.query.all():
+        # 生成する月の登録分だけを見る。月を絞らないと、先月だけ出勤可能日を登録した
+        #   職員が翌月は「登録日ゼロ＝1日も出勤できない」扱いになってしまう
+        #   （ユーザー指摘 2026-09:「古い情報は使わないで」）。
+        for w in StaffWorkableDate.query.filter(
+            StaffWorkableDate.date >= date(year, month, 1),
+            StaffWorkableDate.date <= date(
+                year, month, calendar.monthrange(year, month)[1]),
+        ).all():
             if _wd_mode.get(w.staff_id, "only") == "extra":
                 forced_work_dates.append((w.staff_id, w.date.isoformat()))
             else:
                 workable_dates_map.setdefault(w.staff_id, []).append(w.date.isoformat())
 
-        # 公休日数の自動算出。ON時は手入力より優先。
-        #   ユーザー依頼（2026-08）:「正社員の公休は土日を抜いた平日日数を出勤日にする」。
-        #     正社員(週5)所定労働日数 = その月の平日日数（月〜金）。祝日は労働日扱い。
-        #       例) 2026年9月 = 平日22日 → 公休8日（＝土日の日数）
-        #     短時間: 週5から1日減るごとに所定労働日数を -4日
-        #       （週4 = -4日, 週3 = -8日, 週2 = -12日 …）
-        #     所定労働日数 = max(0, 正社員所定 − (5 − 週勤務日数) × 4)
-        #     公休数 = 暦日数 − 所定労働日数
-        auto_ph_enabled = bool(getattr(settings_obj, "auto_public_holidays", False))
-        _calendar_days = calendar.monthrange(year, month)[1]
-        _daily_hours = float(getattr(settings_obj, "daily_work_hours", 8.0) or 8.0)
-        if _daily_hours <= 0:
-            _daily_hours = 8.0
-        # 正社員(週5)基準の所定労働日数＝その月の平日日数（月〜金）。
-        #   「祝日も公休に含める」がONなら平日から祝日を除く（＝その分公休が増える）。
-        _ph_include_holidays = bool(
-            getattr(settings_obj, "auto_ph_include_holidays", False)
-        )
-        _fulltime_shotei = sum(
-            1 for _d in range(1, _calendar_days + 1)
-            if date(year, month, _d).weekday() < 5
-            and not (_ph_include_holidays and jpholiday.is_holiday(date(year, month, _d)))
-        )
-
-        # 休業曜日・休業日（この時点では settings_dict 未構築なので設定から直接読む）
-        _closed_wd_for_ph = {
-            int(x) for x in (settings_obj.closed_days or "").split(",") if x.strip()
-        }
-        _closed_iso_for_ph = {
-            x.strip() for x in (getattr(settings_obj, "closed_dates", "") or "").split(",")
-            if x.strip()
-        }
-
-        def _max_workable_days(s):
-            """その職員が当月に物理的に出勤しうる最大日数。
-
-            勤務可能曜日・固定休・休業日（曜日/日付）・祝日不可・週の勤務日数上限を
-            すべて考慮する。ユーザー指摘（2026-08）:「池田さんは固定休が火木土なのに
-            公休目標が週5相当（月22日出勤）になっていて、目標がそもそも達成不能」。
-            """
-            avail = {int(x) for x in (s.available_days or "").split(",") if x.strip()}
-            fixed = {int(x) for x in (s.fixed_days_off or "").split(",") if x.strip()}
-            hol_ng = bool(getattr(s, "holiday_ng", False))
-            week_cap = 7        # 週の勤務日数は廃止（制限なし）
-            by_week = {}
-            for _d in range(1, _calendar_days + 1):
-                dt = date(year, month, _d)
-                iso = dt.isoformat()
-                if avail and dt.weekday() not in avail:
-                    continue
-                if dt.weekday() in fixed:
-                    continue
-                if dt.weekday() in _closed_wd_for_ph or iso in _closed_iso_for_ph:
-                    continue
-                if hol_ng and jpholiday.is_holiday(dt):
-                    continue
-                by_week.setdefault(dt.isocalendar()[1], 0)
-                by_week[dt.isocalendar()[1]] += 1
-            return sum(min(n, week_cap) for n in by_week.values())
+        # 公休日数の目標と「必ず休みになる日数」。
+        #   目標  … _public_holiday_target（手入力＞自動算出。自動算出は正社員のみ）
+        #   最低  … _public_holiday_min_off（休み希望・固定休・休業日で必ず休みになる日数）
+        #   ソルバーの目標も警告も max(目標, 最低) を使う。画面表示・Excel出力と同じ関数。
+        _dayoff_by_staff = {}
+        for _dor in day_off_requests:
+            _dayoff_by_staff.setdefault(_dor.staff_id, set()).add(_dor.date)
 
         def _effective_public_holidays(s):
-            """auto_ph_enabled時は正社員基準＋短時間補正の公休日数を返す（手入力より優先）。
+            return _public_holiday_target(s, year, month, settings_obj)
 
-            出勤可能日(whitelist)を登録した職員は、その登録日数を出勤日数の上限とみなす
-            （ユーザー指摘 2026-08:「土山さんは5日と26日しか出ない設定なのに入っていない」。
-            以前は目標を0＝対象外にしていたため、ソルバーが入れなくても良いと判断していた）。
-            """
-            _manual = getattr(s, "public_holiday_count", 0) or 0
-            if _manual > 0:
-                # 個別に入力した公休日数はそのまま使う（自動算出より優先）
-                return _manual
-            if not auto_ph_enabled:
-                return _manual
-            # 週の勤務日数は廃止（月の公休日数で管理）。自動算出は平日日数ベース。
-            shotei_work_days = _fulltime_shotei
-            # 固定休・勤務可能曜日・休業日で物理的に出られない分は目標から差し引く
-            shotei_work_days = min(shotei_work_days, _max_workable_days(s))
-            # 出勤可能日(whitelist)を登録している職員はその日数が上限
-            _wl = workable_dates_map.get(s.id)
-            if _wl:
-                shotei_work_days = min(shotei_work_days, len(_wl))
-            return max(0, _calendar_days - shotei_work_days)
+        def _min_off_days(s):
+            return _public_holiday_min_off(
+                s, year, month, settings_obj,
+                _dayoff_by_staff.get(s.id, set()),
+            )
 
         # ORM → dict 変換（部門別に分割）
         care_dicts = []
@@ -3858,6 +3925,10 @@ def create_app():
                     if getattr(s, "first_work_date", None) else None
                 ),
                 "public_holiday_count": _effective_public_holidays(s),
+                # 休み希望・固定休・休業日で必ず休みになる日数（公休目標の下限）
+                "public_holiday_min_off": _min_off_days(s),
+                # 公休日数のズレを警告するか（パート等の自動算出は目安なので出さない）
+                "public_holiday_warn": _public_holiday_is_warned(s),
             }
             if s.staff_group == "cooking":
                 cook_dicts.append(d)
@@ -4344,6 +4415,9 @@ def create_app():
                             (getattr(st, "google_ics_url", "") or "").strip()),
                         # 画面で直接編集したときの公休チェック用
                         "public_holiday_target": _public_holiday_target(st, year, month),
+                        "public_holiday_min_off": _public_holiday_min_off(
+                            st, year, month),
+                        "public_holiday_warn": _public_holiday_is_warned(st),
                     }
                     for st in all_staff
                 ],
@@ -5316,7 +5390,9 @@ def create_app():
              "qualification_codes": qc.get(s.id, []),
              "qualifications": qn.get(s.id, []),
              "job_category": getattr(s, "job_category", "caregiver") or "caregiver",
-             "public_holiday_target": _public_holiday_target(s, year, month)}
+             "public_holiday_target": _public_holiday_target(s, year, month),
+             "public_holiday_min_off": _public_holiday_min_off(s, year, month),
+             "public_holiday_warn": _public_holiday_is_warned(s)}
             for s in rows
         ]
 

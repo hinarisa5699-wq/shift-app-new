@@ -502,6 +502,14 @@
                 </label>
                 {% endfor %}
             </div>
+            <!-- 勤務可能曜日と勤務不可曜日に同じ曜日が入っているときの注意 -->
+            <div id="dayoff-conflict-warning" class="hidden mt-3 rounded-lg border-2 border-amber-400 bg-amber-50 px-4 py-3">
+                <p id="dayoff-conflict-text" class="text-base text-amber-900 leading-relaxed"></p>
+                <button type="button" id="dayoff-conflict-fix"
+                        class="mt-2 inline-flex items-center rounded-lg bg-amber-600 px-4 py-2 text-base font-semibold text-white hover:bg-amber-700">
+                    勤務不可曜日から外す
+                </button>
+            </div>
         </div>
 
         <!-- 必ず出勤する曜日 -->
@@ -547,6 +555,9 @@
             <p class="text-gray-500 text-sm mb-2">
                 その月の休みの日数の目標です（勤務しない日＝事業所の休業日・希望休・固定休・その他の休みをすべて含みます）。
                 <strong>0＝指定なし（自動算出にまかせます）</strong>。日数を入れると、条件設定の「公休日数を自動算出する」より<strong>この日数が優先</strong>されます。人員の都合で合わない月は警告を出して生成は継続します。
+                自動算出の対象は常勤・正社員だけです。<strong>パート・応援職員は0のままだと公休の目標なし</strong>（警告も出ません）。
+                なお<strong>休み希望や勤務不可曜日でこの日数より休みが多くなる月は、そちらが目標</strong>になります
+                （例：公休15日と入れていても休み希望が17日あれば、その月の目標は22日などになります）。
             </p>
             <input type="number" id="public_holiday_count" name="public_holiday_count"
                    min="0" max="31"
@@ -677,6 +688,45 @@ function toggleCareFields() {
 document.addEventListener('DOMContentLoaded', function() {
     toggleCareFields();
 });
+
+// 「勤務可能曜日」と「勤務不可曜日」に同じ曜日が入っていたらその場で知らせる。
+//   ユーザー指摘（2026-09）:「竹下さんの金曜をOKにしたのにシフトに入らない」
+//   → 勤務可能曜日に金を足しても、勤務不可曜日に金が残っていると必ず休みになる。
+//     どちらが優先か画面に出ていなかったので、原因が分からなかった。
+(function () {
+    const DAY_NAMES = ['月', '火', '水', '木', '金', '土', '日'];
+    const box = document.getElementById('dayoff-conflict-warning');
+    const text = document.getElementById('dayoff-conflict-text');
+    const fixBtn = document.getElementById('dayoff-conflict-fix');
+    if (!box || !text) return;
+    const boxes = (name) =>
+        Array.prototype.slice.call(document.querySelectorAll('input[name="' + name + '"]'));
+    function conflicts() {
+        const on = {};
+        boxes('available_days').forEach(function (e) { if (e.checked) on[e.value] = true; });
+        return boxes('fixed_days_off').filter(function (e) { return e.checked && on[e.value]; });
+    }
+    function refresh() {
+        const dup = conflicts();
+        if (!dup.length) { box.classList.add('hidden'); return; }
+        const names = dup.map(function (e) { return DAY_NAMES[Number(e.value)]; }).join('・');
+        box.classList.remove('hidden');
+        text.textContent = '⚠ ' + names + '曜日は「勤務可能曜日」にチェックが入っていますが、'
+            + '「勤務不可曜日」にも入っています。勤務不可曜日のほうが優先されるので、'
+            + 'この曜日は自動作成でも必ず休みになります。'
+            + '出勤させたいときは「勤務不可曜日」のチェックを外してください。';
+    }
+    if (fixBtn) {
+        fixBtn.addEventListener('click', function () {
+            conflicts().forEach(function (e) { e.checked = false; });
+            refresh();
+        });
+    }
+    boxes('available_days').concat(boxes('fixed_days_off')).forEach(function (e) {
+        e.addEventListener('change', refresh);
+    });
+    refresh();
+})();
 </script>
 {% if staff %}
 <script>

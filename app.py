@@ -4096,6 +4096,56 @@ def create_app():
                 oncall_eligible.append(
                     {"id": st.id, "name": st.name, "unavailable": unavailable}
                 )
+
+            # 看護師は「翌日その人しか看護師がいない日」の前日に当番を入れない。
+            #   当番の翌日は強制休みになるため、そのままだと看護師不在の日ができる。
+            #   ユーザー指摘（2026-09）:「大山さんがいないときは池田さんを配置すれば
+            #   すむ。看護師不在はNG」＝10/6・10/27の当番で10/7・10/28が不在になっていた。
+            def _staff_can_work_on(st, dt):
+                """その職員がその日に出勤できるか（勤務不可曜日・休み希望・
+                出勤可能日外・祝日不可・休業日）。"""
+                iso = dt.isoformat()
+                if _is_closed_day(dt):
+                    return False
+                avail_wd = {int(x) for x in (st.available_days or "").split(",")
+                            if x.strip()}
+                fixed_wd = {int(x) for x in (st.fixed_days_off or "").split(",")
+                            if x.strip()}
+                req_wd = {int(x) for x in (getattr(st, "required_days", "") or "").split(",")
+                          if x.strip().isdigit()}
+                wk = set(workable_dates_map.get(st.id, []))
+                if avail_wd and dt.weekday() not in avail_wd:
+                    return False
+                if dt.weekday() in fixed_wd and dt.weekday() not in req_wd:
+                    return False
+                if wk and iso not in wk:
+                    return False
+                if iso in dayoff_by_staff.get(st.id, set()):
+                    return False
+                if getattr(st, "holiday_ng", False) and jpholiday.is_holiday(dt):
+                    return False
+                return True
+
+            _nurse_staff = [
+                st for st in staffs
+                if (set(staff_qual_codes.get(st.id, [])) & {"nurse"})
+                or (set(staff_qual_names.get(st.id, [])) & {"看護師"})
+            ]
+            _no_ds_wd = set(no_ds_days)
+            for item in oncall_eligible:
+                if not any(st.id == item["id"] for st in _nurse_staff):
+                    continue
+                for dt in month_dates:
+                    nxt = dt + timedelta(days=1)
+                    if (nxt.year, nxt.month) != (year, month):
+                        continue    # 翌日が翌月なら当月の強制休みにならない
+                    if _is_closed_day(nxt) or nxt.weekday() in _no_ds_wd:
+                        continue    # デイ非営業日は看護師の配置を求めていない
+                    if any(st.id != item["id"] and _staff_can_work_on(st, nxt)
+                           for st in _nurse_staff):
+                        continue    # ほかに出られる看護師がいるので当番に入ってよい
+                    item["unavailable"].add(dt.isoformat())
+
             oncall_items, oncall_warnings = assign_oncall(
                 oncall_eligible,
                 month_dates,

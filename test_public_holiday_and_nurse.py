@@ -7,6 +7,8 @@
 3. デイ営業日に看護師を1人も置かない日を作らない。
 4. 出勤可能日は「生成する月に登録された日」だけを見る（先月の登録で翌月が全休に
    ならない）。
+5. 看護師がオンコール当番に入って、翌日の看護師が空にならない
+   （当番の翌日は強制休みになるため）。
 """
 import datetime
 import importlib
@@ -33,7 +35,8 @@ def _seed(flask_app):
         Staff.query.delete()
         db.session.commit()
 
-        def add(name, jc, emp, avail, fixed="", ph=0, backup=False, maxw=5):
+        def add(name, jc, emp, avail, fixed="", ph=0, backup=False, maxw=5,
+                phone=False):
             st = Staff(
                 name=name, employment_type=emp, job_category=jc,
                 staff_group=("cooking" if jc == "cooking" else "care"),
@@ -42,20 +45,24 @@ def _seed(flask_app):
                 available_time_slots="full_day", fixed_days_off=fixed,
                 required_days="", gender="female",
                 public_holiday_count=ph, backup_only=backup,
+                has_phone_duty=phone,
             )
             db.session.add(st)
             db.session.flush()
             return st.id
 
         ids = {}
-        ids["careA"] = add("介護A", "caregiver", "常勤", "0,1,2,3,4,5,6")
-        ids["careB"] = add("介護B", "caregiver", "パート", "0,1,2,3,4,5,6")
+        ids["careA"] = add("介護A", "caregiver", "常勤", "0,1,2,3,4,5,6",
+                           phone=True)
+        ids["careB"] = add("介護B", "caregiver", "パート", "0,1,2,3,4,5,6",
+                           phone=True)
         ids["careC"] = add("介護C", "caregiver", "パート", "0,1,2,3,4,5,6")
         ids["help"] = add("応援ヘルプ", "caregiver", "パート",
                           "0,1,2,3,4,5,6", backup=True)
         # 看護は2人。看護Xは火木のみ＝水曜は看護Yしか出られない
         ids["nurseX"] = add("看護X", "nurse_rehab", "パート", "1,3", maxw=3)
-        ids["nurseY"] = add("看護Y", "nurse_rehab", "常勤", "0,1,2,3,4,5,6")
+        ids["nurseY"] = add("看護Y", "nurse_rehab", "常勤", "0,1,2,3,4,5,6",
+                            phone=True)
         # 調理: 竹下さん役（固定休 金土日・公休15日・休み希望17日）
         ids["cookT"] = add("調理T", "cooking", "パート", "0,1,2,3,4,5,6",
                            fixed="4,5,6", ph=15)
@@ -211,3 +218,51 @@ def test_workable_dates_of_other_month_do_not_block_generation(
     worked = [x["date"] for x in data["shifts"]
               if x["staff_id"] == ids["nurseX"] and x["assignment"] != "off"]
     assert worked, "9月の出勤可能日の登録で10月が全休になっている"
+
+
+def test_nurse_oncall_does_not_empty_the_next_day(tmp_path, monkeypatch):
+    """看護師の当番の翌日（＝強制休み）に看護師が1人もいない日を作らない。
+
+    看護Yは毎日出られる唯一の看護師。看護Xは火木しか出られないので、
+    看護Yが火曜の当番に入ると翌日の水曜が強制休みになり看護師不在になる。
+    """
+    from models import db, ShiftSettings
+
+    flask_app = _make_app(tmp_path, monkeypatch)
+    ids = _seed(flask_app)
+    with flask_app.app_context():
+        s = ShiftSettings.query.first()
+        s.phone_duty_enabled = True
+        s.phone_duty_max_consecutive = 1
+        s.oncall_requires_work = True
+        db.session.add(s)
+        db.session.commit()
+
+    client = flask_app.test_client()
+    _login(client)
+    res = client.post("/api/generate", json={"year": 2026, "month": 10})
+    assert res.status_code == 200, res.get_data(as_text=True)[:500]
+
+    data = client.get("/api/shifts/2026/10").get_json()
+    nurse_ids = {ids["nurseX"], ids["nurseY"]}
+    on_duty = set()
+    for x in data["shifts"]:
+        if x["staff_id"] in nurse_ids and x["assignment"] not in ("off", ""):
+            on_duty.add(x["date"])
+
+    missing = [
+        datetime.date(2026, 10, d).isoformat()
+        for d in range(1, 32)
+        if datetime.date(2026, 10, d).weekday() in (1, 2, 3)
+        and datetime.date(2026, 10, d).isoformat() not in on_duty
+    ]
+    assert not missing, f"看護師が1人もいない日がある: {missing}"
+
+    # 看護Yは「翌日が水曜（＝看護Xが出られない日）」の火曜には当番に入らない
+    oncall = data.get("oncall") or {}
+    for iso, name in oncall.items():
+        dt = datetime.date.fromisoformat(iso)
+        nxt = dt + datetime.timedelta(days=1)
+        if name == "看護Y" and nxt.month == 10 and nxt.weekday() == 2:
+            raise AssertionError(
+                f"看護Yが{iso}の当番に入り、翌{nxt.isoformat()}が看護師不在になる")

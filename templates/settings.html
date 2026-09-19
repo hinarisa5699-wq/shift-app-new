@@ -369,6 +369,31 @@
             {% endfor %}
         </div>
 
+        {#- 上のチェックから計算した「この曜日で動きます」。
+            営業曜日は毎回ここから計算するので、画面と自動作成は必ず一致する。 -#}
+        {% if operating_days_check %}
+        {% set chk = operating_days_check %}
+        {% macro dow_list(days) %}{% if days %}{% for i in days %}{{ day_names[i] }}{% endfor %}{% else %}（なし）{% endif %}{% endmacro %}
+        <div class="mb-8 p-6 rounded-lg border bg-blue-50 border-blue-300">
+            <label class="block text-lg font-semibold text-gray-800 mb-2">
+                この曜日でシフトを作ります
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                上のチェックから計算した内容です。<strong>シフト自動作成もこのとおりに動きます</strong>
+                （訪問はここに出ている曜日にしか入りません）。違っていたら上のチェックを直してください。
+            </p>
+            <div class="text-base text-gray-800 space-y-1">
+                <div>デイ営業日：<strong>{{ dow_list(chk.effective.day_service) }}</strong>
+                    <span class="text-sm text-gray-500">（3階デイ＋2階デイ）</span></div>
+                <div>訪問営業日：<strong>{{ dow_list(chk.effective.visit) }}</strong>
+                    <span class="text-sm text-gray-500">（3階訪問＋2階訪問）</span></div>
+                <div>外部デイ：{{ dow_list(chk.external_day_service) }}</div>
+                <div class="text-gray-600">デイ利用者がいない曜日：{{ dow_list(chk.effective.no_day_service) }}
+                    <span class="text-sm text-gray-500">（介護の人数を抑える日）</span></div>
+            </div>
+        </div>
+        {% endif %}
+
         <!-- 訪問介護のその他の設定 -->
         <div class="mb-8 p-6 bg-green-50 rounded-lg border border-green-200">
             <label class="block text-lg font-semibold text-gray-800 mb-2">
@@ -1009,6 +1034,106 @@
                 class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-lg shadow transition-colors text-sm">
             ルールを追加
         </button>
+    </div>
+</div>
+
+<!-- ================================================================
+     勤務時間マスタ（介護看護）— ユーザー依頼 2026-09
+     「勤務時間を追加する場所を作って。時間が流動的に変わるから、
+      介護看護 何時から何時、で入れるとシフト作成の場所に出てきて、
+      ドラッグして変えられるようにして」
+     続き「日曜日営業になった。7時半から13時、30分休憩、そのあと17時から19時まで。
+      1人の人が担当」→ 中抜け勤務（いったん抜けて夕方また入る）と休憩にも対応
+     ================================================================ -->
+<div class="bg-white rounded-xl shadow-md p-8 max-w-4xl mt-8">
+    <h2 class="text-2xl font-bold text-primary-800 mb-4">介護看護の勤務時間</h2>
+    <p class="text-gray-600 mb-2">
+        「何時から何時まで」を足すと、<strong>シフトカレンダーの「シフトの手直し」</strong>に札が出ます。
+        その札を表のマスへドラッグすると、その職員のその日の勤務になります。
+    </p>
+    <p class="text-gray-500 text-sm mb-6">
+        名前は空でもかまいません（空のときは「9:00-15:00」のように時刻がそのまま札の文字になります）。
+        昼にいったん抜けて夕方また入る<strong>中抜け勤務</strong>は、右の「中抜け後」に2つめの時間を入れてください
+        （例: 7:30〜13:00 ＋ 17:00〜19:00）。1人がまとめて担当する1つの勤務として扱います。
+        自動作成が使うパターン（早番・遅番・デイ①〜）とは別枠で、手直し用の時間です。
+        時刻を直すと、すでに入れてある日の表示もまとめて変わります。
+    </p>
+
+    <div class="space-y-2 mb-4">
+        <div class="hidden sm:flex items-center gap-2 px-3 text-xs font-bold text-gray-500">
+            <span class="w-[15.5rem]">勤務時間</span>
+            <span class="w-[15.5rem]">中抜け後（なくてもOK）</span>
+            <span class="w-[6.5rem]">休憩</span>
+            <span class="flex-1">名前（なくてもOK）</span>
+        </div>
+        {% for slot in care_time_slots %}
+        <div class="flex flex-wrap items-center gap-2 bg-teal-50 rounded-lg px-3 py-2 border border-teal-200">
+            <span class="flex items-center gap-2 w-[15.5rem]">
+                <input type="time" value="{{ slot.start_time }}"
+                       onchange="updateCareTimeSlot({{ slot.id }}, 'start_time', this.value)"
+                       class="px-2 py-1 border border-gray-300 rounded text-sm">
+                <span class="text-gray-400">〜</span>
+                <input type="time" value="{{ slot.end_time }}"
+                       onchange="updateCareTimeSlot({{ slot.id }}, 'end_time', this.value)"
+                       class="px-2 py-1 border border-gray-300 rounded text-sm">
+            </span>
+            <span class="flex items-center gap-2 w-[15.5rem]">
+                <input type="time" value="{{ slot.start_time2 }}"
+                       onchange="updateCareTimeSlot({{ slot.id }}, 'start_time2', this.value)"
+                       class="px-2 py-1 border border-gray-300 rounded text-sm">
+                <span class="text-gray-400">〜</span>
+                <input type="time" value="{{ slot.end_time2 }}"
+                       onchange="updateCareTimeSlot({{ slot.id }}, 'end_time2', this.value)"
+                       class="px-2 py-1 border border-gray-300 rounded text-sm">
+            </span>
+            <span class="flex items-center gap-1 w-[6.5rem]">
+                <input type="number" min="0" max="480" step="5" value="{{ slot.break_minutes }}"
+                       onchange="updateCareTimeSlot({{ slot.id }}, 'break_minutes', this.value)"
+                       class="w-16 px-2 py-1 border border-gray-300 rounded text-sm">
+                <span class="text-sm text-gray-500">分</span>
+            </span>
+            <input type="text" value="{{ slot.label }}" placeholder="名前（なくてもOK）"
+                   onchange="updateCareTimeSlot({{ slot.id }}, 'label', this.value)"
+                   class="flex-1 min-w-[8rem] px-2 py-1 border border-gray-300 rounded text-sm">
+            <span class="text-xs text-gray-500 whitespace-nowrap" title="{{ slot.detail_text }}">
+                {% if slot.covers_am and slot.covers_pm %}午前・午後に数えます
+                {% elif slot.covers_am %}午前に数えます
+                {% elif slot.covers_pm %}午後に数えます
+                {% else %}人数には数えません{% endif %}
+            </span>
+            <button onclick="deleteCareTimeSlot({{ slot.id }})"
+                    class="bg-red-100 hover:bg-red-200 text-red-700 text-sm py-1 px-3 rounded">削除</button>
+        </div>
+        <p class="pl-3 text-xs text-gray-500">札の文字: <strong>{{ slot.display_label }}</strong>　／　{{ slot.detail_text }}</p>
+        {% else %}
+        <p class="text-gray-400 text-sm">まだ登録がありません。下から足してください。</p>
+        {% endfor %}
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2 p-3 bg-gray-50 rounded-lg border border-gray-200">
+        <span class="flex items-center gap-2 w-[15.5rem]">
+            <input type="time" id="new-care-time-start" value="09:00"
+                   class="px-2 py-2 border border-gray-300 rounded text-sm">
+            <span class="text-gray-400">〜</span>
+            <input type="time" id="new-care-time-end" value="15:00"
+                   class="px-2 py-2 border border-gray-300 rounded text-sm">
+        </span>
+        <span class="flex items-center gap-2 w-[15.5rem]">
+            <input type="time" id="new-care-time-start2" value=""
+                   class="px-2 py-2 border border-gray-300 rounded text-sm">
+            <span class="text-gray-400">〜</span>
+            <input type="time" id="new-care-time-end2" value=""
+                   class="px-2 py-2 border border-gray-300 rounded text-sm">
+        </span>
+        <span class="flex items-center gap-1 w-[6.5rem]">
+            <input type="number" id="new-care-time-break" min="0" max="480" step="5" value="0"
+                   class="w-16 px-2 py-2 border border-gray-300 rounded text-sm">
+            <span class="text-sm text-gray-500">分</span>
+        </span>
+        <input type="text" id="new-care-time-label" placeholder="名前（なくてもOK・例: 日曜）"
+               class="flex-1 min-w-[8rem] px-2 py-2 border border-gray-300 rounded text-sm">
+        <button onclick="addCareTimeSlot()"
+                class="bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 px-4 rounded text-sm">追加</button>
     </div>
 </div>
 

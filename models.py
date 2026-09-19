@@ -20,6 +20,14 @@ def format_jst(value):
     return value.strftime("%Y/%m/%d %H:%M")
 
 
+def parse_weekdays(raw):
+    """"0,3,5" のような曜日文字列を {0, 3, 5} にする。読めない値は捨てる。"""
+    return {
+        int(x) for x in str(raw or "").split(",")
+        if x.strip().isdigit() and 0 <= int(x) <= 6
+    }
+
+
 class Staff(db.Model):
     """職員マスタ"""
     __tablename__ = "staff"
@@ -425,6 +433,10 @@ class ShiftSettings(db.Model):
         db.String(50), default="2", nullable=False
     )  # 外部デイの曜日（既定: 水）。内部人員は不要。
 
+    # 下の3列は階別から計算した値の控え（表示・旧コード互換）。
+    #   読むときは必ず operating_day_sets() を使うこと。列を直接読むと、
+    #   階別を変えずに列だけ書き換えられた古いデータでズレる
+    #   （2026-09: 設定では訪問=火金なのに実際は火木に入り続けた原因）。
     visit_operating_days = db.Column(
         db.String(50), default="0,1,3,4"
     )  # 訪問介護の営業曜日（派生値: 2階∪3階の訪問曜日）
@@ -535,6 +547,44 @@ class ShiftSettings(db.Model):
     # 1日の所定労働時間（時間）。公休自動算出に使用。既定 8.0。
     daily_work_hours = db.Column(db.Float, default=8.0, nullable=False)
 
+    def operating_day_sets(self):
+        """営業曜日を階別の設定から計算する（これが唯一の正）。
+
+        ユーザー依頼 2026-09:「設定で何曜日って決めたら設定どおりして」。
+        以前は計算結果を列に保存して、そちらを自動作成が読んでいたため、
+        階別を変えずに列だけ書き換わった古いデータだと
+        「画面では火・金なのに実際は火・木」という食い違いが起きていた。
+        保存列は見ず、毎回ここで計算する。
+
+        戻り値: {"day_service": [...], "visit": [...], "no_day_service": [...]}
+                いずれも 0=月〜6=日 の昇順リスト。
+        """
+        day_service = (parse_weekdays(self.floor3_day_service_days)
+                       | parse_weekdays(self.floor2_day_service_days))
+        visit = (parse_weekdays(self.floor3_visit_days)
+                 | parse_weekdays(self.floor2_visit_days))
+        return {
+            "day_service": sorted(day_service),
+            "visit": sorted(visit),
+            # デイ営業日の裏返し（外部デイだけの日もここに入る）
+            "no_day_service": [i for i in range(7) if i not in day_service],
+        }
+
+    def sync_derived_operating_days(self):
+        """控えの3列を階別から計算し直して書き戻す。変わったら True。"""
+        sets = self.operating_day_sets()
+        new_values = {
+            "day_service_operating_days": ",".join(str(i) for i in sets["day_service"]),
+            "visit_operating_days": ",".join(str(i) for i in sets["visit"]),
+            "no_day_service_days": ",".join(str(i) for i in sets["no_day_service"]),
+        }
+        changed = False
+        for field, value in new_values.items():
+            if (getattr(self, field) or "") != value:
+                setattr(self, field, value)
+                changed = True
+        return changed
+
     def to_dict(self):
         """辞書形式に変換"""
         return {
@@ -552,9 +602,13 @@ class ShiftSettings(db.Model):
             "floor2_day_service_days": self.floor2_day_service_days or "",
             "floor2_visit_days": self.floor2_visit_days or "",
             "external_day_service_days": self.external_day_service_days or "",
-            "visit_operating_days": self.visit_operating_days,
-            "day_service_operating_days": self.day_service_operating_days or "",
-            "no_day_service_days": self.no_day_service_days or "",
+            # 階別から計算した値を返す（保存列の古い値に引きずられないように）
+            "visit_operating_days": ",".join(
+                str(i) for i in self.operating_day_sets()["visit"]),
+            "day_service_operating_days": ",".join(
+                str(i) for i in self.operating_day_sets()["day_service"]),
+            "no_day_service_days": ",".join(
+                str(i) for i in self.operating_day_sets()["no_day_service"]),
             "oncall_requires_work": (
                 self.oncall_requires_work if self.oncall_requires_work is not None else True
             ),
@@ -996,4 +1050,149 @@ class RequestSubmission(db.Model):
             "state": self.state(),
             "submitted_at": format_jst(self.submitted_at),
             "changed_at": format_jst(self.changed_at),
+        }
+
+
+def _hhmm_display(value):
+    """保存用の「07:30」を画面向けの「7:30」にする（既存のラベル表記に合わせる）。"""
+    text = str(value or "")
+    return text[1:] if text.startswith("0") else text
+
+
+def _hhmm_to_minutes(value):
+    """「9:30」「09:30」→ 570（分）。読めない値は None。"""
+    try:
+        hh, mm = str(value or "").split(":")
+        return int(hh) * 60 + int(mm)
+    except (ValueError, TypeError):
+        return None
+
+
+class WorkTimeSlot(db.Model):
+    """勤務時間マスタ（介護看護）。
+
+    ユーザー依頼 2026-09:「勤務時間を追加する場所を作って。時間が流動的に変わるから、
+    介護看護 何時から何時、で入れるとシフト作成の場所に出てきて、ドラッグして
+    変えられるようにして」。
+
+    ユーザー依頼 2026-09（続き）:「日曜日営業になった。7時半から13時、30分休憩、
+    そのあと17時から19時まで。1人の人が担当」。
+    → 1日の中でいったん抜ける「中抜け勤務」と休憩時間も持てるようにした。
+      2つめの時間帯（start_time2/end_time2）は無ければ従来どおりの通し勤務。
+
+    自動作成（solver）が使う固定パターン（早番・デイ①…）とは別物で、
+    ここに登録した時間は「シフトの手直し」パレットの札として出てくる。
+    シフトには assignment = "wt_<id>" として保存する。
+    """
+    __tablename__ = "work_time_slot"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    staff_group = db.Column(db.String(20), default="care", nullable=False)
+    label = db.Column(db.String(30), default="", nullable=False)  # 空なら時刻から作る
+    start_time = db.Column(db.String(5), nullable=False)  # "09:00"
+    end_time = db.Column(db.String(5), nullable=False)    # "15:00"
+    # 中抜け勤務の2つめの時間帯（例: 午前 7:30-13:00 のあと 17:00-19:00）。
+    #   使わないときは両方 None。片方だけ入ることはない（保存時に検査する）。
+    start_time2 = db.Column(db.String(5), nullable=True)
+    end_time2 = db.Column(db.String(5), nullable=True)
+    break_minutes = db.Column(db.Integer, default=0, nullable=False)  # 休憩（分）
+    display_order = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # 午前／午後どちらに在籍するとみなすかの境目（12:30）。
+    #   既存の午前枠 8:30-12:30 ／ 午後枠 13:30-17:30 の間を取った値。
+    NOON_MINUTES = 12 * 60 + 30
+
+    @property
+    def code(self):
+        """シフトに保存するアサインメントコード。"""
+        return f"wt_{self.id}"
+
+    @property
+    def blocks(self):
+        """勤務している時間帯の一覧 [(開始, 終了), ...]。中抜けなら2つ。"""
+        out = [(self.start_time, self.end_time)]
+        if self.start_time2 and self.end_time2:
+            out.append((self.start_time2, self.end_time2))
+        return out
+
+    @property
+    def is_split(self):
+        """中抜け勤務か（1日に2回に分かれているか）。"""
+        return len(self.blocks) > 1
+
+    @property
+    def time_text(self):
+        """時刻の表記。中抜けは「7:30-13:00/17:00-19:00」のように / でつなぐ。"""
+        return "/".join(
+            f"{_hhmm_display(a)}-{_hhmm_display(b)}" for a, b in self.blocks)
+
+    @property
+    def display_label(self):
+        """画面・帳票に出す文字。名前を付けていなければ時刻そのもの。"""
+        name = (self.label or "").strip()
+        return f"{name} {self.time_text}" if name else self.time_text
+
+    @property
+    def work_minutes(self):
+        """実働の分数（勤務時間の合計から休憩を引いたもの）。読めなければ None。"""
+        total = 0
+        for start, end in self.blocks:
+            s_min, e_min = _hhmm_to_minutes(start), _hhmm_to_minutes(end)
+            if s_min is None or e_min is None:
+                return None
+            total += e_min - s_min
+        return max(0, total - (self.break_minutes or 0))
+
+    @property
+    def detail_text(self):
+        """一覧やマウスを乗せたときに出す説明（中抜け・休憩・実働をそえる）。"""
+        base = " ＋ ".join(
+            f"{_hhmm_display(a)}〜{_hhmm_display(b)}" for a, b in self.blocks)
+        notes = []
+        if self.is_split:
+            notes.append("中抜け")
+        if self.break_minutes:
+            notes.append(f"休憩{self.break_minutes}分")
+        minutes = self.work_minutes
+        if minutes:
+            hours, mins = divmod(minutes, 60)
+            notes.append(
+                "実働"
+                + (f"{hours}時間" if hours else "")
+                + (f"{mins}分" if mins or not hours else "")
+            )
+        return f"{base}（{'・'.join(notes)}）" if notes else base
+
+    @property
+    def covers_am(self):
+        """午前の人数に数えるか（12:30 より前から居る時間帯があるか）。"""
+        starts = [_hhmm_to_minutes(start) for start, _end in self.blocks]
+        return any(m is not None and m < self.NOON_MINUTES for m in starts)
+
+    @property
+    def covers_pm(self):
+        """午後の人数に数えるか（12:30 より後まで居る時間帯があるか）。"""
+        ends = [_hhmm_to_minutes(end) for _start, end in self.blocks]
+        return any(m is not None and m > self.NOON_MINUTES for m in ends)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "code": self.code,
+            "staff_group": self.staff_group,
+            "label": self.label or "",
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            "start_time2": self.start_time2 or "",
+            "end_time2": self.end_time2 or "",
+            "break_minutes": self.break_minutes or 0,
+            "is_split": self.is_split,
+            "time_text": self.time_text,
+            "display_label": self.display_label,
+            "detail_text": self.detail_text,
+            "work_minutes": self.work_minutes,
+            "display_order": self.display_order or 0,
+            "covers_am": self.covers_am,
+            "covers_pm": self.covers_pm,
         }

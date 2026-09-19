@@ -79,6 +79,12 @@
     color: #fff;
 }
 
+/* 勤務時間マスタ（画面で足した介護看護の「何時〜何時」）*/
+.badge-care-time {
+    background-color: #0d9488;
+    color: #fff;
+}
+
 .badge-phone {
     background-color: #ef4444;
     color: #fff;

@@ -209,6 +209,53 @@ _CARE_WORK_SET = (
     _DAY_AM_SET | _DAY_PM_SET | _VISIT_AM_SET | _VISIT_PM_SET
     | {"early", "late", "nurse_short"}
 )
+# 勤務時間マスタ（画面で追加した介護看護の「何時〜何時」）で今使っているコード。
+#   register_care_time_slots() が毎回入れ替える。ここに入ったコードは
+#   介護の出勤枠として人数に数え、Excel/PDF にも時刻がそのまま出る。
+_CARE_TIME_SLOT_CODES: set = set()
+# 手入力の勤務時間セルの色（既定パターンと見分けが付くよう薄い緑にする）
+_CARE_TIME_SLOT_FILL = PatternFill(start_color="CCFBF1", end_color="CCFBF1", fill_type="solid")
+
+
+def register_care_time_slots(slots):
+    """勤務時間マスタ（介護看護）を出力・集計へ取り込む。
+
+    ユーザー依頼 2026-09:「勤務時間を追加する場所を作って。時間が流動的に変わるから」。
+    solver の固定パターンとは別に、画面で足した時間枠を
+    ラベル表示・午前/午後の人数・Excel の色・取り込み(逆引き)へ反映する。
+
+    slots: [{"code","display_label","covers_am","covers_pm"}, ...] / None で解除
+    """
+    global _CARE_TIME_SLOT_CODES
+
+    # 前回の登録ぶんを取り消してから入れ直す（削除・時刻変更を引きずらないため）
+    for old in _CARE_TIME_SLOT_CODES:
+        label = ASSIGNMENT_LABELS.pop(old, None)
+        ASSIGNMENT_FILL.pop(old, None)
+        _DAY_AM_SET.discard(old)
+        _DAY_PM_SET.discard(old)
+        _CARE_WORK_SET.discard(old)
+        if label and _LABEL_TO_ASSIGNMENT.get(label) == old:
+            del _LABEL_TO_ASSIGNMENT[label]
+
+    codes = set()
+    for slot in (slots or []):
+        code = (slot.get("code") or "").strip()
+        label = (slot.get("display_label") or "").strip()
+        if not code or not label:
+            continue
+        codes.add(code)
+        ASSIGNMENT_LABELS[code] = label
+        ASSIGNMENT_FILL[code] = _CARE_TIME_SLOT_FILL
+        _LABEL_TO_ASSIGNMENT[label] = code
+        _CARE_WORK_SET.add(code)
+        if slot.get("covers_am"):
+            _DAY_AM_SET.add(code)
+        if slot.get("covers_pm"):
+            _DAY_PM_SET.add(code)
+    _CARE_TIME_SLOT_CODES = codes
+
+
 _NURSE_PT_NAME_ALIASES = {"看護師", "PT", "理学療法士"}
 _NURSE_PT_CODE_ALIASES = {"nurse", "pt"}
 

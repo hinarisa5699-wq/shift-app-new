@@ -2697,6 +2697,14 @@ def _solve_care(
     slack_nurse = {}   # 看護師0名（配置不能）の日を許容するスラック
     slack_no_ds_over = {}   # 非デイ曜日の介護人数が上限(既定2名)を超えた分
     slack_no_ds_short = {}  # 非デイ曜日の介護人数が下限(既定2名)に満たない分
+    # デイ午前/午後の上限を超えた分。
+    #   上限をハード制約にすると、早番・遅番・訪問といった必須配置と衝突した日が
+    #   「解なし」ではなく静かに必須配置を落とす形になる（2026-09 の不具合:
+    #   訪問営業日がデイ利用者なしの曜日と重なると、早番＋遅番でデイ午後の上限
+    #   2名が埋まり、兼務訪問(visit_am_day_p4=AM訪問+PMデイ)を1人も置けず
+    #   毎週その曜日の訪問が未配置になっていた）。頭数の上限と同じくスラックにする。
+    slack_day_am_over = {}
+    slack_day_pm_over = {}
 
     if use_slack:
         for d_idx in range(num_days):
@@ -2728,6 +2736,12 @@ def _solve_care(
             )
             slack_staff_15[d_idx] = model.new_int_var(
                 0, len(staff_ids), f"slack_staff_15_{d_idx}"
+            )
+            slack_day_am_over[d_idx] = model.new_int_var(
+                0, len(staff_ids), f"slack_day_am_over_{d_idx}"
+            )
+            slack_day_pm_over[d_idx] = model.new_int_var(
+                0, len(staff_ids), f"slack_day_pm_over_{d_idx}"
             )
             if d_idx in care_headcount_by_day:
                 slack_no_ds_over[d_idx] = model.new_int_var(
@@ -2766,10 +2780,16 @@ def _solve_care(
         else:
             model.add(day_am_count >= eff_min_day)
             model.add(day_pm_count >= eff_min_day)
-        # 上限制約（スラック有無に関わらず常に有効）。None＝上限なし。
+        # 上限制約。None＝上限なし。
+        #   スラック段階では超過を許す（＝早番・遅番・訪問などの必須配置を優先し、
+        #   超えた日は警告にとどめる）。ハード段階では従来どおり厳密に守る。
         if eff_max_day is not None:
-            model.add(day_am_count <= eff_max_day)
-            model.add(day_pm_count <= eff_max_day)
+            if use_slack:
+                model.add(day_am_count <= eff_max_day + slack_day_am_over[d_idx])
+                model.add(day_pm_count <= eff_max_day + slack_day_pm_over[d_idx])
+            else:
+                model.add(day_am_count <= eff_max_day)
+                model.add(day_pm_count <= eff_max_day)
 
     # ==================================================================
     # 制約: 曜日ごとの介護配置人数（その日出勤する介護職員の総数・看護師/PT除く）
@@ -3520,6 +3540,8 @@ def _solve_care(
         nurse_slack_terms = []
         for d in range(num_days):
             all_slack_terms.extend([slack_day_am[d], slack_day_pm[d]])
+            # デイ上限の超過（訪問・早番・遅番を置くために膨らんだ分）
+            all_slack_terms.extend([slack_day_am_over[d], slack_day_pm_over[d]])
             # 訪問スラックは別枠（下で早番/遅番の次に高い重みを付ける）
             visit_slack_terms.extend([slack_visit_am[d], slack_visit_pm[d]])
             all_slack_terms.extend([slack_staff_9[d], slack_staff_11[d], slack_staff_13[d], slack_staff_15[d]])
@@ -3534,6 +3556,7 @@ def _solve_care(
         max_slack_terms_per_day = (
             8
             + 2
+            + 2   # デイ午前/午後の上限超過
         )
         total_slack = model.new_int_var(
             0,
@@ -3776,6 +3799,22 @@ def _solve_care(
                         "warning_type": "understaffed_care",
                         "message": f"介護{_short}名不足（この曜日の最低{_mn}名）",
                     })
+
+            # デイ午前/午後が上限を超えた日（必須配置を通すために膨らんだ）
+            if d_idx not in closed_day_indices:
+                _, _eff_max = day_service_by_day.get(d_idx, (None, max_day_service))
+                for _key, _slack in (("午前", slack_day_am_over), ("午後", slack_day_pm_over)):
+                    _over = solver.value(_slack[d_idx]) if d_idx in _slack else 0
+                    if _over > 0 and _eff_max is not None:
+                        warnings_data.append({
+                            "date": date_str,
+                            "warning_type": "over_staffed_day_service",
+                            "message": (
+                                f"デイサービス{_key}: {_eff_max + _over}名"
+                                f"（上限{_eff_max}名／{_over}名超過）。"
+                                "早番・遅番・訪問などの必須配置を優先しました。"
+                            ),
+                        })
 
             val = solver.value(slack_visit_am[d_idx])
             if val > 0:

@@ -51,7 +51,7 @@ from models import (
     ShiftPattern, Qualification, StaffQualification, PlacementRule, CookingComboRule,
     StaffAllowedPattern, StaffWorkableDate, OncallAssignment, ShiftConfirmation,
     ParkingSlot, ParkingAssignment, ShiftFix, StaffPlan, RequestDeadline,
-    RequestSubmission, format_jst,
+    RequestSubmission, WorkTimeSlot, format_jst, parse_weekdays,
 )
 from parking import assign_parking
 from solver import (
@@ -63,7 +63,8 @@ from export import (
     export_excel_group_half, export_pdf_from_excel,
     parse_uploaded_shift_excel, parse_shift_cell, state_to_cell_text,
     recompute_warnings_from_shifts, ASSIGNMENT_LABELS, configure_operating_days,
-    register_day_off_requests, build_login_cards_pdf, qr_data_uri,
+    register_day_off_requests, register_care_time_slots,
+    build_login_cards_pdf, qr_data_uri,
 )
 
 
@@ -730,6 +731,57 @@ def _set_counselor(staff_id, enabled: bool) -> None:
         db.session.delete(exists)
 
 
+# ---------------------------------------------------------------------------
+# 勤務時間マスタ（介護看護）— 画面で足した「何時〜何時」の枠
+# ---------------------------------------------------------------------------
+def _operating_days_check(settings_obj):
+    """設定画面に出す「この曜日で動きます」の内容。
+
+    ユーザー依頼 2026-09:「設定で何曜日って決めたら設定どおりして」。
+    営業曜日は階別のチェックから毎回計算する（operating_day_sets）ので、
+    画面の内容と自動作成の動きは必ず一致する。ここではその結果を
+    そのまま画面に出して、決めた曜日を目で確かめられるようにする。
+    """
+    if settings_obj is None:
+        return None
+    sets = settings_obj.operating_day_sets()
+    return {
+        "effective": sets,
+        "external_day_service": sorted(parse_weekdays(
+            getattr(settings_obj, "external_day_service_days", ""))),
+    }
+
+
+def _care_time_slots():
+    """勤務時間マスタを並び順で取り出す（DB 未作成時は空）。"""
+    try:
+        return (WorkTimeSlot.query.filter_by(staff_group="care")
+                .order_by(WorkTimeSlot.display_order, WorkTimeSlot.id).all())
+    except Exception:  # アプリコンテキスト外・テーブル未作成
+        try:
+            db.session.rollback()   # 失敗したセッションを引きずらない
+        except Exception:
+            pass
+        return []
+
+
+def _care_time_slot_dicts():
+    return [slot.to_dict() for slot in _care_time_slots()]
+
+
+def _care_time_slot_codes():
+    return {slot.code for slot in _care_time_slots()}
+
+
+def _sync_care_time_slots():
+    """出力モジュール側の表示ラベル・人数集計へ最新のマスタを流し込む。
+
+    追加・時刻変更・削除をそのつど拾いたいので、リクエストごとに入れ直す
+    （export.py はモジュール変数で持つため、登録しないと古い内容のまま残る）。
+    """
+    register_care_time_slots(_care_time_slot_dicts())
+
+
 def _valid_allowed_codes(staff_group):
     """許可シフトパターンとして保存してよいコード集合。
 
@@ -1148,6 +1200,25 @@ def _run_migrations(app):
             cursor.execute(
                 "ALTER TABLE {} ADD COLUMN created_by VARCHAR(10) "
                 "NOT NULL DEFAULT 'admin'".format(_table)
+            )
+
+    # WorkTimeSlot テーブル — 中抜け勤務（2つめの時間帯）と休憩を後から足した
+    if "work_time_slot" in [
+        row[0] for row in cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    ]:
+        columns = [
+            row[1] for row in cursor.execute(
+                "PRAGMA table_info(work_time_slot)").fetchall()
+        ]
+        if "start_time2" not in columns:
+            cursor.execute("ALTER TABLE work_time_slot ADD COLUMN start_time2 VARCHAR(5)")
+        if "end_time2" not in columns:
+            cursor.execute("ALTER TABLE work_time_slot ADD COLUMN end_time2 VARCHAR(5)")
+        if "break_minutes" not in columns:
+            cursor.execute(
+                "ALTER TABLE work_time_slot ADD COLUMN break_minutes INTEGER "
+                "NOT NULL DEFAULT 0"
             )
 
     conn.commit()
@@ -1788,6 +1859,19 @@ def create_app():
         )
 
     @app.before_request
+    def _sync_care_time_slots_for_request():
+        """勤務時間マスタ（画面で足した時間枠）を出力・集計モジュールへ反映する。
+
+        追加・変更・削除がそのまま Excel/PDF の表示と人数の数え方に効くよう、
+        リクエストごとに入れ直す（export.py 側はモジュール変数で保持するため）。
+        """
+        endpoint = request.endpoint or ""
+        if endpoint.startswith("static"):
+            return None
+        _sync_care_time_slots()
+        return None
+
+    @app.before_request
     def _require_login():
         # ログイン画面・静的ファイルは認証不要。それ以外は未ログインなら /login へ。
         endpoint = request.endpoint or ""
@@ -1929,6 +2013,20 @@ def create_app():
             default_settings = ShiftSettings()
             db.session.add(default_settings)
             db.session.commit()
+
+        # 営業曜日の控え列を階別の設定から計算し直す（ユーザー依頼 2026-09:
+        #   「設定で何曜日って決めたら設定どおりして」）。
+        #   古いデータには、階別を変えずに控え列だけ書き換えられたものがあり、
+        #   画面の内容と自動作成の動きが食い違っていた。起動のたびに直す。
+        _st = ShiftSettings.query.first()
+        if _st is not None and _st.sync_derived_operating_days():
+            db.session.commit()
+            app.logger.info(
+                "営業曜日の控えを階別の設定に合わせて直しました: "
+                "デイ=%s / 訪問=%s / デイ利用者なし=%s",
+                _st.day_service_operating_days, _st.visit_operating_days,
+                _st.no_day_service_days,
+            )
 
         # ShiftPattern 初期データ
         if ShiftPattern.query.count() == 0:
@@ -2355,7 +2453,9 @@ def create_app():
                                qualifications=qualifications,
                                placement_rules=placement_rules,
                                cooking_combo_rules=cooking_combo_rules,
-                               cooking_types=cooking_types)
+                               cooking_types=cooking_types,
+                               care_time_slots=_care_time_slot_dicts(),
+                               operating_days_check=_operating_days_check(s))
 
     @app.route("/calendar")
     def calendar_page():
@@ -3744,6 +3844,115 @@ def create_app():
         return jsonify({"message": "削除しました"})
 
     # -----------------------------------------------------------------
+    # API ルート — 勤務時間マスタ（介護看護）
+    #   ユーザー依頼 2026-09:「勤務時間を追加する場所を作って。時間が流動的に
+    #   変わるから、介護看護 何時から何時、で入れるとシフト作成の場所に出てきて、
+    #   ドラッグして変えられるようにして」。
+    #   続き:「日曜日営業になった。7時半から13時、30分休憩、そのあと17時から19時まで。
+    #   1人の人が担当」→ 中抜け勤務（2つめの時間帯）と休憩の分数も持てるようにした。
+    # -----------------------------------------------------------------
+    _TIME_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
+
+    def _clean_time(raw):
+        """フォームの時刻を "H:MM" 形式に整える。読めなければ None。"""
+        t = (raw or "").strip()
+        if not _TIME_RE.match(t):
+            return None
+        hh, mm = t.split(":")
+        return f"{int(hh):02d}:{mm}"
+
+    def _work_time_error(slot):
+        """勤務時間の中身がおかしくないか見る。問題なければ None。"""
+        if slot.start_time >= slot.end_time:
+            return "終了時刻は開始時刻より後にしてください"
+        if bool(slot.start_time2) != bool(slot.end_time2):
+            return "中抜け後の時間は、開始と終了の両方を入れてください"
+        if slot.start_time2:
+            if slot.start_time2 >= slot.end_time2:
+                return "中抜け後の終了時刻は、その開始時刻より後にしてください"
+            if slot.start_time2 < slot.end_time:
+                return "中抜け後の時間は、1つめの終了時刻より後から始めてください"
+        if not (0 <= (slot.break_minutes or 0) <= 480):
+            return "休憩は0〜480分の間で入れてください"
+        return None
+
+    def _apply_work_time_fields(slot, data, require_times):
+        """リクエストの中身を1件へ流し込む。時刻が読めなければエラー文を返す。"""
+        if require_times or data.get("label") is not None:
+            slot.label = " ".join((data.get("label") or "").split())[:20]
+        for field in ("start_time", "end_time"):
+            if require_times or data.get(field) is not None:
+                value = _clean_time(data.get(field))
+                if not value:
+                    return "開始時刻と終了時刻を入れてください"
+                setattr(slot, field, value)
+        # 中抜け後の時間。空文字で送ると「中抜けをやめる」の意味になる。
+        for field in ("start_time2", "end_time2"):
+            if require_times or data.get(field) is not None:
+                raw = (data.get(field) or "").strip()
+                if not raw:
+                    setattr(slot, field, None)
+                    continue
+                value = _clean_time(raw)
+                if not value:
+                    return "中抜け後の時刻の形式が正しくありません"
+                setattr(slot, field, value)
+        if require_times or data.get("break_minutes") is not None:
+            slot.break_minutes = max(0, safe_int(data.get("break_minutes"), 0))
+        return None
+
+    @app.route("/api/work-times", methods=["GET"])
+    def api_work_times_list():
+        return jsonify(_care_time_slot_dicts())
+
+    @app.route("/api/work-times", methods=["POST"])
+    def api_work_time_create():
+        """勤務時間を1件追加する（名前は省略可＝時刻がそのまま札の文字になる）。"""
+        data = request.get_json(silent=True) or {}
+        max_order = db.session.query(
+            db.func.max(WorkTimeSlot.display_order)).scalar() or 0
+        slot = WorkTimeSlot(staff_group="care", display_order=max_order + 1)
+        error = _apply_work_time_fields(slot, data, require_times=True)
+        if error is None:
+            error = _work_time_error(slot)
+        if error:
+            return jsonify({"error": error}), 400
+        db.session.add(slot)
+        db.session.commit()
+        _sync_care_time_slots()
+        return jsonify(slot.to_dict()), 201
+
+    @app.route("/api/work-times/<int:slot_id>", methods=["PUT"])
+    def api_work_time_update(slot_id):
+        """勤務時間の名前・時刻を直す（コード=wt_<id> は変わらないので既存シフトは保たれる）。"""
+        slot = WorkTimeSlot.query.get_or_404(slot_id)
+        data = request.get_json(silent=True) or {}
+        error = _apply_work_time_fields(slot, data, require_times=False)
+        if error is None:
+            error = _work_time_error(slot)
+        if error:
+            db.session.rollback()
+            return jsonify({"error": error}), 400
+        db.session.commit()
+        _sync_care_time_slots()
+        return jsonify(slot.to_dict())
+
+    @app.route("/api/work-times/<int:slot_id>", methods=["DELETE"])
+    def api_work_time_delete(slot_id):
+        """勤務時間を消す。すでにシフトへ入れてある日があるときは止める。"""
+        slot = WorkTimeSlot.query.get_or_404(slot_id)
+        used = GeneratedShift.query.filter_by(assignment=slot.code).count()
+        if used:
+            return jsonify({
+                "error": f"この勤務時間はシフト表で{used}件使われているため消せません。"
+                         f"先にその日のシフトを別のものへ変えてください。",
+            }), 409
+        db.session.delete(slot)
+        db.session.commit()
+        _sync_care_time_slots()
+        return jsonify({"message": "削除しました"})
+
+    # -----------------------------------------------------------------
     # API ルート — シフト生成
     # -----------------------------------------------------------------
     @app.route("/api/generate", methods=["POST"])
@@ -3945,8 +4154,10 @@ def create_app():
             x.strip() for x in (getattr(settings_obj, "closed_dates", "") or "").split(",")
             if x.strip()
         ]
-        visit_days = [int(x) for x in settings_obj.visit_operating_days.split(",") if x.strip()] if settings_obj.visit_operating_days else []
-        no_ds_days = [int(x) for x in (settings_obj.no_day_service_days or "").split(",") if x.strip()] if getattr(settings_obj, "no_day_service_days", "") else []
+        # 営業曜日は保存列ではなく階別の設定から計算する（設定どおりに動かすため）
+        _op_days = settings_obj.operating_day_sets()
+        visit_days = _op_days["visit"]
+        no_ds_days = _op_days["no_day_service"]
 
         settings_dict = {
             "min_day_service": settings_obj.min_day_service,
@@ -4433,6 +4644,9 @@ def create_app():
             ),
         }
 
+        # 勤務時間マスタ（画面で足した介護看護の「何時〜何時」）
+        care_time_slots = _care_time_slot_dicts()
+
         return jsonify(
             {
                 "year": year,
@@ -4474,6 +4688,7 @@ def create_app():
                 # 画面編集用の凡例（ここからドラッグしてシフトを追加する）
                 "palette": {
                     # 早番と訪問（午前）を分けて動かせるよう、訪問の枠は分かりやすい名前にする
+                    #   末尾に「勤務時間マスタ」で足した時間枠（何時〜何時）を並べる
                     "care": [
                         {"code": code, "label": label}
                         for code, label in (
@@ -4490,6 +4705,10 @@ def create_app():
                             ("visit_am_day_p4", "訪問(午前)＋デイ(午後)"),
                             ("day_p3_visit_pm", "デイ(午前)＋訪問(午後)"),
                         )
+                    ] + [
+                        {"code": slot["code"], "label": slot["display_label"],
+                         "title": slot["detail_text"]}
+                        for slot in care_time_slots
                     ],
                     "cooking": [
                         {"code": p.code, "label": p.label}
@@ -4501,6 +4720,14 @@ def create_app():
                 "cook_labels": {
                     p.code: p.label
                     for p in ShiftPattern.query.filter_by(staff_group="cooking").all()
+                },
+                # 勤務時間マスタのラベル（画面で足した「何時〜何時」の表示用）
+                "care_labels": {
+                    slot["code"]: slot["display_label"] for slot in care_time_slots
+                },
+                # 同じくマウスを乗せたときの説明（中抜け・休憩・実働）
+                "care_details": {
+                    slot["code"]: slot["detail_text"] for slot in care_time_slots
                 },
             }
         )
@@ -4819,7 +5046,7 @@ def create_app():
 
         valid_codes = set(CARE_ASSIGNMENTS) | set(COOK_ASSIGNMENTS) | {
             p.code for p in ShiftPattern.query.filter_by(staff_group="cooking").all()
-        } | {EXEC_OFF_CODE}
+        } | _care_time_slot_codes() | {EXEC_OFF_CODE}
         staff_by_id = {s.id: s for s in Staff.query.all()}
 
         applied = 0
@@ -5403,13 +5630,12 @@ def create_app():
     def _settings_for_validation():
         so = ShiftSettings.query.first()
         closed = [int(x) for x in (so.closed_days or "").split(",") if x.strip()] if so and so.closed_days else []
-        vdays = [int(x) for x in (so.visit_operating_days or "").split(",") if x.strip()] if so and so.visit_operating_days else []
         cdates = [x.strip() for x in (getattr(so, "closed_dates", "") or "").split(",") if x.strip()]
         placement = [r.to_dict() for r in PlacementRule.query.filter_by(is_active=True).all()]
-        nods = [
-            int(x) for x in (getattr(so, "no_day_service_days", "") or "").split(",")
-            if x.strip()
-        ]
+        # 営業曜日は階別の設定から計算する（生成時と同じ見方にそろえる）
+        _op_days = so.operating_day_sets() if so else {"visit": [], "no_day_service": []}
+        vdays = _op_days["visit"]
+        nods = _op_days["no_day_service"]
         return {
             "closed_days": closed, "closed_dates": cdates, "visit_operating_days": vdays,
             "no_day_service_days": nods,

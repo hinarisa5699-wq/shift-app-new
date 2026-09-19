@@ -417,9 +417,10 @@ function cellHtml(data, sid, dateStr, assignment, visitSet, dow, withPlans) {
             ? '<span class="text-amber-700 font-bold">希望休</span>'
             : '<span class="text-gray-400">休</span>') + planHtml;
     }
-    const cookLabels = data.cook_labels || {};
+    // マスタで足したシフトの表示名（調理シフト種類・介護看護の勤務時間）
+    const extraLabels = Object.assign({}, data.cook_labels || {}, data.care_labels || {});
     let label = assignment.indexOf('exec:') === 0 ? assignment.slice(5)
-                : (LABELS[assignment] || cookLabels[assignment] || assignment);
+                : (LABELS[assignment] || extraLabels[assignment] || assignment);
     let extra = '';
     const slot = visitSlotOf(data, dateStr, sid);   // 'none' = この日は訪問に行かない
     const AM_CODES = ['visit_am', 'visit_am_day_p4'];

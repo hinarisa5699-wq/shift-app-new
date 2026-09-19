@@ -401,8 +401,42 @@ function syncPendingWithBaseline(key, state) {
     }
 }
 
+/**
+ * マスタで足したシフトの表示名を取り込む。
+ *   cook_labels … 調理シフト種類（既存①〜⑤は上書きしない）
+ *   care_labels … 勤務時間マスタ（介護看護の「何時〜何時」）。
+ *                 時刻を直したらその場で反映したいので、こちらは毎回上書きする。
+ */
+function registerCustomLabels(data) {
+    if (!data) return;
+    if (data.cook_labels) {
+        const cookBadges = ['badge-cook-1', 'badge-cook-2', 'badge-cook-3', 'badge-cook-4'];
+        let bi = 0;
+        for (const code of Object.keys(data.cook_labels)) {
+            if (data.cook_labels[code] && !ASSIGNMENT_MAP[code]) {
+                ASSIGNMENT_MAP[code] = { label: data.cook_labels[code], badgeClass: cookBadges[bi % 4] };
+                bi++;
+            }
+        }
+    }
+    if (data.care_labels) {
+        const details = data.care_details || {};
+        for (const code of Object.keys(data.care_labels)) {
+            if (data.care_labels[code]) {
+                ASSIGNMENT_MAP[code] = {
+                    // 名前は人が打つのでそのまま埋め込まない（バッジは innerHTML で描く）
+                    label: escapeHtml(data.care_labels[code]), badgeClass: 'badge-care-time',
+                    // マウスを乗せると中抜け・休憩・実働が出る
+                    title: escapeHtml(details[code] || data.care_labels[code]),
+                };
+            }
+        }
+    }
+}
+
 function renderPalette(data) {
     currentShiftData = data;
+    registerCustomLabels(data);
     rebuildEditBaseline(data);
     const pal = data.palette || {};
     const build = (cls, items, title) => {
@@ -411,7 +445,9 @@ function renderPalette(data) {
             : `<span class="text-xs font-bold text-gray-500 mr-1">${title}</span>`
               + items.map(it =>
                   `<span class="palette-chip badge ${(ASSIGNMENT_MAP[it.code] || {}).badgeClass || 'badge-off'}"`
-                  + ` draggable="true" data-code="${it.code}" style="cursor:grab">${escapeHtml(it.label)}</span>`
+                  + ` draggable="true" data-code="${it.code}" style="cursor:grab"`
+                  + (it.title ? ` title="${escapeHtml(it.title)}"` : '')
+                  + `>${escapeHtml(it.label)}</span>`
               ).join('')
               + `<span class="palette-chip badge badge-off" draggable="true" data-code="off"`
               + ` style="cursor:grab;border:1px dashed #9ca3af">休み</span>`;
@@ -956,17 +992,7 @@ function renderCalendar(data, year, month) {
     if (!table) return;
     currentShiftData = data;
 
-    // 調理シフト種類マスタのラベルを取り込む（新種類の表示用。既存①〜⑤は上書きしない）
-    if (data.cook_labels) {
-        const cookBadges = ['badge-cook-1', 'badge-cook-2', 'badge-cook-3', 'badge-cook-4'];
-        let bi = 0;
-        for (const code of Object.keys(data.cook_labels)) {
-            if (data.cook_labels[code] && !ASSIGNMENT_MAP[code]) {
-                ASSIGNMENT_MAP[code] = { label: data.cook_labels[code], badgeClass: cookBadges[bi % 4] };
-                bi++;
-            }
-        }
-    }
+    registerCustomLabels(data);
 
     const shifts = data.shifts || [];
     const staffList = data.staff_list || [];
@@ -1187,7 +1213,9 @@ function renderCalendar(data, year, month) {
         const bathRole = bathMap[dateStr] && bathMap[dateStr][s.id];
         const bathDisplay = bathRole ? ` <span class="badge" style="background:#0ea5e9;color:#fff">${bathRole}介助</span>` : '';
         const badge = info
-            ? `<span class="badge ${info.badgeClass}">${info.label}</span>`
+            ? `<span class="badge ${info.badgeClass}"`
+              + (info.title ? ` title="${info.title}"` : '')
+              + `>${info.label}</span>`
             : `<span class="badge badge-off">${escapeHtml(assignment)}</span>`;
         // 訪問営業日の早番(7:30-16:30)は既定で午前が訪問。
         //   ただし、その日に別の職員へ午前訪問を割り当てたら早番からは外す
@@ -2107,6 +2135,62 @@ function deleteCookingType(typeId) {
     if (!confirm('この調理シフト種類を削除しますか？')) return;
     fetchWithCsrf(`/api/cooking_types/${typeId}`, { method: 'DELETE' })
         .then(r => { if (!r.ok) return r.json().then(j => { throw new Error(j.error || '削除失敗'); }); location.reload(); })
+        .catch(e => alert('削除に失敗しました: ' + e.message));
+}
+
+/* ---- 勤務時間マスタ（介護看護・ユーザー依頼 2026-09）----
+   時間が流動的に変わるので「何時から何時まで」をここで足す。
+   足した枠はシフトカレンダーの手直しパレットに札として出て、
+   表のマスへドラッグして入れられる。 */
+function addCareTimeSlot() {
+    const start = document.getElementById('new-care-time-start').value;
+    const end = document.getElementById('new-care-time-end').value;
+    const start2 = document.getElementById('new-care-time-start2').value;
+    const end2 = document.getElementById('new-care-time-end2').value;
+    const breakMin = document.getElementById('new-care-time-break').value;
+    const label = document.getElementById('new-care-time-label').value.trim();
+    if (!start || !end) { alert('開始時刻と終了時刻を入れてください。'); return; }
+    if (start >= end) { alert('終了時刻は開始時刻より後にしてください。'); return; }
+    // 中抜け後は「両方入れる」か「両方空」のどちらか
+    if (!!start2 !== !!end2) {
+        alert('中抜け後の時間は、開始と終了の両方を入れてください（使わないときは両方とも空にしてください）。');
+        return;
+    }
+    if (start2 && start2 < end) {
+        alert('中抜け後の時間は、1つめの終了時刻より後から始めてください。');
+        return;
+    }
+    fetchWithCsrf('/api/work-times', {
+        method: 'POST',
+        body: JSON.stringify({
+            label: label, start_time: start, end_time: end,
+            start_time2: start2, end_time2: end2, break_minutes: breakMin,
+        }),
+    })
+        .then(r => {
+            if (!r.ok) return r.json().then(j => { throw new Error(j.error || '追加失敗'); });
+            location.reload();
+        })
+        .catch(e => alert('勤務時間の追加に失敗しました: ' + e.message));
+}
+
+function updateCareTimeSlot(slotId, field, value) {
+    const body = {}; body[field] = value;
+    fetchWithCsrf(`/api/work-times/${slotId}`, { method: 'PUT', body: JSON.stringify(body) })
+        .then(r => {
+            if (!r.ok) return r.json().then(j => { throw new Error(j.error || '更新失敗'); });
+            location.reload();   // 札の文字（時刻）を作り直すため読み直す
+        })
+        .catch(e => alert('勤務時間の更新に失敗しました: ' + e.message));
+}
+
+function deleteCareTimeSlot(slotId) {
+    if (!confirm('この勤務時間を消しますか？')) return;
+    fetchWithCsrf(`/api/work-times/${slotId}`, { method: 'DELETE' })
+        .then(r => {
+            if (!r.ok) return r.json().then(j => { throw new Error(j.error || '削除失敗'); });
+            location.reload();
+        })
         .catch(e => alert('削除に失敗しました: ' + e.message));
 }
 

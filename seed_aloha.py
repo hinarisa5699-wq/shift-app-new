@@ -341,9 +341,16 @@ def seed():
         settings.min_visit_pm = 1          # 訪問午後1名
         settings.min_dual_assignment = 0   # 兼務者最低人数（0=制約なし）
         settings.closed_days = ""          # 休業日なし（毎日営業）
-        settings.visit_operating_days = "1,3"             # 訪問=火木
-        settings.day_service_operating_days = "0,2,4"     # デイ=月水金
-        settings.no_day_service_days = "1,3,5,6"          # 上記の裏返し（火木土日）
+        # 営業曜日は階別の設定が唯一の正（ユーザー依頼 2026-09:
+        #   「設定で何曜日って決めたら設定どおりして」）。
+        #   控えの列だけを書き換えると、設定画面の内容と自動作成の動きが食い違う
+        #   （2026-09: 設定は訪問=火金なのに実際は火木に入り続けた原因がこれ）。
+        settings.floor3_day_service_days = "4"        # 3階デイ=金
+        settings.floor2_day_service_days = "0,2"      # 2階デイ=月水
+        settings.floor3_visit_days = "1"              # 3階訪問=火
+        settings.floor2_visit_days = "3"              # 2階訪問=木
+        settings.external_day_service_days = ""       # 外部デイなし
+        settings.sync_derived_operating_days()        # 控えの列を計算して合わせる
         # 調理は毎日（曜日設定なし。休業日=closed_days のみに従う）
         settings.min_cooking_staff = 1     # 調理各スロット1名
         settings.min_cooking_overlap = 2   # 引き継ぎ重複2名

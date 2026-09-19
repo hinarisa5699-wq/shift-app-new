@@ -485,7 +485,15 @@ def test_public_holiday_warning_after_manual_edit(tmp_path, monkeypatch):
 
 
 def test_available_months_and_default(tmp_path, monkeypatch):
-    """閲覧ページは「実際にシフトがある月」を開く（今日の月が無ければ直近）。"""
+    """閲覧ページは「実際にシフトがある月」を開く。今日の月があればその月。
+
+    ユーザー依頼 2026-09:「スマホアプリ　開いたら今日の自分の予定が表示する
+    ようにして　現在ログインしたら１０月が表示されてしまう」。
+    以前は一番新しい月を開いていたため、翌月を作ると今月の予定が見えなかった。
+    月の一覧は今までどおり全部返す（自分で切り替えられる）。
+    """
+    from datetime import date
+
     flask_app = _make_app(tmp_path, monkeypatch)
     _seed(flask_app)
     client = flask_app.test_client()
@@ -496,13 +504,18 @@ def test_available_months_and_default(tmp_path, monkeypatch):
     assert res.status_code == 200
     assert res.get_json()["default"] is None
 
-    client.post("/api/generate", json={"year": 2026, "month": 9})
-    client.post("/api/generate", json={"year": 2026, "month": 10})
+    today = date.today()
+    nxt_total = today.year * 12 + today.month      # 翌月（0始まりに直さずそのまま+1月分）
+    nxt_year, nxt_month = nxt_total // 12, nxt_total % 12 + 1
+
+    client.post("/api/generate", json={"year": today.year, "month": today.month})
+    client.post("/api/generate", json={"year": nxt_year, "month": nxt_month})
     res2 = client.get("/api/shifts/available").get_json()
     got = [{"year": m["year"], "month": m["month"]} for m in res2["months"]]
-    assert {"year": 2026, "month": 9} in got and {"year": 2026, "month": 10} in got
-    # 一番新しく作った月を開く（古い月が今日の月でも、そちらは開かない）
-    assert res2["default"] == {"year": 2026, "month": 10}
+    assert {"year": today.year, "month": today.month} in got
+    assert {"year": nxt_year, "month": nxt_month} in got
+    # 翌月を作ってあっても、今日の月を開く（今日の予定がすぐ見えるように）
+    assert res2["default"] == {"year": today.year, "month": today.month}
 
 
 def test_viewer_can_read_available_months(tmp_path, monkeypatch):

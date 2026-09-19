@@ -4784,16 +4784,29 @@ def create_app():
 
         ユーザー指摘（2026-08）:「閲覧アプリが、いつのメンバーか分からない古い月を
         読み込んでいる」。閲覧ページが今日の月を決め打ちしていたため、まだ作成して
-        いない月や古い月を開いていた。実際にシフトがある月から選ぶようにする。
+        いない月を開いていた。実際にシフトがある月から選ぶようにする。
+
+        ユーザー依頼（2026-09）:「スマホアプリ　開いたら今日の自分の予定が表示する
+        ようにして　現在ログインしたら１０月が表示されてしまう」。
+        「一番新しい月」を開いていたため、9月に開いても翌月の10月が出ていた。
+        今日の月にシフトがあれば、まずその月を開く。
         """
         rows = db.session.query(GeneratedShift.date).distinct().all()
         months = sorted({(r[0].year, r[0].month) for r in rows})
         confirmed = {
             (c.year, c.month) for c in ShiftConfirmation.query.all()
         }
-        # 一番新しく作った月を開く。今日の月に古いシフトが残っていても、
-        #   最新の（＝いま運用している）シフトが最初に出るようにする。
-        default = months[-1] if months else None
+        # 開く月の決め方（今日の予定がすぐ見えることを優先する）:
+        #   1. 今日の月にシフトがあれば、その月
+        #   2. 無ければ、これから先でいちばん近い月（来月のシフトだけある時期）
+        #   3. それも無ければ、いちばん新しい月（過去しか無いとき）
+        today = date.today()
+        current = (today.year, today.month)
+        if current in months:
+            default = current
+        else:
+            upcoming = [m for m in months if m > current]
+            default = upcoming[0] if upcoming else (months[-1] if months else None)
         return jsonify({
             "months": [
                 {"year": y, "month": m, "confirmed": (y, m) in confirmed}

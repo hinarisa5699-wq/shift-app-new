@@ -401,6 +401,30 @@ function planLinesHtml(data, dateStr, sid) {
     ).join('');
 }
 
+/* 勤務表示を職種の名前に差し替える（ユーザー依頼 2026-09）。
+     「内田さんはドライバーのみで水曜日ドライバーとしてでます」
+     「大山さんも看護ってだして　介護職員のカウントではなく看護師です」
+   「デイ9:00-16:00」→「看護9:00-16:00」のようにデイの2文字だけ置き換える。
+   看護師は早番・遅番・訪問の札はそのまま（何の勤務か分かるように）。
+   ドライバーは送迎しかしないので、デイ以外でも時刻を拾って置き換える。
+   ※人数カウントは別（看護師・ドライバーは介護の配置人数に数えない）。 */
+function roleLabel(label, staff) {
+    if (!staff || !label) return label;
+    let role = '';
+    if (staff.job_category === 'driver') {
+        role = 'ドライバー';
+    } else if ((staff.qualification_codes || []).indexOf('nurse') !== -1
+               || (staff.qualifications || []).indexOf('看護師') !== -1) {
+        role = '看護';
+    }
+    if (!role) return label;
+    const raw = String(label);
+    if (raw.indexOf('デイ') === 0) return role + raw.slice(2);
+    if (role === '看護') return raw;
+    const m = raw.match(/\d{1,2}:\d{2}\s*[-〜~]\s*\d{1,2}:\d{2}/);
+    return m ? role + m[0] : role;
+}
+
 function cellHtml(data, sid, dateStr, assignment, visitSet, dow, withPlans) {
     // 個人ビューではスケジュールを別に描くので、ここでは付けない
     const planHtml = (withPlans === false) ? '' : planLinesHtml(data, dateStr, sid);
@@ -421,6 +445,7 @@ function cellHtml(data, sid, dateStr, assignment, visitSet, dow, withPlans) {
     const extraLabels = Object.assign({}, data.cook_labels || {}, data.care_labels || {});
     let label = assignment.indexOf('exec:') === 0 ? assignment.slice(5)
                 : (LABELS[assignment] || extraLabels[assignment] || assignment);
+    label = roleLabel(label, staffOf);
     let extra = '';
     const slot = visitSlotOf(data, dateStr, sid);   // 'none' = この日は訪問に行かない
     const AM_CODES = ['visit_am', 'visit_am_day_p4'];

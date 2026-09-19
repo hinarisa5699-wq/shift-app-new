@@ -295,6 +295,15 @@ def _build_daily_data(shifts_data, staff_list, year, month):
     # 訪問へ出る時間帯は出力のたびに作り直す（前回の内容を残さない）
     _VISIT_SLOTS.clear()
 
+    # 表示を職種名に置き換える職員IDも毎回作り直す
+    _DRIVER_IDS.clear()
+    _NURSE_DISPLAY_IDS.clear()
+    for _s in (staff_list or []):
+        if str(_s.get("job_category", "") or "") == "driver":
+            _DRIVER_IDS.add(_s["id"])
+        elif _is_nurse_display_staff(_s):
+            _NURSE_DISPLAY_IDS.add(_s["id"])
+
     assignment_map = {}
     phone_duty_map = {}
     desk_slot_map = {}  # ③ {date_str: {staff_id: [slot_idx, ...]}}
@@ -441,6 +450,61 @@ def _off_cell_text(d_str, sid) -> str:
 # 訪問へ出る時間帯 {date: {staff_id: "am"/"pm"}}（_build_daily_data で作る）
 _VISIT_SLOTS: dict = {}
 
+# 勤務表示を職種の名前に置き換える職員ID（_build_daily_data で作る）。
+#   ユーザー依頼 2026-09:
+#     「内田さんはドライバーのみで水曜日ドライバーとしてでます」
+#     「大山さんも看護ってだして　介護職員のカウントではなく看護師です」
+#   デイの札で出ていたのを、シフト表のマスで
+#   「ドライバー8:30-17:30」「看護9:00-16:00」と出す（時刻はそのまま残す）。
+#   ※人数カウントの扱いは _is_nurse_or_pt_staff が従来どおり担当（表示だけの変更）。
+_DRIVER_IDS: set = set()
+_NURSE_DISPLAY_IDS: set = set()
+
+# ラベルに含まれる時刻範囲（例 "早番7:30-16:30" の "7:30-16:30"）
+_TIME_RANGE_RE = re.compile(r"\d{1,2}:\d{2}\s*[-〜~]\s*\d{1,2}:\d{2}")
+
+_NURSE_DISPLAY_CODES = {"nurse"}
+_NURSE_DISPLAY_NAMES = {"看護師"}
+
+
+def _is_nurse_display_staff(staff: dict) -> bool:
+    """「看護」と出す職員か。看護師資格を持つ人だけ（PT は対象外）。"""
+    codes = {c for c in staff.get("qualification_codes", []) if isinstance(c, str)}
+    names = {n for n in staff.get("qualifications", []) if isinstance(n, str)}
+    return bool(codes & _NURSE_DISPLAY_CODES or names & _NURSE_DISPLAY_NAMES)
+
+
+def _role_label(text: str, role_name: str, day_only: bool) -> str:
+    """勤務表示の頭を職種名に差し替える。
+
+    「デイ9:00-16:00」→「看護9:00-16:00」のように、デイの2文字だけを置き換えて
+    残り（時刻や「午前のみ」）はそのまま活かす。
+
+    day_only=True（看護師）はデイの札だけを置き換える。早番・遅番・訪問まで
+    「看護」にすると何の勤務か分からなくなるため、そのまま残す。
+    day_only=False（ドライバー）は送迎しかしないので、デイ以外の札でも
+    時刻だけ拾って「ドライバー7:30-16:30」の形にする。
+    """
+    if not text:
+        return text
+    if text.startswith("デイ"):
+        return role_name + text[2:]
+    if day_only:
+        return text
+    m = _TIME_RANGE_RE.search(text)
+    return role_name + m.group(0) if m else role_name
+
+
+def _display_label_for(sid, text: str) -> str:
+    """職員IDに応じて勤務表示を置き換える（該当しなければそのまま）。"""
+    if not text:
+        return text
+    if sid in _DRIVER_IDS:
+        return _role_label(text, "ドライバー", day_only=False)
+    if sid in _NURSE_DISPLAY_IDS:
+        return _role_label(text, "看護", day_only=True)
+    return text
+
 
 def _has_explicit_am_visit(d_str, assignment_map) -> bool:
     """その日に「午前訪問」を明示的に割り当てられた職員がいるか。"""
@@ -471,6 +535,7 @@ def _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map):
     """ケアスタッフ 1 セルの (assignment, 表示テキスト) を組み立てる。"""
     asgn = assignment_map.get(d_str, {}).get(sid, "")
     text = _assignment_label(asgn)
+    text = _display_label_for(sid, text)
     slot = _VISIT_SLOTS.get(d_str, {}).get(sid)
     if slot == "none":
         pass                      # この日は訪問に行かない（早番の既定を外した）
@@ -1019,6 +1084,7 @@ def export_csv(
     def _care_cell(d_str, sid):
         asgn = assignment_map.get(d_str, {}).get(sid, "")
         label = _assignment_label(asgn)
+        label = _display_label_for(sid, label)
         parts = [label] if label else []
         slot = _VISIT_SLOTS.get(d_str, {}).get(sid)
         if slot == "none":

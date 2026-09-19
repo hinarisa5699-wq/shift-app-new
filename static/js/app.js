@@ -1179,6 +1179,39 @@ function renderCalendar(data, year, month) {
         return ((plans && base === PLAN_PLACEHOLDER) ? '' : base) + plans;
     }
 
+    /* 勤務表示を職種の名前に差し替える（ユーザー依頼 2026-09）。
+         「内田さんはドライバーのみで水曜日ドライバーとしてでます」
+         「大山さんも看護ってだして　介護職員のカウントではなく看護師です」
+       デイの札のままだと何の仕事か分からないので、マスを
+       「ドライバー8:30-17:30」「看護9:00-16:00」と出す。
+       デイの2文字だけ差し替えて時刻や「午前のみ」は残す。
+       ※人数カウントは別（看護師・ドライバーはもともと介護の配置人数に数えない）。 */
+    function roleDisplayName(staff) {
+        if (!staff) return '';
+        if (staff.job_category === 'driver') return 'ドライバー';
+        const codes = staff.qualification_codes || [];
+        const names = staff.qualifications || [];
+        if (codes.indexOf('nurse') !== -1 || names.indexOf('看護師') !== -1) return '看護';
+        return '';
+    }
+
+    function driverAwareInfo(info, staff) {
+        const role = roleDisplayName(staff);
+        if (!info || !role) return info;
+        const raw = String(info.label || '');
+        let label;
+        if (raw.indexOf('デイ') === 0) {
+            label = role + raw.slice(2);
+        } else if (role === '看護') {
+            // 看護師は早番・遅番・訪問の札をそのまま残す（何の勤務か分かるように）
+            return info;
+        } else {
+            const m = raw.match(/\d{1,2}:\d{2}\s*[-〜~]\s*\d{1,2}:\d{2}/);
+            label = m ? role + m[0] : role;
+        }
+        return Object.assign({}, info, { label: label, title: info.title || raw });
+    }
+
     // ケアスタッフ 1 セルの勤務部分
     function careShiftCellHtml(dateStr, s) {
         const assignment = shiftMap[dateStr] ? shiftMap[dateStr][s.id] : null;
@@ -1194,7 +1227,7 @@ function renderCalendar(data, year, month) {
         if (!assignment || assignment === 'off') {
             return offCellHtml(dateStr, s);
         }
-        const info = ASSIGNMENT_MAP[assignment];
+        const info = driverAwareInfo(ASSIGNMENT_MAP[assignment], s);
         const isPhone = phoneDutyMap[dateStr] && phoneDutyMap[dateStr][s.id];
         const phoneBadge = isPhone ? ' <span class="badge badge-phone">TEL</span>' : '';
         const deskSlots = deskSlotMap[dateStr] && deskSlotMap[dateStr][s.id];

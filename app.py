@@ -1845,6 +1845,25 @@ def create_app():
     # SQLAlchemy 初期化
     db.init_app(app)
 
+    # Cloudflare Worker（shift-app.hinarisa5699.workers.dev）経由のアクセス対策（2026-09-29）。
+    #   ユーザー回線から Render に直接つながらないため、Worker が中継している。
+    #   Worker が付ける X-Shift-Public-Host が許可リストにあるときだけ、
+    #   そのアドレスを request.host として扱う（CSRF の送り元チェックを正しく通すため）。
+    _public_hosts = {
+        h.strip() for h in os.environ.get(
+            "SHIFT_PUBLIC_HOSTS", "shift-app.hinarisa5699.workers.dev").split(",")
+        if h.strip()
+    }
+    _inner_wsgi = app.wsgi_app
+
+    def _public_host_wsgi(environ, start_response):
+        public_host = environ.get("HTTP_X_SHIFT_PUBLIC_HOST", "")
+        if public_host in _public_hosts:
+            environ["HTTP_HOST"] = public_host
+        return _inner_wsgi(environ, start_response)
+
+    app.wsgi_app = _public_host_wsgi
+
     # CSRF保護
     csrf = CSRFProtect(app)
 

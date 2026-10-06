@@ -601,3 +601,18 @@ def test_login_card_qr_works_without_segno(tmp_path, monkeypatch):
         "https://example.invalid/view")
     assert data[:4] == b"%PDF"
     assert export.qr_data_uri("https://example.invalid/view") == ""
+
+
+def test_role_login_id_ignores_case_and_fullwidth(tmp_path, monkeypatch):
+    """IDは大文字・全角で入れても入れる（2026-10:「SASEKI」で入れなかった）。"""
+    monkeypatch.setenv("SHIFT_SASEKI_PASSWORD", "CDEpass99")
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    for typed in ("SASEKI", "Saseki", "ＳＡＳＥＫＩ", " saseki "):
+        client = flask_app.test_client()
+        res = _login(client, typed, "CDEpass99")
+        assert res.status_code in (301, 302), typed
+        assert "/login" not in res.headers.get("Location", ""), typed
+    # パスワードの大文字小文字は今までどおり区別する
+    res = _login(flask_app.test_client(), "saseki", "cdepass99")
+    assert res.status_code == 200

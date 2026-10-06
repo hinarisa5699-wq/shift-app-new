@@ -12,6 +12,7 @@ import re
 import secrets
 import shutil
 import threading
+import unicodedata
 import uuid
 import sqlite3
 import unicodedata
@@ -1945,7 +1946,10 @@ def create_app():
         if session.get("user"):
             return redirect(url_for("index"))
         if request.method == "POST":
-            username = (request.form.get("username") or "").strip()
+            # IDは全角・大文字でも入れるようにする（2026-10: 「SASEKI」と大文字で
+            #   入れたスタッフが saseki に一致せず入れなかった）。
+            username = unicodedata.normalize(
+                "NFKC", request.form.get("username") or "").strip().lower()
             password = request.form.get("password") or ""
             # 環境変数のパスワードと、条件設定画面で決めたパスワードの両方を試す。
             #   （2026-08: 環境変数が優先されて、設定画面で変えたパスワードでは

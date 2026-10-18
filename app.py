@@ -4492,6 +4492,7 @@ def create_app():
                     counselor_desk_slots=desk_slots_json,
                     bath_role=item.get("bath_role"),
                     meal_assist=item.get("meal_assist"),
+                    visit_slot=item.get("visit_slot"),  # 遅番＋午後訪問など
                 )
                 db.session.add(shift)
                 saved_shifts.append(shift)
@@ -4727,6 +4728,7 @@ def create_app():
                             ("visit_pm", "訪問(午後)のみ"),
                             ("visit_am_day_p4", "訪問(午前)＋デイ(午後)"),
                             ("day_p3_visit_pm", "デイ(午前)＋訪問(午後)"),
+                            ("visit_full", "終日訪問 8:30-17:30"),
                         )
                     ] + [
                         {"code": slot["code"], "label": slot["display_label"],

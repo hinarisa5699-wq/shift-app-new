@@ -217,6 +217,7 @@ const LABELS = {
     visit_pm: '訪問 午後',
     day_p3_visit_pm: '兼務（デイ→訪問）',
     visit_am_day_p4: '兼務（訪問→デイ）',
+    visit_full: '終日訪問 8:30-17:30',
     day_am: 'デイ 午前のみ',
     day_pm: 'デイ 午後のみ',
     day_am_visit_pm: '兼務（デイ→訪問）',
@@ -372,7 +373,7 @@ function visitDays(data) {
 
 // その日に「午前訪問」を明示的に割り当てられた職員がいるか
 function hasExplicitAmVisit(data, dateStr) {
-    const AM = ['visit_am', 'visit_am_day_p4', 'visit_am_day_pm'];
+    const AM = ['visit_am', 'visit_am_day_p4', 'visit_am_day_pm', 'visit_full'];
     return (data.shifts || []).some(x => x.date === dateStr
         && (AM.indexOf(x.assignment) !== -1 || x.visit_slot === 'am'));
 }

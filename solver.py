@@ -58,6 +58,7 @@ CARE_ASSIGNMENTS = [
     "visit_pm",          # 訪問介護午後
     "day_p3_visit_pm",   # ③デイ+PM訪問（兼務パターンA）
     "visit_am_day_p4",   # AM訪問+④デイ（兼務パターンB）
+    "visit_full",        # 終日訪問 8:30-17:30（午前訪問＋午後訪問。分けられない日だけ）
     "early",             # 早番 7:30-16:30（訪問営業日=AM訪問+PMデイ／非営業日=終日デイ）
     "late",              # 遅番 9:30-18:30（終日デイ）
     "nurse_short",       # 看護師短時間 9:30-13:30（看護師のみ選択可・必須枠ではない）
@@ -66,7 +67,7 @@ CARE_ASSIGNMENTS = [
 CARE_WORKING_ASSIGNMENTS = [a for a in CARE_ASSIGNMENTS if a != "off"]
 
 # 訪問系アサインメント（can_visit=False の職員は不可）
-VISIT_ASSIGNMENTS = {"visit_am", "visit_pm", "day_p3_visit_pm", "visit_am_day_p4"}
+VISIT_ASSIGNMENTS = {"visit_am", "visit_pm", "day_p3_visit_pm", "visit_am_day_p4", "visit_full"}
 
 # 兼務パターン
 DUAL_ASSIGNMENTS = {"day_p3_visit_pm", "visit_am_day_p4"}
@@ -93,8 +94,8 @@ COUNSELOR_CARE_DUTY_ASSIGNMENTS = {
 DAY_AM_ASSIGNMENTS = {"day_pattern1", "day_pattern2", "day_pattern3", "day_p3_visit_pm", "late"}
 DAY_PM_ASSIGNMENTS = {"day_pattern1", "day_pattern2", "day_pattern4", "day_pattern5",
                       "visit_am_day_p4", "early", "late"}
-VISIT_AM_ASSIGNMENTS = {"visit_am", "visit_am_day_p4"}
-VISIT_PM_ASSIGNMENTS = {"visit_pm", "day_p3_visit_pm"}
+VISIT_AM_ASSIGNMENTS = {"visit_am", "visit_am_day_p4", "visit_full"}
+VISIT_PM_ASSIGNMENTS = {"visit_pm", "day_p3_visit_pm", "visit_full"}
 
 # 9時台の在籍（事業所に物理的にいる人。訪問外出中は含まない）
 #   遅番は9:30開始（ユーザー依頼 2026-08:「遅番は9時半から18時半」）。
@@ -135,12 +136,12 @@ PRESENT_AT_14 = set(PRESENT_AT_15)
 # 時間帯制限: am_only の職員が取れないアサインメント（午後を含む全パターン）
 AM_ONLY_FORBIDDEN = {
     "day_pattern1", "day_pattern2", "day_pattern4", "day_pattern5", "visit_pm",
-    "day_p3_visit_pm", "visit_am_day_p4", "early", "late", "nurse_short",
+    "day_p3_visit_pm", "visit_am_day_p4", "visit_full", "early", "late", "nurse_short",
 }
 # 時間帯制限: pm_only の職員が取れないアサインメント（午前を含む全パターン）
 PM_ONLY_FORBIDDEN = {
     "day_pattern1", "day_pattern2", "day_pattern3", "visit_am",
-    "visit_am_day_p4", "day_p3_visit_pm", "early", "late", "nurse_short",
+    "visit_am_day_p4", "day_p3_visit_pm", "visit_full", "early", "late", "nurse_short",
 }
 
 # 事業所にいるアサインメント（電話当番可能 = デイ系のみ）
@@ -167,6 +168,7 @@ ASSIGNMENT_TIME_RANGES = {
     "visit_pm":        (13 * 60 + 30, 17 * 60 + 30),  # 訪問午後
     "day_p3_visit_pm": (8 * 60 + 30, 17 * 60 + 30),   # 兼務A(午前デイ→午後訪問)
     "visit_am_day_p4": (8 * 60 + 30, 17 * 60 + 30),   # 兼務B(午前訪問→午後デイ)
+    "visit_full":      (8 * 60 + 30, 17 * 60 + 30),   # 終日訪問(午前訪問→午後訪問)
     "early":           (7 * 60 + 30, 16 * 60 + 30),   # 早番 7:30-16:30
     "late":            (9 * 60 + 30, 18 * 60 + 30),  # 遅番 9:30-18:30
     "nurse_short":     (9 * 60 + 30, 13 * 60 + 30),   # 看護師短時間 9:30-13:30
@@ -841,6 +843,7 @@ def assign_oncall(eligible_staff: list, dates: list, max_consecutive: int = 1,
 _FIXED_BREAK = {
     "day_p3_visit_pm": "12:30",  # 兼務A: 12:30-13:30
     "visit_am_day_p4": "12:30",  # 兼務B: 12:30-13:30
+    "visit_full":      "12:30",  # 終日訪問: 12:30-13:30
     "cooking_4":       "08:00",  # 調理通し: 8:00-9:00
 }
 
@@ -1205,6 +1208,7 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shif
         working_counselors = [
             sid for sid in floor_ids
             if sid in counselor_ids and sid != forced_mid
+            and not item_by_sid[sid].get("visit_slot")  # 遅番＋午後訪問は終日相談にできない
         ]
         if working_counselors and not locked_counselor:
             selected_counselor = min(
@@ -2532,6 +2536,28 @@ def _solve_care(
                     model.add(x[s, d_idx, a] == 0)
 
     # ==================================================================
+    # 遅番＋午後訪問（ユーザー依頼 2026-10:「遅番の訪問可能な人は遅番でも訪問いれる」）
+    #   訪問可(can_visit)の職員が訪問営業日に遅番(9:30-18:30)のとき、
+    #   午前デイ(中介助)→13:30-17:30 午後訪問→戻って18:30まで、を選べるようにする。
+    #   late_vpm[s, d]=1 なら訪問午後に数え、午後デイ・14時在籍からは外す。
+    #   出力は assignment="late" のまま visit_slot="pm"（画面は「遅番」の下に訪問(午後)）。
+    #   固定職員は既存シフトを温存するため対象外。
+    # ==================================================================
+    late_vpm = {}
+    for s in free_staff_ids:
+        if not staff_by_id[s]["can_visit"]:
+            continue
+        for d_idx in range(num_days):
+            if d_idx in closed_day_indices or not _is_visit_day(d_idx):
+                continue
+            v = model.new_bool_var(f"late_vpm_s{s}_d{d_idx}")
+            model.add(v <= x[s, d_idx, "late"])
+            late_vpm[s, d_idx] = v
+
+    def _late_vpm_sum(d_idx, sids):
+        return sum(late_vpm[s, d_idx] for s in sids if (s, d_idx) in late_vpm)
+
+    # ==================================================================
     # 早番(early): 終日デイ。訪問には自動で出ないので can_visit は不問。
     #   （ユーザー依頼 2026-08:「早番が訪問でなくてもいい」）
     # ==================================================================
@@ -2767,7 +2793,7 @@ def _solve_care(
         )
         day_pm_count = sum(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in DAY_PM_ASSIGNMENTS
-        )
+        ) - _late_vpm_sum(d_idx, non_nurse_pt_staff)  # 遅番＋午後訪問は午後デイにいない
         # デイ午前/午後の下限・上限は曜日ごとの介護人数設定から決まる。
         #   デイ利用者がいない曜日は下限1名に緩和（人数そのものは頭数の制約で縛る）。
         eff_min_day, eff_max_day = day_service_by_day.get(
@@ -2852,7 +2878,7 @@ def _solve_care(
             continue
         visit_pm_count = sum(
             x[s, d_idx, a] for s in staff_ids for a in VISIT_PM_ASSIGNMENTS
-        )
+        ) + _late_vpm_sum(d_idx, staff_ids)  # 遅番＋午後訪問
         if use_slack:
             model.add(visit_pm_count + slack_visit_pm[d_idx] >= min_visit_pm)
         else:
@@ -2885,7 +2911,7 @@ def _solve_care(
         )
         count_15 = sum(
             x[s, d_idx, a] for s in non_nurse_pt_staff for a in PRESENT_AT_14
-        )
+        ) - _late_vpm_sum(d_idx, non_nurse_pt_staff)  # 遅番＋午後訪問は14時は外出中
         # 11時・13時の在籍下限は曜日ごとの介護人数から決める。
         #   デイ利用者がいない曜日は1名に緩和（浮いた人員は訪問等へ）。
         if d_idx in no_service_day_indices:
@@ -3254,6 +3280,7 @@ def _solve_care(
         non_closed_days, all_dates, closed_day_indices,
         use_slack, placement_soft_penalties, placement_soft_trackers,
         no_service_day_indices=no_service_day_indices,
+        late_vpm=late_vpm,
     )
 
     # ==================================================================
@@ -3437,7 +3464,7 @@ def _solve_care(
                 x[s, d_idx, a]
                 for d_idx in range(num_days)
                 for a in VISIT_ASSIGNMENTS
-            )
+            ) + sum(late_vpm[s, d_idx] for d_idx in range(num_days) if (s, d_idx) in late_vpm)
         max_visit = model.new_int_var(0, num_days, "care_max_visit")
         min_visit = model.new_int_var(0, num_days, "care_min_visit")
         for s in visit_capable_ids:
@@ -3530,6 +3557,17 @@ def _solve_care(
 
     # 重み: 出勤1日削減(num_days+1) > 公平性の最大改善(num_days) を保証
     headcount_weight = num_days + 1
+    # 遅番＋午後訪問・終日訪問は「ほかで訪問を分けて埋められない日」だけ使う
+    #   （ユーザー依頼 2026-10:「午前午後で訪問分けられない時使う」）。
+    #   出勤日数・平等化などのソフト条件より重く、人員不足1件(slack_weight)よりは軽くする。
+    #   → 兼務2人で午前/午後を分けられる日はそちら、分けられない日だけ使う。
+    #   遅番＋午後訪問（午前は事業所にいる）を終日訪問より優先する。
+    _fallback_unit = (num_days + 1) * max(1, len(staff_ids))
+    fallback_visit_penalty = (
+        sum(late_vpm.values()) * (_fallback_unit // 2) if late_vpm else 0
+    ) + sum(
+        x[s, d_idx, "visit_full"] for s in staff_ids for d_idx in range(num_days)
+    ) * _fallback_unit
 
     if use_slack:
         # 早番/遅番の未配置スラックは別枠（other_slack には含めない）。
@@ -3622,6 +3660,7 @@ def _solve_care(
             + early_consec_penalty + early_fairness_penalty
             + public_holiday_penalty
             + backup_penalty
+            + fallback_visit_penalty
         )
     else:
         # スラック無しの段階でも応援は最後に回す（ハード制約は必ず満たされる）
@@ -3640,6 +3679,7 @@ def _solve_care(
             + early_consec_penalty + early_fairness_penalty
             + public_holiday_penalty
             + backup_penalty
+            + fallback_visit_penalty
         )
 
     # ==================================================================
@@ -3673,12 +3713,15 @@ def _solve_care(
             for a in CARE_ASSIGNMENTS:
                 if solver.value(x[s, d_idx, a]) == 1:
                     if a != "off":
-                        shifts_data.append({
+                        item = {
                             "date": date_str,
                             "staff_id": s,
                             "assignment": a,
                             "is_phone_duty": bool(phone_eligible and (s, d_idx) in phone and solver.value(phone[s, d_idx])),
-                        })
+                        }
+                        if (s, d_idx) in late_vpm and solver.value(late_vpm[s, d_idx]):
+                            item["visit_slot"] = "pm"  # 遅番＋午後訪問
+                        shifts_data.append(item)
                     break
 
     # ------------------------------------------------------------------
@@ -3983,7 +4026,7 @@ def _add_placement_rules(
     model, x, staff_ids, staff_by_id, placement_rules,
     non_closed_days, all_dates, closed_day_indices,
     use_slack, soft_penalties, soft_trackers=None,
-    no_service_day_indices=None,
+    no_service_day_indices=None, late_vpm=None,
 ):
     """PlacementRuleテーブルのルールをCP-SAT制約に変換する。
     soft_trackers: Noneでなければ (miss_var, rule_name, d_idx) を追記する。
@@ -3993,6 +4036,8 @@ def _add_placement_rules(
     """
     if no_service_day_indices is None:
         no_service_day_indices = set()
+    if late_vpm is None:
+        late_vpm = {}
     for rule in placement_rules:
         if not rule.get("is_active", True):
             continue
@@ -4054,6 +4099,11 @@ def _add_placement_rules(
             count = sum(
                 x[s, d_idx, a] for s in target_staff for a in target_assignments
             )
+            if period == "pm":
+                # 遅番＋午後訪問の人は午後デイにいない
+                count = count - sum(
+                    late_vpm[s, d_idx] for s in target_staff if (s, d_idx) in late_vpm
+                )
 
             if is_hard:
                 # ハード制約: use_slack関係なく常にハード

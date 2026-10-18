@@ -64,6 +64,7 @@ const ASSIGNMENT_MAP = {
     visit_pm:        { label: '訪問午後のみ',     badgeClass: 'badge-visit-pm'  },
     day_p3_visit_pm: { label: '兼務(デイ→訪問)',  badgeClass: 'badge-dual-a'    },
     visit_am_day_p4: { label: '兼務(訪問→デイ)',  badgeClass: 'badge-dual-b'    },
+    visit_full:      { label: '終日訪問8:30-17:30', badgeClass: 'badge-visit-pm' },
     cooking_1:      { label: '①6-8',            badgeClass: 'badge-cook-1'    },
     cooking_2:    { label: '②8-13',           badgeClass: 'badge-cook-2'    },
     cooking_3:       { label: '③12-19',          badgeClass: 'badge-cook-3'    },
@@ -87,9 +88,9 @@ const DAY_PM_SET = new Set([
     'day_pm', 'visit_am_day_pm', 'early', 'late',
 ]);
 // 訪問午前
-const VISIT_AM_SET = new Set(['visit_am', 'visit_am_day_p4', 'visit_am_day_pm']);
+const VISIT_AM_SET = new Set(['visit_am', 'visit_am_day_p4', 'visit_am_day_pm', 'visit_full']);
 // 訪問午後
-const VISIT_PM_SET = new Set(['visit_pm', 'day_p3_visit_pm', 'day_am_visit_pm']);
+const VISIT_PM_SET = new Set(['visit_pm', 'day_p3_visit_pm', 'day_am_visit_pm', 'visit_full']);
 // 兼務
 const DUAL_SET = new Set(['day_p3_visit_pm', 'visit_am_day_p4', 'day_am_visit_pm', 'visit_am_day_pm']);
 
@@ -881,7 +882,7 @@ function initShiftDragAndDrop() {
             return;
         }
         // 訪問NG（訪問可がオフ）の職員には訪問を入れられない
-        const VISIT_CODES = ['visit_am', 'visit_pm', 'visit_am_day_p4', 'day_p3_visit_pm'];
+        const VISIT_CODES = ['visit_am', 'visit_pm', 'visit_am_day_p4', 'day_p3_visit_pm', 'visit_full'];
         if (info.type === 'visit' || VISIT_CODES.indexOf(code) !== -1) {
             const toStaffInfo = ((currentShiftData || {}).staff_list || [])
                 .find(x => x.id === toStaff);
@@ -1266,7 +1267,7 @@ function renderCalendar(data, year, month) {
         // 早番に自動で訪問（午前）は付けない（ユーザー依頼 2026-08 のルール変更）
         //   ただし訪問の枠（訪問のみ／兼務）で入っている人には、分かるように札を出す
         let autoVisitNote = '';
-        if (!slot) {
+        if (!slot && assignment !== 'visit_full') {   // 終日訪問は名前で分かるので札なし
             if (VISIT_AM_SET.has(assignment)) {
                 autoVisitNote = `<br><span class="badge" style="background:#dbeafe;color:#1d4ed8">訪問（午前）</span>`;
             } else if (VISIT_PM_SET.has(assignment)) {

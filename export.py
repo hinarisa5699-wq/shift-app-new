@@ -50,6 +50,7 @@ ASSIGNMENT_LABELS = {
     "visit_pm":        "訪問午後のみ",
     "day_p3_visit_pm": "兼務(デイ→訪問)",
     "visit_am_day_p4": "兼務(訪問→デイ)",
+    "visit_full":      "終日訪問8:30-17:30",
     "cooking_1":      "調理①6-8",
     "cooking_2":    "調理②8-13",
     "cooking_3":       "調理③12-19",
@@ -76,6 +77,7 @@ ASSIGNMENT_FILL = {
     "visit_pm":        PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid"),
     "day_p3_visit_pm": PatternFill(start_color="EDE9FE", end_color="EDE9FE", fill_type="solid"),
     "visit_am_day_p4": PatternFill(start_color="EDE9FE", end_color="EDE9FE", fill_type="solid"),
+    "visit_full":      PatternFill(start_color="A7F3D0", end_color="A7F3D0", fill_type="solid"),
     "cooking_1":      PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid"),
     "cooking_2":    PatternFill(start_color="FDE68A", end_color="FDE68A", fill_type="solid"),
     "cooking_3":       PatternFill(start_color="FCD34D", end_color="FCD34D", fill_type="solid"),
@@ -197,9 +199,9 @@ _DAY_AM_SET = {"day_pattern1", "day_pattern2", "day_pattern3", "day_p3_visit_pm"
 _DAY_PM_SET = {"day_pattern1", "day_pattern2", "day_pattern4", "day_pattern5",
                "visit_am_day_p4", "day_pm", "visit_am_day_pm", "early", "late"}
 # 訪問午前
-_VISIT_AM_SET = {"visit_am", "visit_am_day_p4", "visit_am_day_pm"}
+_VISIT_AM_SET = {"visit_am", "visit_am_day_p4", "visit_am_day_pm", "visit_full"}
 # 訪問午後
-_VISIT_PM_SET = {"visit_pm", "day_p3_visit_pm", "day_am_visit_pm"}
+_VISIT_PM_SET = {"visit_pm", "day_p3_visit_pm", "day_am_visit_pm", "visit_full"}
 # 兼務
 _DUAL_SET = {"day_p3_visit_pm", "visit_am_day_p4", "day_am_visit_pm", "visit_am_day_pm"}
 # 調理
@@ -1778,6 +1780,7 @@ _LABEL_TO_ASSIGNMENT = {
     "訪問午後のみ": "visit_pm",
     "兼務(デイ→訪問)": "day_p3_visit_pm",
     "兼務(訪問→デイ)": "visit_am_day_p4",
+    "終日訪問8:30-17:30": "visit_full",
     "調理①6-8": "cooking_1",
     "調理②8-13": "cooking_2",
     "調理③12-19": "cooking_3",
@@ -1956,7 +1959,9 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
         iso = dt.isoformat()
         items = by_date.get(iso, [])
         day_am = sum(1 for it in items if it["assignment"] in _DAY_AM_SET and it["staff_id"] not in nurse_pt_ids)
-        day_pm = sum(1 for it in items if it["assignment"] in _DAY_PM_SET and it["staff_id"] not in nurse_pt_ids)
+        # 訪問(午後)の札が付いた人（遅番＋午後訪問など）は午後デイにいない
+        day_pm = sum(1 for it in items if it["assignment"] in _DAY_PM_SET and it["staff_id"] not in nurse_pt_ids
+                     and (it.get("visit_slot") or "") != "pm")
         is_visit_day = dt.weekday() in visit_days
         v_am = sum(1 for it in items if it["assignment"] in _VISIT_AM_SET)
         # 早番は訪問に数えない（ユーザー依頼 2026-08:「早番が訪問でなくてもいい」）
@@ -1964,6 +1969,9 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
                     if (it.get("visit_slot") or "") == "am"
                     and it["assignment"] not in _VISIT_AM_SET)
         v_pm = sum(1 for it in items if it["assignment"] in _VISIT_PM_SET)
+        v_pm += sum(1 for it in items
+                    if (it.get("visit_slot") or "") == "pm"
+                    and it["assignment"] not in _VISIT_PM_SET)
         n_mid = sum(1 for it in items if it.get("bath_role") == "中")
         n_out = sum(1 for it in items if it.get("bath_role") == "外")
         n_early = sum(1 for it in items if it["assignment"] == "early")

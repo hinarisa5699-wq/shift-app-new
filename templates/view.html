@@ -54,7 +54,7 @@
             <button id="next" class="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 font-bold">▶</button>
             <button id="reload" class="px-3 py-2 rounded-lg bg-teal-600 text-white font-bold">最新に更新</button>
             <button id="gcal-import" type="button"
-                    class="hidden px-3 py-2 rounded-lg bg-white border border-teal-500 text-teal-700 font-bold">Googleカレンダー取り込み</button>
+                    class="hidden px-3 py-2 rounded-lg bg-white border border-teal-500 text-teal-700 font-bold">予定の取り込み</button>
             <span id="status" class="text-sm px-2 py-1 rounded-full"></span>
         </div>
         <div id="gcal-msg" class="hidden mt-2 text-sm"></div>
@@ -710,6 +710,7 @@ async function importGoogleCalendar() {
         if (!r.ok) throw new Error(j.error || '取り込めませんでした');
         await load();
         const done = (j.results || []).map(x => `${x.name}さん ${x.imported}件`
+            + (x.kiroku ? `（うちカイポケ ${x.kiroku}件）` : '')
             + (x.private ? `（うち私用 ${x.private}件）` : ''));
         showGcalMsg(`${state.month}月の予定を取り込みました：` + done.join(' / '), true);
     } catch (e) {
@@ -729,14 +730,15 @@ function openPlanEditor(dateStr, staffId) {
         canOff: canEditExecCell(staff),
     };
     el('plan-rows').innerHTML = '';
-    // Googleカレンダーから取り込んだ予定は読み取り専用（消して保存すると取り込み直すまで戻らない）
+    // Googleカレンダー・アロハハウスアプリ（カイポケ）から取り込んだ予定は読み取り専用
+    //   （手入力の行として保存すると、取り込み直したときに二重になるため）
     const all = plansOf(data, dateStr, staffId);
-    const fromGoogle = all.filter(pl => pl.source === 'google');
+    const fromGoogle = all.filter(pl => pl.source === 'google' || pl.source === 'kiroku');
     el('plan-google').innerHTML = fromGoogle.map(pl =>
         `<div class="text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1">${esc(pl.label)}</div>`
     ).join('');
     el('plan-google-box').classList.toggle('hidden', !fromGoogle.length);
-    all.filter(pl => pl.source !== 'google')
+    all.filter(pl => pl.source !== 'google' && pl.source !== 'kiroku')
        .forEach(pl => addPlanRow(pl.start_time, pl.end_time, pl.title));
     // 旧いやり方（勤務欄に入れた「exec:9:00-12:00 デイ面接」）は予定として引き継ぐ
     if (planEdit.canOff && current.indexOf('exec:') === 0) {
@@ -1046,10 +1048,10 @@ function initMyRequests() {
 
         <!-- Googleカレンダーから取り込んだ予定（ここでは直せない。取り込み直しで更新） -->
         <div id="plan-google-box" class="hidden mb-3">
-            <div class="text-xs font-bold text-gray-600 mb-1">Googleカレンダーの予定</div>
+            <div class="text-xs font-bold text-gray-600 mb-1">取り込んだ予定（Googleカレンダー・カイポケ）</div>
             <div id="plan-google" class="space-y-1"></div>
             <p class="text-[11px] text-gray-500 mt-1">
-                この予定はGoogleカレンダー側で直してください。直したあと「Googleカレンダー取り込み」を押すと反映されます。
+                この予定はGoogleカレンダーかカイポケで直してください。直したあと「予定の取り込み」を押すと反映されます（カイポケの予定は、毎晩22時にアロハハウスアプリへ入ったあとに反映できます）。
             </p>
         </div>
 

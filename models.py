@@ -111,6 +111,9 @@ class Staff(db.Model):
     # Googleカレンダーの限定公開URL（iCal形式）。空＝連携なし。
     #   ユーザー依頼 2026-08:「前垣茜のみGoogleカレンダー連動して」。
     #   名前で判定せず「URLを入れた職員だけ」を取り込み対象にする（読み取り専用）。
+    kiroku_import = db.Column(db.Boolean, default=False, nullable=False)
+    # True = アロハハウスアプリ（カイポケから同期した予定）の「担当」にこの職員の
+    #   フルネームがある予定を、スケジュール欄に取り込む（ユーザー依頼 2026-10: 池田友子）。
 
     # --- 追加カラム (v3) ---
     job_category = db.Column(db.String(20), default="caregiver", nullable=False)
@@ -546,6 +549,11 @@ class ShiftSettings(db.Model):
     auto_ph_include_holidays = db.Column(db.Boolean, default=False, nullable=False)
     # 1日の所定労働時間（時間）。公休自動算出に使用。既定 8.0。
     daily_work_hours = db.Column(db.Float, default=8.0, nullable=False)
+    # アロハハウスアプリ（入居者記録・GAS）の接続先と合言葉。空＝連携なし。
+    #   ユーザー依頼 2026-10:「カイポケから池田友子の予定を、アロハハウスアプリから
+    #   シフトへも同期」。リポジトリが公開なので、コードには書かずここに持つ。
+    kiroku_gas_url = db.Column(db.String(500), default="", nullable=False)
+    kiroku_gas_token = db.Column(db.String(200), default="", nullable=False)
 
     def operating_day_sets(self):
         """営業曜日を階別の設定から計算する（これが唯一の正）。
@@ -937,6 +945,8 @@ class StaffPlan(db.Model):
     def is_from_google(self):
         """Googleカレンダーから取り込んだ予定か（画面では編集させない）。"""
         return self.source == "google"
+    # source="kiroku" はアロハハウスアプリ（カイポケ同期）から取り込んだ予定。
+    #   google と同じく画面では編集させず、取り込みのたびに月ごと入れ直す。
 
     @staticmethod
     def _hm(value):

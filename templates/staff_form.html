@@ -248,6 +248,20 @@
                 </div>
             </div>
 
+            <!-- カイポケの訪問予定（アロハハウスアプリ経由）を取り込む -->
+            <div class="mb-6">
+                <label class="flex items-center cursor-pointer">
+                    <input type="checkbox" name="kiroku_import" value="1"
+                           {% if staff and staff.kiroku_import %}checked{% endif %}
+                           class="w-5 h-5 text-teal-600 border-gray-300 rounded focus:ring-teal-400">
+                    <span class="ml-3 text-lg font-semibold text-gray-700">カイポケの訪問予定を取り込む（アロハハウスアプリから）</span>
+                </label>
+                <div class="text-gray-500 text-sm mt-1 ml-8 space-y-1">
+                    <p>アロハハウスアプリの予定で「担当」にこの職員の名前（フルネーム）が入っているものを、「スケジュール」欄に取り込みます。「予定の取り込み」ボタンで反映されます。</p>
+                    <p>アロハハウスアプリに入るのは<strong>アロハハウス入居者への訪問だけ</strong>です。接続先は「設定」の「アロハハウスアプリ連携」で入れます。</p>
+                </div>
+            </div>
+
             <!-- 応援（人手が足りないときだけ） -->
             <div class="mb-6">
                 <label class="flex items-center cursor-pointer">

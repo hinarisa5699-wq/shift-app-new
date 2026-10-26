@@ -46,6 +46,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 import jpholiday
 import gcal
+import kiroku
 from config import Config
 from models import (
     db, Staff, DayOffRequest, ShiftSettings, GeneratedShift, ShiftWarning,
@@ -562,6 +563,59 @@ def _import_google_plans(staff, year, month):
         "skipped": skipped,
         "private": sum(1 for r in rows if r["title"] == gcal.PRIVATE_TITLE),
     }
+
+
+def _kiroku_connection():
+    """アロハハウスアプリの (URL, 合言葉)。未設定なら URL は ""。"""
+    s = ShiftSettings.query.first()
+    return ((getattr(s, "kiroku_gas_url", "") or "").strip(),
+            (getattr(s, "kiroku_gas_token", "") or "").strip())
+
+
+def _import_kiroku_plans(staff, year, month, rows):
+    """アロハハウスアプリの予定（その月の全行 rows）から1人ぶんを取り込む。
+
+    その月の取り込み済み(source="kiroku")を消してから入れ直すので、何度実行しても
+    増えない。手入力・Googleカレンダーの行には触らない（commit は呼び出し側）。
+    """
+    first_day = date(year, month, 1)
+    last_day = date(year, month, calendar.monthrange(year, month)[1])
+    StaffPlan.query.filter(
+        StaffPlan.staff_id == staff.id,
+        StaffPlan.date >= first_day,
+        StaffPlan.date <= last_day,
+        StaffPlan.source == "kiroku",
+    ).delete(synchronize_session=False)
+
+    per_day = {}
+    added = 0
+    skipped = 0
+    for row in kiroku.plans_for_staff(rows, staff.name):
+        d = datetime.strptime(row["date"], "%Y-%m-%d").date()
+        if not (first_day <= d <= last_day):
+            continue
+        n = per_day.get(d, 0)
+        if n >= PLAN_MAX_PER_DAY:
+            skipped += 1
+            continue
+        per_day[d] = n + 1
+        db.session.add(StaffPlan(
+            staff_id=staff.id, date=d,
+            start_time=row["start_time"], end_time=row["end_time"],
+            title=row["title"], display_order=n,
+            source="kiroku", external_uid=row["uid"][:200],
+        ))
+        added += 1
+    return {"imported": added, "skipped": skipped}
+
+
+def _normalize_kiroku_url(raw, fallback=""):
+    """設定画面のアロハハウスアプリURLを検証する（形式が違えば元の値を残す）。"""
+    try:
+        return kiroku.normalize_url(raw)
+    except kiroku.KirokuError as e:
+        flash(str(e), "error")
+        return fallback
 
 
 def _normalize_google_ics_url(raw, fallback=""):
@@ -1162,6 +1216,23 @@ def _run_migrations(app):
     if columns and "google_ics_url" not in columns:
         cursor.execute(
             "ALTER TABLE staff ADD COLUMN google_ics_url VARCHAR(500) NOT NULL DEFAULT ''"
+        )
+    # Staff: アロハハウスアプリ（カイポケ同期）の予定を取り込むか（ユーザー依頼 2026-10）
+    if columns and "kiroku_import" not in columns:
+        cursor.execute(
+            "ALTER TABLE staff ADD COLUMN kiroku_import BOOLEAN NOT NULL DEFAULT 0"
+        )
+    # ShiftSettings: アロハハウスアプリの接続先と合言葉
+    columns = [
+        row[1] for row in cursor.execute("PRAGMA table_info(shift_settings)").fetchall()
+    ]
+    if columns and "kiroku_gas_url" not in columns:
+        cursor.execute(
+            "ALTER TABLE shift_settings ADD COLUMN kiroku_gas_url VARCHAR(500) NOT NULL DEFAULT ''"
+        )
+    if columns and "kiroku_gas_token" not in columns:
+        cursor.execute(
+            "ALTER TABLE shift_settings ADD COLUMN kiroku_gas_token VARCHAR(200) NOT NULL DEFAULT ''"
         )
 
     # StaffPlan: 手入力かGoogleカレンダー取り込みかの区別（既存の行はすべて手入力）
@@ -2566,6 +2637,7 @@ def create_app():
             google_ics_url=_normalize_google_ics_url(
                 request.form.get("google_ics_url", "")
             ),
+            kiroku_import="kiroku_import" in request.form,
             car_commute="car_commute" in request.form,
             parking_slot=(request.form.get("parking_slot", "") or "").strip(),
             # 調理スタッフのみ新人/ベテランを保持（それ以外は未設定）
@@ -2685,6 +2757,7 @@ def create_app():
             request.form.get("google_ics_url", ""),
             fallback=(staff.google_ics_url or ""),
         )
+        staff.kiroku_import = "kiroku_import" in request.form
         staff.holiday_ng = "holiday_ng" in request.form
         staff.on_leave = "on_leave" in request.form
         staff.retired = "retired" in request.form
@@ -3574,6 +3647,15 @@ def create_app():
         except (TypeError, ValueError):
             _dwh = 8.0
         s.daily_work_hours = min(24.0, max(0.5, _dwh))
+        # アロハハウスアプリ連携。合言葉は画面に出さないので、空欄のまま保存したら今の値を残す
+        if "kiroku_gas_url" in request.form:
+            s.kiroku_gas_url = _normalize_kiroku_url(
+                request.form.get("kiroku_gas_url", ""),
+                fallback=(s.kiroku_gas_url or ""),
+            )
+            _token = (request.form.get("kiroku_gas_token") or "").strip()
+            if _token:
+                s.kiroku_gas_token = _token[:200]
         db.session.commit()
         flash("条件設定を保存しました。", "success")
         return redirect(url_for("settings"))
@@ -4971,9 +5053,12 @@ def create_app():
             return jsonify({"error": "年月が正しくありません"}), 400
 
         allowed = _plan_editable_staff_ids()
+        # アロハハウスアプリ（カイポケ同期）の予定も同じボタンで取り込む（ユーザー依頼 2026-10）
+        kiroku_url, kiroku_token = _kiroku_connection()
         with_url = [
             st for st in Staff.query.order_by(Staff.display_order, Staff.id).all()
             if (getattr(st, "google_ics_url", "") or "").strip()
+            or (kiroku_url and getattr(st, "kiroku_import", False))
         ]
         targets = [
             st for st in with_url if allowed is None or st.id in allowed
@@ -4990,10 +5075,25 @@ def create_app():
                          "非公開URL（iCal形式）を貼って保存してください。",
             }), 400
 
+        kiroku_rows = None
+        if kiroku_url and any(getattr(st, "kiroku_import", False) for st in targets):
+            try:
+                kiroku_rows = kiroku.fetch_month_schedules(
+                    kiroku_url, kiroku_token, "{:04d}-{:02d}".format(year, month))
+            except kiroku.KirokuError as e:
+                return jsonify({"error": str(e)}), 400
+
         results = []
         for staff in targets:
+            res = {"imported": 0, "skipped": 0, "private": 0, "kiroku": 0}
             try:
-                res = _import_google_plans(staff, year, month)
+                if (getattr(staff, "google_ics_url", "") or "").strip():
+                    res.update(_import_google_plans(staff, year, month))
+                if kiroku_rows is not None and getattr(staff, "kiroku_import", False):
+                    k = _import_kiroku_plans(staff, year, month, kiroku_rows)
+                    res["kiroku"] = k["imported"]
+                    res["imported"] += k["imported"]
+                    res["skipped"] += k["skipped"]
             except gcal.GoogleCalendarError as e:
                 db.session.rollback()
                 return jsonify({

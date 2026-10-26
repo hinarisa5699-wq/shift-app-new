@@ -1475,7 +1475,7 @@ function importGoogleCalendar() {
     const year = parseInt(document.getElementById('year-select').value);
     const month = parseInt(document.getElementById('month-select').value);
     if (btn) btn.disabled = true;
-    showGcalMessage('Googleカレンダーを読み込んでいます...', true);
+    showGcalMessage('予定を読み込んでいます...', true);
 
     fetchWithCsrf('/api/staff-plans/google-import-all', {
         method: 'POST',
@@ -1486,6 +1486,7 @@ function importGoogleCalendar() {
         .then(({ ok, j }) => {
             if (!ok) throw new Error(j.error || '取り込めませんでした。');
             const done = (j.results || []).map(x => `${x.name}さん ${x.imported}件`
+                + (x.kiroku ? `（うちカイポケ ${x.kiroku}件）` : '')
                 + (x.private ? `（うち私用 ${x.private}件）` : ''));
             showGcalMessage(`${month}月の予定を取り込みました：` + done.join(' / '), true);
             loadShifts(year, month);

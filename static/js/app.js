@@ -326,6 +326,9 @@ let currentShiftData = null;  // 直近に読み込んだ /api/shifts のデー�
 let editUndoStack = [];       // 「1つ前に戻す」用（1操作 = 1グループ）
 let editBaseline = {};        // 保存済みの内容 "date|staff_id" -> {assignment, visit_slot}
 let undoCollector = null;     // 1操作分の変更前の状態を集める
+// 駐車場の手直し（ユーザー依頼 2026-11）"date|staff_id" -> "4"/"コイン"/""(外す)
+let pendingParking = {};
+let parkingBaseline = {};     // 保存済みの駐車場 "date|staff_id" -> ラベル
 
 function editKey(dateStr, staffId) { return `${dateStr}|${staffId}`; }
 
@@ -337,9 +340,43 @@ function rebuildEditBaseline(data) {
             visit_slot: x.visit_slot || null,
         };
     });
+    parkingBaseline = {};
+    Object.entries(data.parking || {}).forEach(([d, byStaff]) => {
+        Object.entries(byStaff || {}).forEach(([sid, label]) => {
+            parkingBaseline[editKey(d, Number(sid))] = label || '';
+        });
+    });
     editUndoStack = [];
     updatePendingBadge();
 }
+
+function parkingOf(dateStr, staffId) {
+    const byStaff = ((currentShiftData || {}).parking || {})[dateStr] || {};
+    return byStaff[String(staffId)] || '';
+}
+
+// 駐車場だけを書き換える（記録なし。undo からも使う）
+function setParkingLocal(dateStr, staffId, label) {
+    currentShiftData.parking = currentShiftData.parking || {};
+    const byStaff = currentShiftData.parking[dateStr] = currentShiftData.parking[dateStr] || {};
+    if (label) byStaff[String(staffId)] = label;
+    else delete byStaff[String(staffId)];
+    const key = editKey(dateStr, staffId);
+    if ((label || '') === (parkingBaseline[key] || '')) delete pendingParking[key];
+    else pendingParking[key] = label || '';
+}
+
+function applyLocalParking(dateStr, staffId, label) {
+    if (!currentShiftData) return;
+    const entry = { kind: 'parking', date: dateStr, staffId: staffId,
+                    label: parkingOf(dateStr, staffId) };
+    if (undoCollector) undoCollector.push(entry);
+    else editUndoStack.push([entry]);
+    setParkingLocal(dateStr, staffId, label);
+    afterLocalEdit();
+}
+
+function parkingText(label) { return label === 'コイン' ? 'コイン' : `P${label}`; }
 
 function cellStateOf(dateStr, staffId) {
     const row = (currentShiftData.shifts || []).find(
@@ -372,6 +409,7 @@ function undoLastEdit() {
     const group = editUndoStack.pop();
     if (!group || !group.length) { setEditStatus('戻せる操作がありません'); return; }
     group.slice().reverse().forEach(e => {
+        if (e.kind === 'parking') { setParkingLocal(e.date, e.staffId, e.label); return; }
         const shifts = currentShiftData.shifts || [];
         const idx = shifts.findIndex(x => x.date === e.date && x.staff_id === e.staffId);
         if (!e.assignment) {
@@ -456,6 +494,15 @@ function renderPalette(data) {
     };
     build('palette-care', pal.care, '介護・看護:');
     build('palette-cook', pal.cooking, '調理:');
+    // 駐車場の札（出勤しているマスへドラッグ。マスの札はゴミ箱で外せる）
+    const labels = (data.parking_slots || []).concat(['コイン']);
+    const parkingHtml = `<span class="text-xs font-bold text-gray-500 mr-1">駐車場:</span>`
+        + labels.map(lb =>
+            `<span class="palette-chip badge" draggable="true" data-parking="${escapeHtml(lb)}"`
+            + ` title="出勤している人のマスへドラッグすると駐車場を付けられます"`
+            + ` style="cursor:grab;background:${lb === 'コイン' ? '#9ca3af' : '#7c3aed'};color:#fff">`
+            + `${escapeHtml(parkingText(lb))}</span>`).join('');
+    document.querySelectorAll('.palette-parking').forEach(box => { box.innerHTML = parkingHtml; });
     updatePendingBadge();
 }
 
@@ -477,7 +524,7 @@ function setEditStatus(msg, kind) {
 }
 
 function updatePendingBadge() {
-    const n = Object.keys(pendingEdits).length;
+    const n = Object.keys(pendingEdits).length + Object.keys(pendingParking).length;
     document.querySelectorAll('.pending-count').forEach(badge => {
         badge.textContent = n ? `未保存の変更 ${n}件` : '';
     });
@@ -573,18 +620,25 @@ function checkPublicHolidayLocally() {
 }
 
 function discardShiftEdits() {
-    if (!Object.keys(pendingEdits).length) { setEditStatus('取り消す変更はありません'); return; }
+    if (!Object.keys(pendingEdits).length && !Object.keys(pendingParking).length) {
+        setEditStatus('取り消す変更はありません'); return;
+    }
     pendingEdits = {};
+    pendingParking = {};
     editUndoStack = [];
     setEditStatus('変更をすべて取り消しました（保存済みの内容に戻しました）', 'ok');
     loadShifts(currentYear, currentMonth);
 }
 
 function saveShiftEdits() {
-    if (!Object.keys(pendingEdits).length) {
+    if (!Object.keys(pendingEdits).length && !Object.keys(pendingParking).length) {
         setEditStatus('変更はありません（表のマスをドラッグすると変えられます）', 'error');
         return;
     }
+    const parking = Object.entries(pendingParking).map(([k, label]) => {
+        const parts = k.split('|');
+        return { date: parts[0], staff_id: Number(parts[1]), label: label };
+    });
     const changes = Object.entries(pendingEdits).map(([k, v]) => {
         const parts = k.split('|');
         const ch = { date: parts[0], staff_id: Number(parts[1]) };
@@ -592,17 +646,19 @@ function saveShiftEdits() {
         if (v.visit_slot !== undefined) ch.visit_slot = v.visit_slot;
         return ch;
     });
-    if (!changes.length) return;
+    if (!changes.length && !parking.length) return;
     const btns = document.querySelectorAll('.save-edits-btn');
     btns.forEach(b => { b.disabled = true; b.textContent = '保存中...'; });
     fetchWithCsrf('/api/shift/cells', {
         method: 'POST',
-        body: JSON.stringify({ year: currentYear, month: currentMonth, changes: changes }),
+        body: JSON.stringify({ year: currentYear, month: currentMonth,
+                               changes: changes, parking: parking }),
     })
         .then(r => r.json().then(j => ({ ok: r.ok, j: j })))
         .then(res => {
             if (!res.ok) throw new Error(res.j.error || '保存に失敗しました');
             pendingEdits = {};
+            pendingParking = {};
             editUndoStack = [];
             setEditStatus(`保存しました（${res.j.applied}件）`, 'ok');
             loadShifts(currentYear, currentMonth);
@@ -788,7 +844,8 @@ function initShiftDragAndDrop() {
         if (trash.dataset.dndReady === '1') return;
         trash.dataset.dndReady = '1';
         trash.addEventListener('dragover', e => {
-            if (!window.__dragInfo || window.__dragInfo.type === 'palette') return;
+            if (!window.__dragInfo || window.__dragInfo.type === 'palette'
+                || window.__dragInfo.type === 'parking') return;
             e.preventDefault();
             trash.style.background = '#fee2e2';
             trash.style.borderColor = '#ef4444';
@@ -804,9 +861,14 @@ function initShiftDragAndDrop() {
             trash.style.background = '';
             trash.style.borderColor = '';
             trash.style.color = '';
-            if (!info || info.type === 'palette') { window.__dragInfo = null; return; }
+            if (!info || info.type === 'palette' || info.type === 'parking') {
+                window.__dragInfo = null; return;
+            }
             e.preventDefault();
-            if (info.type === 'visit') {
+            if (info.type === 'parkingCell') {
+                applyLocalParking(info.date, info.staffId, '');
+                setEditStatus('駐車場を外しました（保存を押すと確定します）', 'ok');
+            } else if (info.type === 'visit') {
                 // 早番に自動で付いている訪問も「行かない」にして消す
                 applyLocalVisitSlot(info.date, info.staffId, info.explicit ? null : 'none');
                 setEditStatus('訪問を消しました', 'ok');
@@ -824,6 +886,12 @@ function initShiftDragAndDrop() {
         bar.addEventListener('dragstart', e => {
             const chip = e.target.closest('.palette-chip');
             if (!chip) return;
+            if (chip.dataset.parking) {
+                window.__dragInfo = { type: 'parking', label: chip.dataset.parking };
+                e.dataTransfer.effectAllowed = 'copy';
+                e.dataTransfer.setData('text/plain', chip.dataset.parking);
+                return;
+            }
             window.__dragInfo = { type: 'palette', code: chip.dataset.code };
             e.dataTransfer.effectAllowed = 'copy';
             e.dataTransfer.setData('text/plain', chip.dataset.code);
@@ -831,6 +899,18 @@ function initShiftDragAndDrop() {
     });
 
     table.addEventListener('dragstart', e => {
+        const pchip = e.target.closest('.parking-chip');
+        if (pchip) {
+            // 駐車場の札だけを別のマスへ移す／ゴミ箱で外す
+            window.__dragInfo = {
+                type: 'parkingCell', label: pchip.dataset.label,
+                date: pchip.dataset.date, staffId: Number(pchip.dataset.staff),
+            };
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', pchip.dataset.label);
+            e.stopPropagation();
+            return;
+        }
         const chip = e.target.closest('.visit-chip');
         if (chip) {
             // 「訪問（午前/午後）」の札だけを切り離して別の職員へ渡す
@@ -876,6 +956,28 @@ function initShiftDragAndDrop() {
         const toStaff = Number(td.dataset.staff);
         const toGroup = td.dataset.group;
         const code = info.code;
+        if (info.type === 'parking' || info.type === 'parkingCell') {
+            window.__dragInfo = null;
+            const nowA = td.dataset.assignment || '';
+            if (!nowA || nowA === 'off' || nowA === 'cook_off' || nowA === 'exec_off') {
+                setEditStatus('駐車場は出勤しているマスにだけ付けられます', 'error');
+                return;
+            }
+            if (info.type === 'parkingCell' && info.date === toDate && info.staffId === toStaff) return;
+            beginEditGroup(() => {
+                if (info.type === 'parkingCell') applyLocalParking(info.date, info.staffId, '');
+                applyLocalParking(toDate, toStaff, info.label);
+            });
+            // 同じ日に同じ番号の人がほかにいたら知らせる（コインは何人でも可）
+            const sameDay = (currentShiftData.parking || {})[toDate] || {};
+            const dup = info.label !== 'コイン' && Object.entries(sameDay).some(
+                ([sid, lb]) => Number(sid) !== toStaff && lb === info.label);
+            setEditStatus(dup
+                ? `${parkingText(info.label)}は同じ日にほかの人にも付いています`
+                : `${parkingText(info.label)}を付けました（保存を押すと確定します）`,
+                dup ? 'error' : 'ok');
+            return;
+        }
         if (toGroup === 'plan') {
             setEditStatus('役員・事務は予定だけです。セルをクリックで選んでください', 'error');
             window.__dragInfo = null;
@@ -1019,10 +1121,13 @@ function renderCalendar(data, year, month) {
         const byStaff = parkingMap[dateStr];
         const label = byStaff && byStaff[staffId];
         if (!label) return '';
+        // ドラッグで別のマスへ移す／ゴミ箱で外せる（手直し）
+        const attrs = ` draggable="true" data-date="${dateStr}" data-staff="${staffId}"`
+            + ` data-label="${escapeHtml(label)}" title="ドラッグで移動、ゴミ箱で外せます"`;
         if (label === 'コイン') {
-            return ' <span class="badge" style="background:#9ca3af;color:#fff">コイン</span>';
+            return ` <span class="badge parking-chip"${attrs} style="background:#9ca3af;color:#fff;cursor:grab">コイン</span>`;
         }
-        return ` <span class="badge" style="background:#7c3aed;color:#fff">P${escapeHtml(label)}</span>`;
+        return ` <span class="badge parking-chip"${attrs} style="background:#7c3aed;color:#fff;cursor:grab">P${escapeHtml(label)}</span>`;
     }
 
     const careStaff = staffList.filter(s => s.department !== 'cooking');

@@ -400,6 +400,35 @@ def test_cell_edit_moves_shift_and_recomputes(tmp_path, monkeypatch):
             and x["assignment"] == src["assignment"]], "移動先に入っていない"
 
 
+def test_cell_edit_saves_parking_label(tmp_path, monkeypatch):
+    """手直しで駐車場（P4/コイン）を付け替え・外しできる（ユーザー依頼 2026-11）。"""
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed(flask_app)
+    client = flask_app.test_client()
+    _login(client, "admin", "testpass")
+    client.post("/api/generate", json={"year": 2026, "month": 9})
+    data = client.get("/api/shifts/2026/9").get_json()
+    assert data["parking_slots"] == ["4", "7", "8"]
+    src = next(x for x in data["shifts"] if x["assignment"] not in ("off", "cook_off"))
+    d, sid = src["date"], src["staff_id"]
+
+    res = client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9, "changes": [],
+        "parking": [{"date": d, "staff_id": sid, "label": "7"},
+                    {"date": d, "staff_id": sid, "label": "99"}],   # 無い番号は無視
+    })
+    assert res.status_code == 200, res.get_data(as_text=True)[:300]
+    after = client.get("/api/shifts/2026/9").get_json()
+    assert after["parking"][d][str(sid)] == "7"
+
+    client.post("/api/shift/cells", json={
+        "year": 2026, "month": 9, "changes": [],
+        "parking": [{"date": d, "staff_id": sid, "label": ""}],
+    })
+    after = client.get("/api/shifts/2026/9").get_json()
+    assert str(sid) not in after["parking"].get(d, {})
+
+
 def test_cell_edit_rejects_cross_group_assignment(tmp_path, monkeypatch):
     """調理職員に介護のシフトは入れられない（逆も同じ）。"""
     flask_app = _make_app(tmp_path, monkeypatch)

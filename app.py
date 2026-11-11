@@ -4823,6 +4823,11 @@ def create_app():
                         .order_by(ShiftPattern.display_order).all()
                     ],
                 },
+                # 手直しバーの駐車場の札（P4/P7/P8…＋コイン）。ユーザー依頼 2026-11
+                "parking_slots": [
+                    s.slot_number for s in ParkingSlot.query.order_by(
+                        ParkingSlot.display_order, ParkingSlot.id).all()
+                ],
                 # 調理シフト種類マスタのラベル（画面表示で新種類を正しく表示する用）
                 "cook_labels": {
                     p.code: p.label
@@ -5129,9 +5134,11 @@ def create_app():
         year = safe_int(data.get("year"), 0)
         month = safe_int(data.get("month"), 0)
         changes = data.get("changes") or []
+        # 駐車場の手直し: [{"date", "staff_id", "label": "4"/"コイン"/""(外す)}]
+        parking_changes = data.get("parking") or []
         if not (2000 <= year <= 2100 and 1 <= month <= 12):
             return jsonify({"error": "年月が正しくありません"}), 400
-        if not isinstance(changes, list):
+        if not isinstance(changes, list) or not isinstance(parking_changes, list):
             return jsonify({"error": "changes の形式が正しくありません"}), 400
 
         _all_staff = Staff.query.all()
@@ -5149,6 +5156,8 @@ def create_app():
             #   （介護・看護の職員が自分の勤務を消せてしまわないよう区分で絞る）
             _me = int(session["staff_id"])
             allowed_ids = {_me} & exec_staff_ids
+        if allowed_ids is not None and parking_changes:
+            return jsonify({"error": "駐車場は管理者アカウントで変更してください"}), 403
         if allowed_ids is not None:
             for ch in changes:
                 if safe_int(ch.get("staff_id"), None) not in allowed_ids:
@@ -5265,6 +5274,29 @@ def create_app():
                 row.break_start = None
                 row.counselor_desk_slots = None
                 row.meal_assist = None
+            applied += 1
+
+        # 駐車場の手直し（ユーザー依頼 2026-11「手直しの場所にP4/P7/P8の札がほしい」）
+        valid_parking = {s.slot_number for s in ParkingSlot.query.all()} | {"コイン"}
+        for pc in parking_changes:
+            if not isinstance(pc, dict):
+                continue
+            try:
+                d = datetime.strptime(str(pc.get("date")), "%Y-%m-%d").date()
+            except (TypeError, ValueError):
+                continue
+            if not (first_day <= d <= last_day):
+                continue
+            sid = safe_int(pc.get("staff_id"), None)
+            if sid not in staff_by_id:
+                continue
+            label = str(pc.get("label") or "").strip()
+            if label and label not in valid_parking:
+                continue
+            ParkingAssignment.query.filter_by(date=d, staff_id=sid).delete()
+            if label:
+                db.session.add(ParkingAssignment(
+                    generation_id=generation_id, date=d, staff_id=sid, label=label))
             applied += 1
 
         db.session.flush()

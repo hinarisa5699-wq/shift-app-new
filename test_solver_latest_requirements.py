@@ -337,7 +337,8 @@ def test_care_headcount_over_limit_warns_but_generates():
     """必須配置（早番・遅番・訪問）が上限に収まらない日は警告のみで生成継続。"""
     shifts, warnings = _run(
         _base_settings(
-            no_day_service_days=[0],
+            # デイがない日は早番・遅番を置かない（2026-11-20）ので、デイのある日で確かめる
+            no_day_service_days=[],
             visit_operating_days=[0],
             min_visit_am=1,
             min_visit_pm=1,
@@ -434,3 +435,24 @@ def test_all_fixed_cooking_staff_keeps_shifts_without_warning():
     assert not [s for s in shifts if s["staff_id"] in (101, 102)],         "固定職員のシフトを作り直している"
     assert not [w for w in warns if w["warning_type"] == "no_solution"], \
         [w["message"] for w in warns][:3]
+
+
+def test_no_day_service_day_has_no_early_or_late():
+    """デイがない日（日曜など）は早番・遅番を置かず、訪問1人で回せる（2026-11-20 依頼）。"""
+    shifts, warnings = _run(
+        _base_settings(
+            no_day_service_days=[0],
+            visit_operating_days=[0],
+            min_visit_am=1,
+            min_visit_pm=1,
+            care_min_by_weekday="1,,,,,,",
+            care_max_by_weekday="1,,,,,,",
+        ),
+        can_visit=True,
+    )
+    assert shifts is not None
+    assert not [i for i in shifts if i["assignment"] in ("early", "late")]
+    assert len(_working_ids(shifts)) == 1
+    kinds = {w["warning_type"] for w in warnings}
+    assert not kinds & {"early_unassigned", "late_unassigned", "over_staffed_care",
+                        "understaffed_visit_am", "understaffed_visit_pm"}, kinds

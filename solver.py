@@ -1803,16 +1803,18 @@ def _solve_care_with_fallback(
     present_floor_by_day = {}  # {d_idx: 11時・13時の在籍下限}
     for _d_idx, _dt in enumerate(all_dates):
         _mn, _mx = care_headcount_by_day.get(_d_idx, (None, None))
+        # 2026-11-20 ユーザー依頼:「日曜はデイがない。訪問1人でいい」。
+        #   デイ利用者がいない日はデイ枠の下限を課さない（0名可。頭数で縛る）。
         if _mn is None:
-            _floor = 1 if _d_idx in no_service_day_indices else min_day_service
+            _floor = 0 if _d_idx in no_service_day_indices else min_day_service
         elif _d_idx in no_service_day_indices:
             # デイ利用者がいない日はデイ枠としての下限は課さない（頭数で縛る）
-            _floor = 1
+            _floor = 0
         else:
             _floor = _mn
         day_service_by_day[_d_idx] = (_floor, _mx)
         present_floor_by_day[_d_idx] = (
-            1 if _d_idx in no_service_day_indices
+            0 if _d_idx in no_service_day_indices
             else (_mn if _mn is not None else min_staff_at_11)
         )
 
@@ -2798,7 +2800,7 @@ def _solve_care(
         #   デイ利用者がいない曜日は下限1名に緩和（人数そのものは頭数の制約で縛る）。
         eff_min_day, eff_max_day = day_service_by_day.get(
             d_idx,
-            (1 if d_idx in no_service_day_indices else min_day_service, max_day_service),
+            (0 if d_idx in no_service_day_indices else min_day_service, max_day_service),
         )
         if use_slack:
             model.add(day_am_count + slack_day_am[d_idx] >= eff_min_day)
@@ -2915,7 +2917,8 @@ def _solve_care(
         # 11時・13時の在籍下限は曜日ごとの介護人数から決める。
         #   デイ利用者がいない曜日は1名に緩和（浮いた人員は訪問等へ）。
         if d_idx in no_service_day_indices:
-            _m9 = _m11 = _m13 = _m15 = 1
+            # デイがない日は事業所の在籍下限を課さない（訪問1人で回す日がある）
+            _m9 = _m11 = _m13 = _m15 = 0
         else:
             _mid = present_floor_by_day.get(d_idx, min_staff_at_11)
             _m9, _m11, _m13, _m15 = (
@@ -2941,6 +2944,12 @@ def _solve_care(
         for d_idx in non_closed_days:
             early_count = sum(x[s, d_idx, "early"] for s in staff_ids)
             late_count = sum(x[s, d_idx, "late"] for s in staff_ids)
+            # 2026-11-20 ユーザー依頼: デイがない日（日曜など）は早番・遅番を置かない
+            #   （早番・遅番はデイの勤務帯。デイがない日は訪問だけで回す）。
+            if d_idx in no_service_day_indices:
+                model.add(early_count == 0)
+                model.add(late_count == 0)
+                continue
             # 上限: 設定人数ちょうど（超過させない）
             model.add(early_count <= min_early_staff)
             model.add(late_count <= min_late_staff)

@@ -125,11 +125,13 @@ def test_only_visit_capable_staff_take_visits():
     assert not bad, f"訪問可でない職員が訪問に入っている: {bad}"
 
 
-def test_exceeding_the_day_service_cap_is_reported():
-    """上限を超えて必須配置を通した日は、黙って超えずに警告で知らせる。"""
-    _shifts, warnings = _run()
-    kinds = {w.get("warning_type") for w in warnings}
-    # 火曜は「デイ利用者なし＝2名」に早番・遅番・訪問の3名を入れるため超過する
-    assert "over_staffed_day_service" in kinds or "over_staffed_care" in kinds, (
-        f"上限超過の警告が出ていません: {sorted(kinds)}"
-    )
+def test_no_day_service_day_has_no_early_late():
+    """デイ利用者がいない日は早番・遅番を置かない（2026-11-20 依頼）。
+    以前はここで早番・遅番・訪問を通して上限超過の警告が出ていた。"""
+    shifts, _warnings = _run()
+    bad = [
+        s for s in shifts
+        if s.get("assignment") in ("early", "late")
+        and datetime.date.fromisoformat(s["date"]).weekday() in NO_DAY_SERVICE
+    ]
+    assert not bad, f"デイがない日に早番・遅番が入っている: {bad}"

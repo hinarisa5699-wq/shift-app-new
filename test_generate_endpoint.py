@@ -598,6 +598,9 @@ def test_early_and_am_visit_can_be_separated(tmp_path, monkeypatch):
     with flask_app.app_context():
         st = ShiftSettings.query.first()
         st.min_visit_am = 1
+        # デイがない日は早番を置かない（2026-11-20）ので、月曜をデイのある日にして確かめる
+        st.floor3_day_service_days = "0,1,2,3,4"
+        st.floor2_day_service_days = "0,1,2,3,4"
         db.session.commit()
 
     client = flask_app.test_client()

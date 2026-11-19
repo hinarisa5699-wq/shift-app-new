@@ -3583,6 +3583,7 @@ def _solve_care(
         #   依頼: 「早番・遅番の配置は絶対」。他のどの不足よりも優先して必ず埋める。
         all_slack_terms = []
         el_slack_terms = []
+        no_ds_over_heavy_terms = []
         visit_slack_terms = []
         nurse_slack_terms = []
         for d in range(num_days):
@@ -3600,6 +3601,11 @@ def _solve_care(
             # 非デイ曜日の人数(原則ちょうどN名)の過不足
             if d in slack_no_ds_over:
                 all_slack_terms.extend([slack_no_ds_over[d], slack_no_ds_short[d]])
+                # 2026-11-20 ユーザー依頼:「日曜はデイがない。訪問1人でいい」。
+                #   デイがない日の人数オーバーは一般の不足より重く避ける
+                #   （オンコール担当の出勤・出勤可能日などで増える分だけ許す）。
+                if d in no_service_day_indices:
+                    no_ds_over_heavy_terms.append(slack_no_ds_over[d])
         max_slack_terms_per_day = (
             8
             + 2
@@ -3652,8 +3658,15 @@ def _solve_care(
         backup_penalty = (
             sum(backup_work_terms) * _backup_weight if backup_work_terms else 0
         )
+        # デイがない日の人数オーバー: 一般の不足スラック合計より重く、
+        #   訪問・オンコール出勤・必須出勤（visit_slack_weight）よりは軽い。
+        no_ds_over_penalty = (
+            sum(no_ds_over_heavy_terms) * (visit_slack_weight // 2)
+            if no_ds_over_heavy_terms else 0
+        )
         model.minimize(
-            early_late_slack_penalty
+            no_ds_over_penalty
+            + early_late_slack_penalty
             + visit_slack_penalty
             + nurse_slack_penalty
             + required_day_penalty

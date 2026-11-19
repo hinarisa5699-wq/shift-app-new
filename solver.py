@@ -4605,8 +4605,28 @@ def _solve_cooking(
     #   1人編成フォールバックとして扱う（＝発動ペナルティを課し、その日の朝食状態に
     #   合う方だけ使う）。登録済みだからと 0 ペナルティにすると、2人で6-19を回す
     #   編成より安くなって1人勤務だらけになる。
+    # 2026-11-19 ユーザー依頼: 1人編成は朝6:30ではなく 7:00-15:00 で入る。
+    #   調理シフト種類に 7:00-15:00（調理として数える）が登録されていれば、
+    #   朝食の有無に関わらず1人編成はそれだけを使う（6:30-14:30・9-16 の1人編成は使わない）。
+    #   未登録なら従来どおり（6:30-14:30 / 9:00-16:00）。
+    fb_code_715 = next((c for c in cook_working
+                        if cook_time_ranges.get(c) == (7 * 60, 15 * 60)
+                        and any(cook_coverage.get(c, (0, 0, 0)))), None)
     if combo_patterns:
-        for _code, _kind in ((fb_code_bf, 'bf_on'), (fb_code_915, 'bf_off')):
+        if fb_code_715 is not None:
+            # 置換版などで既に1人編成として登録された 6:30-14:30 等は使用不可にする
+            for _idx in list(fb_combo_kind):
+                fb_combo_kind[_idx] = 'disabled'
+            # 組み合わせマスタに登録された 6:30-14:30 単独・9:00-16:00 単独も1人編成なので使わない
+            for _old in (fb_code_bf, fb_code_915):
+                if _old is not None and [_old] in combo_patterns:
+                    _oi = combo_patterns.index([_old])
+                    fb_combo_kind[_oi] = 'disabled'
+                    bf_on_variant_idx.discard(_oi)
+            _fb_singles = ((fb_code_715, 'any'),)
+        else:
+            _fb_singles = ((fb_code_bf, 'bf_on'), (fb_code_915, 'bf_off'))
+        for _code, _kind in _fb_singles:
             if _code is None:
                 continue
             _single = [_code]
@@ -4685,7 +4705,7 @@ def _solve_cooking(
                 if kind is not None:
                     # その日の朝食状態に合わない1人編成は使用不可
                     #   朝食なし日 → 6:30-14:30(bf_on)不可 / 朝食あり日 → 9-16(bf_off)不可
-                    if (kind == 'bf_on' and _bf_off_day) or (kind == 'bf_off' and not _bf_off_day):
+                    if kind == 'disabled' or (kind == 'bf_on' and _bf_off_day) or (kind == 'bf_off' and not _bf_off_day):
                         model.add(pv == 0)
                     else:
                         fb_by_day[d_idx] = pv  # 当日有効なフォールバック選択変数
@@ -5087,6 +5107,9 @@ def _solve_cooking(
     warnings_data = []
 
     _bf_off_map = _bf_off_replacement_map(cook_working, cook_time_ranges, cook_coverage)
+    # 1人編成の 7:00-15:00 は朝食なし日も 7:00 開始のまま（読み替えない）
+    if fb_code_715 is not None:
+        _bf_off_map.pop(fb_code_715, None)
     for d_idx, dt in enumerate(all_dates):
         date_str = dt.strftime("%Y-%m-%d")
         _bf_off = d_idx in no_breakfast_day_indices

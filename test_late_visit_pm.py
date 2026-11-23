@@ -189,3 +189,12 @@ def test_early_named_time_slot_counts_as_early():
         assert "late_unassigned" in types
     finally:
         register_care_time_slots(None)
+
+
+def test_exec_plan_with_early_counts_as_early():
+    """役員の予定に「早番」と書いた日は早番として数える（2026-11 依頼: 12/5 前垣茜）。"""
+    care = [_staff(1, False)]
+    day = "2026-08-04"
+    shifts = [{"staff_id": 1, "date": day, "assignment": "exec:早番 7:30-8:30"}]
+    re_warn = recompute_warnings_from_shifts(shifts, care, _settings(), YEAR, MONTH)
+    assert "early_unassigned" not in {w["warning_type"] for w in re_warn if w["date"] == day}

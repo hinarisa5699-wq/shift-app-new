@@ -2011,10 +2011,13 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
                     and it["assignment"] not in _VISIT_PM_SET)
         n_mid = sum(1 for it in items if it.get("bath_role") == "中")
         n_out = sum(1 for it in items if it.get("bath_role") == "外")
+        # 役員の予定（exec:〜）に「早番」「遅番」と書いた日も数える（2026-11 依頼: 12/5 前垣茜）
         n_early = sum(1 for it in items
-                      if it["assignment"] == "early" or it["assignment"] in _EARLY_SLOT_CODES)
+                      if it["assignment"] == "early" or it["assignment"] in _EARLY_SLOT_CODES
+                      or (str(it["assignment"]).startswith("exec:") and "早番" in it["assignment"]))
         n_late = sum(1 for it in items
-                     if it["assignment"] == "late" or it["assignment"] in _LATE_SLOT_CODES)
+                     if it["assignment"] == "late" or it["assignment"] in _LATE_SLOT_CODES
+                     or (str(it["assignment"]).startswith("exec:") and "遅番" in it["assignment"]))
         n_desk = sum(1 for it in items if it.get("counselor_desk_slots"))
 
         def warn(wt, msg):

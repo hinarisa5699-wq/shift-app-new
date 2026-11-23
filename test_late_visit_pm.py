@@ -172,3 +172,20 @@ def test_nurse_with_count_as_care_counts_in_care_headcount():
               {"staff_id": 9, "date": day, "assignment": "day_pattern2"}]
     re_warn = recompute_warnings_from_shifts(shifts, care, st, YEAR, MONTH)
     assert not [w for w in re_warn if w["date"] == day and w["warning_type"] == "understaffed_care"]
+
+
+def test_early_named_time_slot_counts_as_early():
+    """2026-11 依頼「12/5 早番 7:30-8:30 前垣茜」: 名前に早番が入った勤務時間の札は早番として数える。"""
+    from export import register_care_time_slots
+    register_care_time_slots([{"code": "wt_99", "label": "早番", "display_label": "早番 7:30-8:30",
+                               "covers_am": True, "covers_pm": False}])
+    try:
+        care = [_staff(1, False)]
+        day = "2026-08-04"
+        shifts = [{"staff_id": 1, "date": day, "assignment": "wt_99"}]
+        re_warn = recompute_warnings_from_shifts(shifts, care, _settings(), YEAR, MONTH)
+        types = {w["warning_type"] for w in re_warn if w["date"] == day}
+        assert "early_unassigned" not in types
+        assert "late_unassigned" in types
+    finally:
+        register_care_time_slots(None)

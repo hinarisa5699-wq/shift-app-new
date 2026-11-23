@@ -215,6 +215,10 @@ _CARE_WORK_SET = (
 #   register_care_time_slots() が毎回入れ替える。ここに入ったコードは
 #   介護の出勤枠として人数に数え、Excel/PDF にも時刻がそのまま出る。
 _CARE_TIME_SLOT_CODES: set = set()
+# 名前に「早番」「遅番」が入った勤務時間の札（2026-11 依頼: 12/5 早番 7:30-8:30 を前垣茜に）
+#   早番・遅番の配置チェックで、その日の早番・遅番として数える。
+_EARLY_SLOT_CODES: set = set()
+_LATE_SLOT_CODES: set = set()
 # 手入力の勤務時間セルの色（既定パターンと見分けが付くよう薄い緑にする）
 _CARE_TIME_SLOT_FILL = PatternFill(start_color="CCFBF1", end_color="CCFBF1", fill_type="solid")
 
@@ -243,6 +247,8 @@ def register_care_time_slots(slots):
             del _LABEL_TO_ASSIGNMENT[label]
 
     codes = set()
+    early_codes = set()
+    late_codes = set()
     for slot in (slots or []):
         code = (slot.get("code") or "").strip()
         label = (slot.get("display_label") or "").strip()
@@ -266,7 +272,16 @@ def register_care_time_slots(slots):
             _VISIT_AM_SET.add(code)
         if counts.get("visit_pm"):
             _VISIT_PM_SET.add(code)
+        _name = (slot.get("label") or label).split("（")[0]
+        if "早番" in _name:
+            early_codes.add(code)
+        if "遅番" in _name:
+            late_codes.add(code)
     _CARE_TIME_SLOT_CODES = codes
+    _EARLY_SLOT_CODES.clear()
+    _EARLY_SLOT_CODES.update(early_codes)
+    _LATE_SLOT_CODES.clear()
+    _LATE_SLOT_CODES.update(late_codes)
 
 
 _NURSE_PT_NAME_ALIASES = {"看護師", "PT", "理学療法士"}
@@ -1996,8 +2011,10 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
                     and it["assignment"] not in _VISIT_PM_SET)
         n_mid = sum(1 for it in items if it.get("bath_role") == "中")
         n_out = sum(1 for it in items if it.get("bath_role") == "外")
-        n_early = sum(1 for it in items if it["assignment"] == "early")
-        n_late = sum(1 for it in items if it["assignment"] == "late")
+        n_early = sum(1 for it in items
+                      if it["assignment"] == "early" or it["assignment"] in _EARLY_SLOT_CODES)
+        n_late = sum(1 for it in items
+                     if it["assignment"] == "late" or it["assignment"] in _LATE_SLOT_CODES)
         n_desk = sum(1 for it in items if it.get("counselor_desk_slots"))
 
         def warn(wt, msg):

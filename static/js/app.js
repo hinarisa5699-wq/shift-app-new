@@ -1549,8 +1549,28 @@ function renderWarnings(warnings) {
         return;
     }
 
-    let html = '<div class="bg-red-50 border-l-4 border-red-500 rounded-lg p-4">';
-    html += '<div class="flex items-start">';
+    // 警告は×で閉じられる（月ごとに閉じた状態を覚える）
+    const wKey = `shiftWarnClosed_${currentYear}_${currentMonth}`;
+    let closed = false;
+    try { closed = localStorage.getItem(wKey) === '1'; } catch (e) { closed = false; }
+    container.dataset.warnKey = wKey;
+    if (closed) {
+        container.innerHTML = '<div class="bg-red-50 border-l-4 border-red-500 rounded-lg px-4 py-2 flex items-center justify-between">'
+            + `<span class="text-red-800 font-bold">条件未達の警告 ${warnings.length}件（閉じています）</span>`
+            + '<button type="button" id="warnings-open-btn" class="text-sm text-red-700 underline hover:text-red-900">開く</button>'
+            + '</div>';
+        const ob = document.getElementById('warnings-open-btn');
+        if (ob) ob.addEventListener('click', () => {
+            try { localStorage.removeItem(wKey); } catch (e) {}
+            renderWarnings(warnings);
+        });
+        showElement('warnings-container');
+        return;
+    }
+
+    let html = '<div class="bg-red-50 border-l-4 border-red-500 rounded-lg p-4 relative">';
+    html += '<button type="button" id="warnings-close-btn" title="警告を閉じる" aria-label="警告を閉じる" class="absolute top-2 right-3 text-red-500 hover:text-red-800 text-2xl leading-none">&times;</button>';
+    html += '<div class="flex items-start pr-8">';
     html += '<div class="flex-shrink-0">';
     html += '<svg class="w-6 h-6 text-red-500 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">';
     html += '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/>';
@@ -1572,6 +1592,11 @@ function renderWarnings(warnings) {
     html += '</div>';
 
     container.innerHTML = html;
+    const cb = document.getElementById('warnings-close-btn');
+    if (cb) cb.addEventListener('click', () => {
+        try { localStorage.setItem(wKey, '1'); } catch (e) {}
+        renderWarnings(warnings);
+    });
     showElement('warnings-container');
 }
 

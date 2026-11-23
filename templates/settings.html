@@ -746,6 +746,21 @@
             </p>
         </div>
 
+        <!-- 日曜と同じ扱いの日（日付指定） -->
+        <div class="mb-8 p-6 bg-sky-50 rounded-lg border border-sky-200">
+            <label for="sunday_like_dates" class="block text-lg font-semibold text-gray-800 mb-2">
+                日曜と同じ扱いの日（日付指定）
+            </label>
+            <p class="text-gray-600 text-sm mb-3">
+                大みそかなど、平日でも<strong>日曜と同じ配置</strong>にする日を入れてください（デイなし・早番遅番なし・介護人数と訪問は日曜の設定どおり）。<br>
+                日付は「2026-12-31」の形で、複数あるときはカンマで区切ります。
+            </p>
+            <input type="text" id="sunday_like_dates" name="sunday_like_dates"
+                   value="{{ (settings.sunday_like_dates if settings and settings.sunday_like_dates else '')|replace(',', ', ') }}"
+                   placeholder="2026-12-31"
+                   class="w-full max-w-xl border border-gray-300 rounded-lg px-3 py-2 text-base focus:ring-2 focus:ring-sky-400 focus:border-sky-400">
+        </div>
+
         <!-- 調理スタッフ最低配置人数 -->
         <div class="mb-8 p-6 bg-amber-50 rounded-lg border border-amber-200">
             <label for="min_cooking_staff" class="block text-lg font-semibold text-gray-800 mb-2">

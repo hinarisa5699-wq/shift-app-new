@@ -415,6 +415,9 @@ class ShiftSettings(db.Model):
     closed_dates = db.Column(
         db.Text, default="", nullable=False
     )  # 休業日（日付指定・YYYY-MM-DD のカンマ区切り）。主に年末年始用。
+    sunday_like_dates = db.Column(
+        db.Text, default="", nullable=False
+    )  # 日曜と同じ扱いの日（日付指定・YYYY-MM-DD のカンマ区切り）。例: 12/31。
     # closed_days（曜日）と同じ扱いで、その日は介護・調理とも全員 off になる。
 
     # --- 階別の営業曜日 (0=月〜6=日, カンマ区切り) ---
@@ -605,6 +608,7 @@ class ShiftSettings(db.Model):
             "min_late_staff": self.min_late_staff if self.min_late_staff is not None else 1,
             "closed_days": self.closed_days,
             "closed_dates": self.closed_dates or "",
+            "sunday_like_dates": getattr(self, "sunday_like_dates", "") or "",
             "floor3_day_service_days": self.floor3_day_service_days or "",
             "floor3_visit_days": self.floor3_visit_days or "",
             "floor2_day_service_days": self.floor2_day_service_days or "",

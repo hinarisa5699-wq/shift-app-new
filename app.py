@@ -1009,6 +1009,8 @@ def _run_migrations(app):
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN day_service_operating_days VARCHAR(50) NOT NULL DEFAULT '0,1,3,4,5,6'")
     if "closed_dates" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN closed_dates TEXT NOT NULL DEFAULT ''")
+    if "sunday_like_dates" not in columns:
+        cursor.execute("ALTER TABLE shift_settings ADD COLUMN sunday_like_dates TEXT NOT NULL DEFAULT ''")
     if "min_cooking_staff" not in columns:
         cursor.execute("ALTER TABLE shift_settings ADD COLUMN min_cooking_staff INTEGER DEFAULT 1")
     if "min_early_staff" not in columns:
@@ -3510,6 +3512,16 @@ def create_app():
             except ValueError:
                 continue  # 不正な日付は黙って捨てる（フォームは date 入力なので通常起きない）
         s.closed_dates = ",".join(sorted(_closed_dates))
+        # 日曜と同じ扱いの日（日付指定）。カンマ・空白・改行区切りで受け付ける。
+        _sun_like = set()
+        for _raw in re.split(r"[\s,、]+", request.form.get("sunday_like_dates", "") or ""):
+            if not _raw:
+                continue
+            try:
+                _sun_like.add(datetime.strptime(_raw.replace("/", "-"), "%Y-%m-%d").date().isoformat())
+            except ValueError:
+                continue
+        s.sunday_like_dates = ",".join(sorted(_sun_like))
         # --- 階別の営業曜日（これが設定の正）---
         def _form_dows(field):
             return sorted({
@@ -4272,6 +4284,10 @@ def create_app():
             "min_late_staff": getattr(settings_obj, 'min_late_staff', 1) if getattr(settings_obj, 'min_late_staff', 1) is not None else 1,
             "closed_days": closed_days,
             "closed_dates": closed_dates,
+            "sunday_like_dates": [
+                x.strip() for x in (getattr(settings_obj, "sunday_like_dates", "") or "").split(",")
+                if x.strip()
+            ],
             "visit_operating_days": visit_days,
             "no_day_service_days": no_ds_days,
             "forced_work_dates": forced_work_dates,
@@ -5813,6 +5829,10 @@ def create_app():
         return {
             "closed_days": closed, "closed_dates": cdates, "visit_operating_days": vdays,
             "no_day_service_days": nods,
+            "sunday_like_dates": [
+                x.strip() for x in (getattr(so, "sunday_like_dates", "") or "").split(",")
+                if x.strip()
+            ],
             "min_day_service": getattr(so, "min_day_service", 0) or 0,
             "min_visit_am": getattr(so, "min_visit_am", 0) or 0,
             "min_visit_pm": getattr(so, "min_visit_pm", 0) or 0,

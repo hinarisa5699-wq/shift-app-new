@@ -1692,9 +1692,16 @@ def _solve_care_with_fallback(
     # デイ利用者がいない曜日（月=0..日=6）。その曜日はデイ必要人数を最小(1名)に緩和し、
     #   浮いた職員を訪問等へ回せるようにする（利用者ゼロなのに複数名要求→訪問不足の一因）。
     no_day_service_weekdays = set(settings.get("no_day_service_days", []) or [])
+    # 2026-11 ユーザー依頼「31は日と同じ扱い」: 日付指定で日曜と同じ扱いにする日
+    #   （デイなし・介護人数・訪問は日曜の設定で見る。職員の出勤できる曜日は実際の曜日のまま）
+    sunday_like_set = _parse_closed_dates(settings.get("sunday_like_dates"))
+
+    def _op_wd(_dt):
+        return 6 if _dt in sunday_like_set else _dt.weekday()
+
     no_service_day_indices = {
         d_idx for d_idx, _dt in enumerate(all_dates)
-        if _dt.weekday() in no_day_service_weekdays
+        if _op_wd(_dt) in no_day_service_weekdays
     }
     # 曜日ごとの介護配置人数（その日出勤する介護職員の総数・看護師/PTは除く）。
     #   条件設定「曜日ごとの介護配置人数」で 月〜日それぞれに 最低/最大 を指定できる。
@@ -1711,7 +1718,7 @@ def _solve_care_with_fallback(
     # 日ごとの (最低, 最大)。None は「その側の制限なし」。
     care_headcount_by_day = {}
     for _d_idx, _dt in enumerate(all_dates):
-        _wd = _dt.weekday()
+        _wd = _op_wd(_dt)
         _mn = care_min_by_weekday[_wd]
         _mx = care_max_by_weekday[_wd]
         if _mn is None and _mx is None and _d_idx in no_service_day_indices:
@@ -1842,6 +1849,7 @@ def _solve_care_with_fallback(
         off_request_set, min_day_service, min_visit_am, min_visit_pm,
         closed_days_set, visit_operating_days,
         closed_dates_set=closed_dates_set,
+        sunday_like_set=sunday_like_set,
         am_preferred_gender=am_preferred_gender,
         phone_duty_enabled=phone_duty_enabled,
         phone_duty_max_consecutive=phone_duty_max_consecutive,
@@ -1891,6 +1899,7 @@ def _solve_care_with_fallback(
         off_request_set, min_day_service, min_visit_am, min_visit_pm,
         closed_days_set, visit_operating_days,
         closed_dates_set=closed_dates_set,
+        sunday_like_set=sunday_like_set,
         am_preferred_gender=am_preferred_gender,
         phone_duty_enabled=phone_duty_enabled,
         phone_duty_max_consecutive=phone_duty_max_consecutive,
@@ -1941,6 +1950,7 @@ def _solve_care_with_fallback(
         off_request_set, min_day_service, min_visit_am, min_visit_pm,
         closed_days_set, visit_operating_days,
         closed_dates_set=closed_dates_set,
+        sunday_like_set=sunday_like_set,
         am_preferred_gender=am_preferred_gender,
         phone_duty_enabled=phone_duty_enabled,
         phone_duty_max_consecutive=phone_duty_max_consecutive,
@@ -2001,6 +2011,7 @@ def _solve_care_with_fallback(
         off_request_set, min_day_service, min_visit_am, min_visit_pm,
         closed_days_set, visit_operating_days,
         closed_dates_set=closed_dates_set,
+        sunday_like_set=sunday_like_set,
         am_preferred_gender=am_preferred_gender,
         phone_duty_enabled=phone_duty_enabled,
         phone_duty_max_consecutive=phone_duty_max_consecutive,
@@ -2076,6 +2087,7 @@ def _solve_care(
     min_day_service, min_visit_am, min_visit_pm,
     closed_days_set, visit_operating_days,
     closed_dates_set: set = None,
+    sunday_like_set: set = None,
     am_preferred_gender: str = "",
     phone_duty_enabled: bool = False,
     phone_duty_max_consecutive: int = 1,
@@ -2192,7 +2204,7 @@ def _solve_care(
     visit_day_indices = {
         d_idx for d_idx, dt in enumerate(all_dates)
         if d_idx not in closed_day_indices
-        and dt.weekday() in visit_operating_set
+        and (6 if dt in (sunday_like_set or ()) else dt.weekday()) in visit_operating_set
     }
 
     def _is_visit_day(d_idx):

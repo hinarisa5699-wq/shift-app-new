@@ -1955,6 +1955,13 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
     # 曜日ごとの介護配置人数（設定してあればこちらを優先して判定する）
     care_min_wd = list(settings.get("care_min_by_weekday") or [])
     care_max_wd = list(settings.get("care_max_by_weekday") or [])
+    # 日付指定で日曜と同じ扱いにする日（2026-11 依頼「31は日と同じ扱い」）
+    sunday_like = set()
+    for _x in (settings.get("sunday_like_dates") or []):
+        try:
+            sunday_like.add(_x if isinstance(_x, date) else date.fromisoformat(str(_x).strip()))
+        except ValueError:
+            pass
 
     nurse_pt_ids = {st["id"] for st in staff_list if _is_nurse_or_pt_staff(st)}
     counselor_qual_ids = _get_counselor_qual_ids_for_validation(settings)
@@ -1973,7 +1980,8 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
         # 訪問(午後)の札が付いた人（遅番＋午後訪問など）は午後デイにいない
         day_pm = sum(1 for it in items if it["assignment"] in _DAY_PM_SET and it["staff_id"] not in nurse_pt_ids
                      and (it.get("visit_slot") or "") != "pm")
-        is_visit_day = dt.weekday() in visit_days
+        op_wd = 6 if dt in sunday_like else dt.weekday()
+        is_visit_day = op_wd in visit_days
         v_am = sum(1 for it in items if it["assignment"] in _VISIT_AM_SET)
         # 早番は訪問に数えない（ユーザー依頼 2026-08:「早番が訪問でなくてもいい」）
         v_am += sum(1 for it in items
@@ -1998,7 +2006,7 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
             if it["staff_id"] not in nurse_pt_ids
             and it["assignment"] in _CARE_WORK_SET
         )
-        wd = dt.weekday()
+        wd = op_wd
         wd_min = care_min_wd[wd] if wd < len(care_min_wd) else None
         wd_max = care_max_wd[wd] if wd < len(care_max_wd) else None
         if wd_min is not None and care_work < wd_min:
@@ -2008,7 +2016,7 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
             warn("over_staffed_care",
                  f"介護職員: {care_work - wd_max}名超過（設定{wd_max}名／配置{care_work}名）")
 
-        if dt.weekday() in no_ds_days:
+        if op_wd in no_ds_days:
             # デイ利用者がいない曜日。曜日ごとの人数を設定していない場合だけ
             #   従来の「原則2名」で超過を見る。
             if no_ds_min > 0 and wd_min is None and wd_max is None:
@@ -2033,7 +2041,7 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
         if min_out > 0 and n_out < min_out:
             warn("bath_out_short", f"外介助 {min_out - n_out}名不足（必要{min_out}名・配置{n_out}名）")
         # デイがない日（日曜など）は早番・遅番を置かないので警告しない（solverと同じ）
-        _no_ds_today = dt.weekday() in no_ds_days
+        _no_ds_today = op_wd in no_ds_days
         if not _no_ds_today and min_early > 0 and n_early < min_early:
             warn("early_unassigned", f"早番(7:30-16:30): {min_early - n_early}名不足（早番未配置）")
         if not _no_ds_today and min_late > 0 and n_late < min_late:

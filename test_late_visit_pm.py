@@ -140,3 +140,19 @@ def test_no_early_late_warning_on_no_day_service_day():
     re_warn = recompute_warnings_from_shifts(
         [{"staff_id": 1, "date": mon, "assignment": "day_full"}], care, st, YEAR, MONTH)
     assert [w for w in re_warn if w["date"] == mon and w["warning_type"] == "early_unassigned"]
+
+
+def test_sunday_like_date_treated_as_sunday():
+    """2026-11 ユーザー依頼「31は日と同じ扱い」: 日付指定で日曜と同じ配置・警告にする。"""
+    care = [_staff(i, True) for i in range(1, 9)]
+    st = dict(_settings(), no_day_service_days=[6], visit_operating_days=[0, 4, 6],
+              care_min_by_weekday=[None] * 6 + [1], care_max_by_weekday=[None] * 6 + [1],
+              sunday_like_dates=["2026-08-06"])  # 木曜を日曜扱い
+    shifts, _ = generate_shift(YEAR, MONTH, care, [], [], st)
+    thu = [s for s in shifts if s["date"] == "2026-08-06" and s["assignment"] != "off"]
+    assert len(thu) == 1, thu
+    assert thu[0]["assignment"] not in ("early", "late")
+    re_warn = recompute_warnings_from_shifts(shifts, care, st, YEAR, MONTH)
+    assert not [w for w in re_warn if w["date"] == "2026-08-06"
+                and w["warning_type"] in ("early_unassigned", "late_unassigned",
+                                          "understaffed_day_am", "understaffed_day_pm")]

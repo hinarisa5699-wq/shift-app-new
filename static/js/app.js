@@ -458,6 +458,23 @@ function registerCustomLabels(data) {
             }
         }
     }
+    // 勤務時間マスタの札を人数集計（デイ午前/午後・訪問午前/午後）へ入れ直す。
+    //   ユーザー依頼 2026-11: デイ応援・カイテクの札もデイの人数に数える。
+    //   名前に「訪問」が入る札は訪問の人数に数える（判定はサーバー側 counts）。
+    if (data.care_counts) {
+        for (const code of (window.__careCountCodes || [])) {
+            DAY_AM_SET.delete(code); DAY_PM_SET.delete(code);
+            VISIT_AM_SET.delete(code); VISIT_PM_SET.delete(code);
+        }
+        window.__careCountCodes = Object.keys(data.care_counts);
+        for (const code of window.__careCountCodes) {
+            const c = data.care_counts[code] || {};
+            if (c.day_am) DAY_AM_SET.add(code);
+            if (c.day_pm) DAY_PM_SET.add(code);
+            if (c.visit_am) VISIT_AM_SET.add(code);
+            if (c.visit_pm) VISIT_PM_SET.add(code);
+        }
+    }
     if (data.care_labels) {
         const details = data.care_details || {};
         for (const code of Object.keys(data.care_labels)) {

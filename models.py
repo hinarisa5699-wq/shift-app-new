@@ -1186,6 +1186,52 @@ class WorkTimeSlot(db.Model):
         ends = [_hhmm_to_minutes(end) for _start, end in self.blocks]
         return any(m is not None and m > self.NOON_MINUTES for m in ends)
 
+    def _block_kinds(self):
+        """時間帯ごとに「デイ」「訪問」のどちらの人数に数えるかを決める。
+
+        ユーザー依頼 2026-11:「デイ応援の札もデイの人数に数えて」
+        「ステーションの人のハウスの訪問は、時間と訪問という札を付けて」。
+          - 名前に「訪問」が入り「デイ」が入らない札 … 訪問として数える
+          - 「訪問8:00-8:40/デイ応援13:30-15:30」のように / で分けた札は、
+            1つめの時間帯を前半の名前、2つめを後半の名前で判断する
+          - それ以外（名前に「訪問」が無い札）… 従来どおりデイとして数える
+        戻り値: [(開始, 終了, "day" または "visit"), ...]
+        """
+        name = (self.label or "").split("（")[0]
+        parts = name.split("/")
+        out = []
+        for i, (start, end) in enumerate(self.blocks):
+            part = parts[i] if len(self.blocks) > 1 and i < len(parts) else name
+            if "訪問" in part and "デイ" not in part:
+                kind = "visit"
+            else:
+                kind = "day"
+            out.append((start, end, kind))
+        return out
+
+    def _covers(self, kind, half):
+        res = False
+        for start, end, k in self._block_kinds():
+            if k != kind:
+                continue
+            if half == "am":
+                m = _hhmm_to_minutes(start)
+                res = res or (m is not None and m < self.NOON_MINUTES)
+            else:
+                m = _hhmm_to_minutes(end)
+                res = res or (m is not None and m > self.NOON_MINUTES)
+        return res
+
+    @property
+    def counts(self):
+        """人数集計での扱い（デイ午前/午後・訪問午前/午後）。"""
+        return {
+            "day_am": self._covers("day", "am"),
+            "day_pm": self._covers("day", "pm"),
+            "visit_am": self._covers("visit", "am"),
+            "visit_pm": self._covers("visit", "pm"),
+        }
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -1205,4 +1251,5 @@ class WorkTimeSlot(db.Model):
             "display_order": self.display_order or 0,
             "covers_am": self.covers_am,
             "covers_pm": self.covers_pm,
+            "counts": self.counts,
         }

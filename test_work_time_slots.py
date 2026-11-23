@@ -275,3 +275,41 @@ def test_split_can_be_turned_off_later(tmp_path, monkeypatch):
     assert after["is_split"] is False
     assert after["time_text"] == "7:30-13:00"
     assert after["work_minutes"] == 5 * 60   # 5時間30分 - 休憩30分
+
+
+def test_work_time_counts_day_or_visit_by_label(tmp_path, monkeypatch):
+    """札の名前で、デイの人数か訪問の人数かを分けて数える（ユーザー依頼 2026-11）。
+
+    「デイ応援・カイテクの札もデイの人数に数えて」
+    「ステーションの人のハウスの訪問は、時間と訪問という札を付けて」
+    """
+    flask_app = _make_app(tmp_path, monkeypatch)
+    _seed_one_care_staff(flask_app)
+    client = _as_admin(flask_app)
+
+    def add(label, s, e, s2="", e2=""):
+        r = client.post("/api/work-times", json={
+            "label": label, "start_time": s, "end_time": e,
+            "start_time2": s2, "end_time2": e2})
+        assert r.status_code == 201, r.get_json()
+        return r.get_json()["counts"]
+
+    # デイ応援は午後だけデイに数える
+    assert add("デイ応援13:30-16:00", "13:30", "16:00") == {
+        "day_am": False, "day_pm": True, "visit_am": False, "visit_pm": False}
+    # 終日のデイ応援は午前・午後ともデイ（カッコ内の「訪問」は注記なので無視）
+    assert add("デイ応援8:30-16:00（訪問10:00-10:40）", "08:30", "16:00") == {
+        "day_am": True, "day_pm": True, "visit_am": False, "visit_pm": False}
+    # 訪問だけの札はデイに数えず、訪問に数える
+    assert add("訪問8:30-9:00", "08:30", "09:00") == {
+        "day_am": False, "day_pm": False, "visit_am": True, "visit_pm": False}
+    # 「訪問/デイ」の中抜け札は前半を訪問、後半をデイとして数える
+    assert add("訪問8:00-8:40/デイ応援13:30-15:30", "08:00", "08:40", "13:30", "15:30") == {
+        "day_am": False, "day_pm": True, "visit_am": True, "visit_pm": False}
+    # 名前に「訪問」が無い従来の札はこれまでどおりデイとして数える
+    assert add("日曜", "07:30", "13:00", "17:00", "19:00") == {
+        "day_am": True, "day_pm": True, "visit_am": False, "visit_pm": False}
+
+    # カレンダーの画面データにも人数の扱いが載る
+    data = client.get(f"/api/shifts/{YEAR}/{MONTH}").get_json()
+    assert data["care_counts"], data.keys()

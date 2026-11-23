@@ -4841,6 +4841,10 @@ def create_app():
                 "care_details": {
                     slot["code"]: slot["detail_text"] for slot in care_time_slots
                 },
+                # 同じく人数集計での扱い（デイ午前/午後・訪問午前/午後）
+                "care_counts": {
+                    slot["code"]: slot.get("counts", {}) for slot in care_time_slots
+                },
             }
         )
 

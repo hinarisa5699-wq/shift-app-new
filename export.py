@@ -2032,9 +2032,11 @@ def recompute_warnings_from_shifts(shifts_data, staff_list, settings, year, mont
             warn("bath_mid_short", f"中介助 {min_mid - n_mid}名不足（必要{min_mid}名・配置{n_mid}名）")
         if min_out > 0 and n_out < min_out:
             warn("bath_out_short", f"外介助 {min_out - n_out}名不足（必要{min_out}名・配置{n_out}名）")
-        if min_early > 0 and n_early < min_early:
+        # デイがない日（日曜など）は早番・遅番を置かないので警告しない（solverと同じ）
+        _no_ds_today = dt.weekday() in no_ds_days
+        if not _no_ds_today and min_early > 0 and n_early < min_early:
             warn("early_unassigned", f"早番(7:30-16:30): {min_early - n_early}名不足（早番未配置）")
-        if min_late > 0 and n_late < min_late:
+        if not _no_ds_today and min_late > 0 and n_late < min_late:
             warn("late_unassigned", f"遅番(9:30-18:30): {min_late - n_late}名不足（遅番未配置）")
         if counselor_qual_ids and n_desk == 0:
             warn("counselor_unassigned", "相談員 未配置")

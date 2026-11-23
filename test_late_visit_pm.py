@@ -124,3 +124,19 @@ def test_full_day_visit_never_for_non_visitor():
     care = [_staff(i, False) for i in range(1, 9)]
     shifts, _ = generate_shift(YEAR, MONTH, care, [], [], _settings_am_pm())
     assert not [s for s in shifts if s["assignment"] == "visit_full"]
+
+
+def test_no_early_late_warning_on_no_day_service_day():
+    """2026-11 ユーザー依頼: 日曜（デイなし）は早番・遅番がいなくてよい。再計算でも警告しない。"""
+    care = [_staff(i, False) for i in range(1, 9)]
+    st = dict(_settings(), no_day_service_days=[6])
+    sun = "2026-08-02"  # 日曜
+    shifts = [{"staff_id": 1, "date": sun, "assignment": "day_full"}]
+    re_warn = recompute_warnings_from_shifts(shifts, care, st, YEAR, MONTH)
+    assert not [w for w in re_warn if w["date"] == sun
+                and w["warning_type"] in ("early_unassigned", "late_unassigned")]
+    # デイがある日は従来どおり警告する
+    mon = "2026-08-03"
+    re_warn = recompute_warnings_from_shifts(
+        [{"staff_id": 1, "date": mon, "assignment": "day_full"}], care, st, YEAR, MONTH)
+    assert [w for w in re_warn if w["date"] == mon and w["warning_type"] == "early_unassigned"]

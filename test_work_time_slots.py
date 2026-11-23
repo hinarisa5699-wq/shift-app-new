@@ -306,6 +306,9 @@ def test_work_time_counts_day_or_visit_by_label(tmp_path, monkeypatch):
     # 「訪問/デイ」の中抜け札は前半を訪問、後半をデイとして数える
     assert add("訪問8:00-8:40/デイ応援13:30-15:30", "08:00", "08:40", "13:30", "15:30") == {
         "day_am": False, "day_pm": True, "visit_am": True, "visit_pm": False}
+    # 送迎ドライバーだけの札はデイにも訪問にも数えない
+    assert add("送迎ドライバー", "08:30", "09:00") == {
+        "day_am": False, "day_pm": False, "visit_am": False, "visit_pm": False}
     # 名前に「訪問」が無い従来の札はこれまでどおりデイとして数える
     assert add("日曜", "07:30", "13:00", "17:00", "19:00") == {
         "day_am": True, "day_pm": True, "visit_am": False, "visit_pm": False}

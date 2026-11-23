@@ -1202,6 +1202,7 @@ class WorkTimeSlot(db.Model):
           - 名前に「訪問」が入り「デイ」が入らない札 … 訪問として数える
           - 「訪問8:00-8:40/デイ応援13:30-15:30」のように / で分けた札は、
             1つめの時間帯を前半の名前、2つめを後半の名前で判断する
+          - 名前に「送迎」「ドライバー」が入り「デイ」が入らない札 … どちらにも数えない
           - それ以外（名前に「訪問」が無い札）… 従来どおりデイとして数える
         戻り値: [(開始, 終了, "day" または "visit"), ...]
         """
@@ -1212,6 +1213,9 @@ class WorkTimeSlot(db.Model):
             part = parts[i] if len(self.blocks) > 1 and i < len(parts) else name
             if "訪問" in part and "デイ" not in part:
                 kind = "visit"
+            elif ("送迎" in part or "ドライバー" in part) and "デイ" not in part:
+                # 送迎ドライバーだけの札はデイ・訪問の人数に数えない（2026-11 依頼: 藤田さん送迎）
+                kind = "drive"
             else:
                 kind = "day"
             out.append((start, end, kind))

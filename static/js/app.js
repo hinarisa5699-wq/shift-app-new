@@ -2449,6 +2449,8 @@ function escapeHtml(text) {
 }
 
 function isNurseOrPtStaff(staff) {
+    // 看護師でも「介護人数に数える」にした人は数える（2026-11）
+    if (staff && staff.count_as_care) return false;
     // ドライバー・役員は介護の配置人数に数えない
     if (staff.job_category === 'driver' || isPlanOnlyStaff(staff)) return true;
     const qualificationCodes = new Set(staff.qualification_codes || []);

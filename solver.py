@@ -1115,6 +1115,7 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shif
         if _staff_has_any_qualification(
             s, codes=_NURSE_PT_QUAL_CODES, names=_NURSE_PT_QUAL_NAMES
         )
+        and not s.get("count_as_care")  # 介護人数に数える看護師（2026-11）
     }
     # 相談員資格（配置ルール由来のID + 資格コード/名称の両面で判定。看護師・リハは除外）
     counselor_qual_ids = _get_counselor_qualification_ids(
@@ -2258,6 +2259,8 @@ def _solve_care(
                 set(staff_by_id[s].get("qualification_ids", []))
             )
         }
+    # 看護師でも「介護人数に数える」にした人は介護人数に入れる（ユーザー依頼 2026-11）
+    nurse_pt_ids -= {s for s in staff_ids if staff_by_id[s].get("count_as_care")}
     non_nurse_pt_staff = [s for s in staff_ids if s not in nurse_pt_ids]
 
     # 看護師（資格コード"nurse"／名称"看護師"）を堅牢に特定。

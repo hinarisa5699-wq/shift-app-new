@@ -112,6 +112,9 @@ class Staff(db.Model):
     #   ユーザー依頼 2026-08:「前垣茜のみGoogleカレンダー連動して」。
     #   名前で判定せず「URLを入れた職員だけ」を取り込み対象にする（読み取り専用）。
     kiroku_import = db.Column(db.Boolean, default=False, nullable=False)
+    count_as_care = db.Column(db.Boolean, default=False, nullable=False)
+    # True = 看護師でも介護の配置人数（デイ人数・介護人数）に数える
+    #   （ユーザー依頼 2026-11:「大山さんいれて」）。看護師としての配置はそのまま。
     # True = アロハハウスアプリ（カイポケから同期した予定）の「担当」にこの職員の
     #   フルネームがある予定を、スケジュール欄に取り込む（ユーザー依頼 2026-10: 池田友子）。
 
@@ -197,6 +200,7 @@ class Staff(db.Model):
             "required_days": self.required_days or "",
             "public_holiday_count": self.public_holiday_count or 0,
             "job_category": self.job_category or "caregiver",
+            "count_as_care": bool(getattr(self, "count_as_care", False)),
             "role": self.role or "",
             "can_bath_assist": self.can_bath_assist or False,
             "work_start_time": self.work_start_time or "",

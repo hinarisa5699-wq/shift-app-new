@@ -1219,6 +1219,11 @@ def _run_migrations(app):
         cursor.execute(
             "ALTER TABLE staff ADD COLUMN google_ics_url VARCHAR(500) NOT NULL DEFAULT ''"
         )
+    # Staff: 看護師でも介護人数に数えるか（ユーザー依頼 2026-11）
+    if columns and "count_as_care" not in columns:
+        cursor.execute(
+            "ALTER TABLE staff ADD COLUMN count_as_care BOOLEAN NOT NULL DEFAULT 0"
+        )
     # Staff: アロハハウスアプリ（カイポケ同期）の予定を取り込むか（ユーザー依頼 2026-10）
     if columns and "kiroku_import" not in columns:
         cursor.execute(
@@ -2640,6 +2645,7 @@ def create_app():
                 request.form.get("google_ics_url", "")
             ),
             kiroku_import="kiroku_import" in request.form,
+            count_as_care="count_as_care" in request.form,
             car_commute="car_commute" in request.form,
             parking_slot=(request.form.get("parking_slot", "") or "").strip(),
             # 調理スタッフのみ新人/ベテランを保持（それ以外は未設定）
@@ -2760,6 +2766,7 @@ def create_app():
             fallback=(staff.google_ics_url or ""),
         )
         staff.kiroku_import = "kiroku_import" in request.form
+        staff.count_as_care = "count_as_care" in request.form
         staff.holiday_ng = "holiday_ng" in request.form
         staff.on_leave = "on_leave" in request.form
         staff.retired = "retired" in request.form
@@ -4232,6 +4239,7 @@ def create_app():
                 ],
                 "staff_group": s.staff_group,
                 "job_category": getattr(s, "job_category", "caregiver") or "caregiver",
+                "count_as_care": bool(getattr(s, "count_as_care", False)),
                 # 応援（人手が足りないときだけ入れる）
                 "backup_only": bool(getattr(s, "backup_only", False)),
                 "gender": s.gender,
@@ -4793,6 +4801,7 @@ def create_app():
                         "qualifications": staff_qual_names.get(st.id, []),
                         "qualification_codes": staff_qual_codes.get(st.id, []),
                         "job_category": getattr(st, "job_category", "caregiver") or "caregiver",
+                        "count_as_care": bool(getattr(st, "count_as_care", False)),
                         "car_commute": st.car_commute or False,
                         # 訪問に出られる職員か（手直し画面で訪問NGの人を弾くため）
                         "can_visit": bool(st.can_visit),
@@ -5522,6 +5531,7 @@ def create_app():
                 "qualifications": staff_qual_names.get(st.id, []),
                 "qualification_codes": staff_qual_codes.get(st.id, []),
                 "job_category": getattr(st, "job_category", "caregiver") or "caregiver",
+                "count_as_care": bool(getattr(st, "count_as_care", False)),
             }
             for st in staffs
         ]
@@ -5860,6 +5870,7 @@ def create_app():
              "qualification_codes": qc.get(s.id, []),
              "qualifications": qn.get(s.id, []),
              "job_category": getattr(s, "job_category", "caregiver") or "caregiver",
+             "count_as_care": bool(getattr(s, "count_as_care", False)),
              "public_holiday_target": _public_holiday_target(s, year, month),
              "public_holiday_min_off": _public_holiday_min_off(s, year, month),
              "public_holiday_warn": _public_holiday_is_warned(s)}

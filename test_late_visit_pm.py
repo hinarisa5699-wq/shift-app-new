@@ -156,3 +156,19 @@ def test_sunday_like_date_treated_as_sunday():
     assert not [w for w in re_warn if w["date"] == "2026-08-06"
                 and w["warning_type"] in ("early_unassigned", "late_unassigned",
                                           "understaffed_day_am", "understaffed_day_pm")]
+
+
+def test_nurse_with_count_as_care_counts_in_care_headcount():
+    """2026-11 ユーザー依頼「大山さんいれて」: 看護師でも介護人数に数える設定。"""
+    from export import _is_nurse_or_pt_staff
+    nurse = dict(_staff(9, False), qualification_codes=["nurse"], job_category="nurse_rehab")
+    assert _is_nurse_or_pt_staff(nurse)
+    assert not _is_nurse_or_pt_staff(dict(nurse, count_as_care=True))
+    care = [_staff(1, False), dict(nurse, count_as_care=True)]
+    st = dict(_settings(), care_min_by_weekday=[2] * 7, care_max_by_weekday=[None] * 7,
+              min_early_staff=0, min_late_staff=0)
+    day = "2026-08-04"
+    shifts = [{"staff_id": 1, "date": day, "assignment": "day_pattern1"},
+              {"staff_id": 9, "date": day, "assignment": "day_pattern2"}]
+    re_warn = recompute_warnings_from_shifts(shifts, care, st, YEAR, MONTH)
+    assert not [w for w in re_warn if w["date"] == day and w["warning_type"] == "understaffed_care"]

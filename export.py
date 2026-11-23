@@ -278,6 +278,9 @@ def _is_nurse_or_pt_staff(staff: dict) -> bool:
 
     ドライバーは送迎担当なので介護の配置人数に含めない（ユーザー依頼 2026-08）。
     """
+    # 看護師でも「介護人数に数える」にした人は数える（ユーザー依頼 2026-11）
+    if staff.get("count_as_care"):
+        return False
     if str(staff.get("job_category", "") or "") in (
             "nurse_rehab", "driver", "executive", "office"):
         return True

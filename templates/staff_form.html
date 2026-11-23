@@ -248,6 +248,17 @@
                 </div>
             </div>
 
+            <!-- 看護師でも介護人数に数える -->
+            <div class="mb-6">
+                <label class="flex items-center cursor-pointer">
+                    <input type="checkbox" name="count_as_care" value="1"
+                           {% if staff and staff.count_as_care %}checked{% endif %}
+                           class="w-5 h-5 text-teal-600 border-gray-300 rounded focus:ring-teal-400">
+                    <span class="ml-3 text-lg font-semibold text-gray-700">介護人数に数える（看護師でもデイの介護に入る人）</span>
+                </label>
+                <p class="text-gray-500 text-sm mt-1 ml-8">チェックすると、デイの人数・介護の配置人数にこの人も1人として数えます。看護師としての配置はそのままです。</p>
+            </div>
+
             <!-- カイポケの訪問予定（アロハハウスアプリ経由）を取り込む -->
             <div class="mb-6">
                 <label class="flex items-center cursor-pointer">

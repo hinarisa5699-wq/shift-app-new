@@ -198,3 +198,21 @@ def test_exec_plan_with_early_counts_as_early():
     shifts = [{"staff_id": 1, "date": day, "assignment": "exec:早番 7:30-8:30"}]
     re_warn = recompute_warnings_from_shifts(shifts, care, _settings(), YEAR, MONTH)
     assert "early_unassigned" not in {w["warning_type"] for w in re_warn if w["date"] == day}
+
+
+def test_driver_only_slot_not_counted_as_care():
+    """送迎ドライバーだけの札は介護人数にも数えない（2026-11 依頼: 藤田さん送迎）。"""
+    from export import register_care_time_slots
+    register_care_time_slots([{"code": "wt_98", "label": "送迎ドライバー",
+                               "display_label": "送迎ドライバー 8:30-9:00",
+                               "counts": {"day_am": False, "day_pm": False,
+                                          "visit_am": False, "visit_pm": False}}])
+    try:
+        care = [_staff(1, False)]
+        st = dict(_settings(), care_min_by_weekday=[None] * 7, care_max_by_weekday=[0] * 7)
+        day = "2026-08-04"
+        re_warn = recompute_warnings_from_shifts(
+            [{"staff_id": 1, "date": day, "assignment": "wt_98"}], care, st, YEAR, MONTH)
+        assert "over_staffed_care" not in {w["warning_type"] for w in re_warn if w["date"] == day}
+    finally:
+        register_care_time_slots(None)

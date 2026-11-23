@@ -258,12 +258,14 @@ def register_care_time_slots(slots):
         ASSIGNMENT_LABELS[code] = label
         ASSIGNMENT_FILL[code] = _CARE_TIME_SLOT_FILL
         _LABEL_TO_ASSIGNMENT[label] = code
-        _CARE_WORK_SET.add(code)
         # 名前に「訪問」が入る札は訪問の人数へ、それ以外はデイの人数へ（models.WorkTimeSlot.counts）
         counts = slot.get("counts") or {
             "day_am": slot.get("covers_am"), "day_pm": slot.get("covers_pm"),
             "visit_am": False, "visit_pm": False,
         }
+        # 送迎ドライバーだけの札（どこにも数えない札）は介護の人数にも入れない（2026-11）
+        if any(counts.values()):
+            _CARE_WORK_SET.add(code)
         if counts.get("day_am"):
             _DAY_AM_SET.add(code)
         if counts.get("day_pm"):

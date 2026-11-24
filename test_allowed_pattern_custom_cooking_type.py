@@ -23,16 +23,16 @@ def test_custom_cooking_type_is_kept(tmp_path, monkeypatch):
     with flask_app.app_context():
         # UI で追加した想定の種類（コードは自動採番なので静的セットに載らない）
         db.session.add(ShiftPattern(
-            code="cooking_12", staff_group="cooking", label="(9) 6:30-14:30",
+            code="cooking_77", staff_group="cooking", label="(9) 6:30-14:30",
             start_time="06:30", end_time="14:30", has_break=False, break_minutes=0,
             display_order=99, period="full", covers_am=True, covers_pm=True,
         ))
         db.session.commit()
 
         kept = app_module.normalize_allowed_pattern_codes(
-            ["cooking_4", "cooking_12"], "cooking"
+            ["cooking_4", "cooking_77"], "cooking"
         )
-        assert kept == ["cooking_4", "cooking_12"], kept
+        assert kept == ["cooking_4", "cooking_77"], kept
 
         # マスタに無いコードは従来どおり捨てる
         assert app_module.normalize_allowed_pattern_codes(

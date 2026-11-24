@@ -356,6 +356,34 @@ def _bf_off_replacement_map(cook_working, cook_time_ranges, cook_coverage=None):
     return out
 
 
+def _seven_start_replacement_map(cook_working, cook_time_ranges, cook_coverage=None):
+    """7時より前に始まる調理記号 → 同じ終了時刻で7:00開始の記号 の読み替えマップ。
+
+    ユーザー依頼（2026-11-24）:「調理は朝開始は全員7時から」。
+    6:00・6:30 開始の種類で組んだ結果も、出力では 7:00 開始の種類に置き換える
+    （④6:00-13:00 → 7:00-13:00、6:30-14:30 → 7:00-14:30 など）。
+    朝[6-8)の調理は7:00開始でも足りる扱い（_cook_coverage_from_ranges）なので人数は変わらない。
+    7:00開始で終了時刻が同じ種類が無い記号はそのまま（app 側で種類を用意する）。
+    """
+    ranges = cook_time_ranges or {}
+    coverage = cook_coverage or {}
+    seven = 7 * 60
+    by_end = {}
+    for c in cook_working:
+        r = ranges.get(c)
+        if not r or r[0] != seven:
+            continue
+        if coverage and sum(coverage.get(c, (1,))) == 0:
+            continue
+        by_end.setdefault(r[1], c)
+    out = {}
+    for c in cook_working:
+        r = ranges.get(c)
+        if r and r[0] < seven and r[1] in by_end:
+            out[c] = by_end[r[1]]
+    return out
+
+
 # 新人×ベテランの同行に必要な「勤務時間の重なり」の下限（分）。
 #   ユーザー指摘（2026-08）:「大平さんは新人なのに26日は佐藤さんと1時間しか
 #   重ならないので指導できない」。1時間程度の重なりは同行とみなさない。
@@ -5147,6 +5175,8 @@ def _solve_cooking(
     # 1人編成の 7:00-15:00 は朝食なし日も 7:00 開始のまま（読み替えない）
     if fb_code_715 is not None:
         _bf_off_map.pop(fb_code_715, None)
+    # 朝は全員7時開始（2026-11-24 依頼）。6時台開始は7:00開始の同じ終了時刻の種類へ読み替える
+    _seven_map = _seven_start_replacement_map(cook_working, cook_time_ranges, cook_coverage)
     for d_idx, dt in enumerate(all_dates):
         date_str = dt.strftime("%Y-%m-%d")
         _bf_off = d_idx in no_breakfast_day_indices
@@ -5156,6 +5186,7 @@ def _solve_cooking(
                     if a != "cook_off":
                         # 朝食なし日は 6時開始 → 8時開始へ読み替え（④6-13 → ②8-13 等）
                         out_a = _bf_off_map.get(a, a) if _bf_off else a
+                        out_a = _seven_map.get(out_a, out_a)
                         shifts_data.append({
                             "date": date_str,
                             "staff_id": s,

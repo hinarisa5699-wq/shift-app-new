@@ -220,6 +220,11 @@ _CARE_TIME_SLOT_CODES: set = set()
 _BREAK_LABEL_CODES = {"11:30": "A", "12:30": "B", "13:30": "C"}
 
 
+# 休憩の目安の説明（2026-11-24 ユーザー依頼「休憩ABCの説明もない 印刷したシフトにも説明いれて」）
+#   介護・看護のシフト表（Excel・PDF・画面）に同じ文言で出す。
+BREAK_LEGEND = "休憩の目安　A＝11:30〜12:30　B＝12:30〜13:30　C＝13:30〜14:30"
+
+
 def break_label(break_start):
     """休憩開始 → 表示用の文字（休憩A など）。決まった3つ以外は時刻で出す。"""
     if not break_start:
@@ -788,6 +793,8 @@ def _write_group_sheet(
     # --- タイトル行 ---
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_col)
     title_value = title_override or f"{year}年{month}月 シフト表（{title_label}）"
+    if not is_cook:
+        title_value = f"{title_value}　　{BREAK_LEGEND}"
     title_cell = ws.cell(row=1, column=1, value=title_value)
     title_cell.font = title_font
     title_cell.alignment = CENTER_ALIGN
@@ -1306,7 +1313,7 @@ def _pick_body_fs(pdf, staff_rows, summary_rows, name_w, date_w, row_h,
     return fs_min
 
 
-def _render_pdf_table(title, sel_dates, staff_rows, summary_rows, paper="A4"):
+def _render_pdf_table(title, sel_dates, staff_rows, summary_rows, paper="A4", note=""):
     """共通PDF描画（横・1ページ）。データ元は DB でも Excel でもよい。
     paper:        "A3"（介護）/ "A4"（調理）。Excel出力と同じ用紙に揃える。
     title:        タイトル文字列
@@ -1354,6 +1361,11 @@ def _render_pdf_table(title, sel_dates, staff_rows, summary_rows, paper="A4"):
     pdf.set_font(_PDF_FONT, "", title_fs)
     pdf.set_xy(MARGIN, MARGIN)
     pdf.cell(usable_w, TITLE_H, title, align="C")
+    # 休憩の目安など、タイトル帯の右端に小さく添える説明
+    if note:
+        pdf.set_font(_PDF_FONT, "", max(title_fs - 3.0, 8.0))
+        pdf.set_xy(MARGIN, MARGIN)
+        pdf.cell(usable_w, TITLE_H, note, align="R")
 
     def draw_cell(x, y, w, h, text, fs, *, fill=None, bold_color=None, align="C"):
         if fill:
@@ -1523,7 +1535,8 @@ def export_pdf(
     title = f"{year}年{month}月 シフト表（{group_label} {half_label}：{first_d}〜{last_d}日）"
     # 介護=A3横 / 調理=A4横（Excel出力と同じ用紙）
     return _render_pdf_table(title, sel, staff_rows, summary_rows,
-                             paper="A4" if group == "cooking" else "A3")
+                             paper="A4" if group == "cooking" else "A3",
+                             note="" if group == "cooking" else BREAK_LEGEND)
 
 
 # ---------------------------------------------------------------------------
@@ -1731,6 +1744,11 @@ def _render_pdf_individual_calendars(targets, dates, year, month, cell_for):
         pdf.set_xy(MARGIN, grid_bottom + 1.5)
         pdf.cell(usable_w, FOOTER_H - 1.5,
                  f"勤務日数: {work_days}日　休み: {off_days}日　（★=オンコール）", align="R")
+        # 休憩の目安（介護・看護の職員だけ。調理は休憩A〜Cを使わない）
+        if staff.get("department") != "cooking":
+            pdf.set_font(_PDF_FONT, "", 10.0)
+            pdf.set_xy(MARGIN, grid_bottom + 1.5)
+            pdf.cell(usable_w, FOOTER_H - 1.5, BREAK_LEGEND, align="L")
 
     buf = BytesIO()
     buf.write(bytes(pdf.output()))
@@ -1805,7 +1823,8 @@ def export_pdf_from_excel(file_bytes, group: str = "care", half: str = "first") 
     last_d = sel_cols[-1][2]
     title = f"{year}年{month}月 シフト表（{group_label} {half_label}：{first_d}〜{last_d}日）"
     buf = _render_pdf_table(title, sel_dates, staff_rows, summary_rows,
-                            paper="A4" if group == "cooking" else "A3")
+                            paper="A4" if group == "cooking" else "A3",
+                            note="" if group == "cooking" else BREAK_LEGEND)
     # 依頼文26: ファイル名に対象月を入れるため year/month も返す
     return buf, year, month
 

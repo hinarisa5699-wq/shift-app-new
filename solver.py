@@ -1035,7 +1035,8 @@ _BREAK_CANDIDATES = ["12:30", "13:30", "11:30", "13:00", "12:00", "14:00"]
 
 def limit_simultaneous_breaks(day_items, time_ranges=None,
                               max_at_once=_BREAK_MAX_AT_ONCE,
-                              latest_start=_BREAK_LATEST_START):
+                              latest_start=_BREAK_LATEST_START,
+                              care_nurse_ids=None):
     """1日分のシフトの休憩開始を、同時に休む人数が max_at_once 以下になるよう並べ直す。
 
     - 中介助(11:30)・看護短時間・兼務/訪問の固定休憩は動かさず、人数にだけ数える。
@@ -1048,18 +1049,23 @@ def limit_simultaneous_breaks(day_items, time_ranges=None,
     """
     ranges = time_ranges or ASSIGNMENT_TIME_RANGES
     latest = _to_minutes(latest_start)
-    # 調理と、看護（食事介助12:00-13:00通し・短時間）はフロアの人数に入れない
+    # 調理と、看護（食事介助12:00-13:00通し・短時間）はフロアの人数に入れない。
+    #   ただし「介護人数に数える」看護師（care_nurse_ids）は数える（休憩時刻は動かさない）。
+    care_nurse_ids = set(care_nurse_ids or ())
     items = [it for it in day_items
              if it.get("break_start")
              and not str(it.get("assignment", "")).startswith("cooking")
-             and it.get("assignment") != "nurse_short"
-             and it.get("meal_assist") != "12:00-13:00"]
+             and (it.get("staff_id") in care_nurse_ids
+                  or (it.get("assignment") != "nurse_short"
+                      and it.get("meal_assist") != "12:00-13:00"))]
     if len(items) <= max_at_once:
         return 0
 
     def fixed(it):
         return (it.get("bath_role") == "中"
-                or it.get("assignment") in _FIXED_BREAK)
+                or it.get("assignment") in _FIXED_BREAK
+                or it.get("assignment") == "nurse_short"
+                or it.get("meal_assist") == "12:00-13:00")
 
     placed = []   # (start_min, end_min)
 
@@ -1445,7 +1451,9 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shif
             if it["assignment"] in _FIXED_BREAK and not it.get("break_start"):
                 it["break_start"] = _FIXED_BREAK[it["assignment"]]
         # 休憩は2人ずつ・14時までに（2026-11-24 ユーザー依頼）
-        limit_simultaneous_breaks(day_items)
+        limit_simultaneous_breaks(
+            day_items,
+            care_nurse_ids={s["id"] for s in care_staff if s.get("count_as_care")})
 
     # 依頼文40-B: 中介助/外介助 連日回避の違反（連続出勤日で同じ役割）を警告
     if bath_alt_mode in ("soft", "hard") and bath_alt_violations > 0 and all_dates:

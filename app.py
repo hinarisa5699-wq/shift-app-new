@@ -5338,14 +5338,15 @@ def create_app():
         _brk_rows = GeneratedShift.query.filter(
             GeneratedShift.date >= first_day, GeneratedShift.date <= last_day
         ).all()
+        _care_nurse_ids = {s.id for s in Staff.query.filter_by(count_as_care=True).all()}
         _brk_by_day = {}
         for _r in _brk_rows:
             _brk_by_day.setdefault(_r.date, []).append(_r)
         for _rows in _brk_by_day.values():
             _items = [{"assignment": _r.assignment, "break_start": _r.break_start,
                        "bath_role": _r.bath_role, "meal_assist": _r.meal_assist,
-                       "_row": _r} for _r in _rows]
-            if limit_simultaneous_breaks(_items):
+                       "staff_id": _r.staff_id, "_row": _r} for _r in _rows]
+            if limit_simultaneous_breaks(_items, care_nurse_ids=_care_nurse_ids):
                 for _it in _items:
                     if _it["_row"].break_start != _it["break_start"]:
                         _it["_row"].break_start = _it["break_start"]

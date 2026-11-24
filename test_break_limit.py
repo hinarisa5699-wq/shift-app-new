@@ -38,3 +38,15 @@ def test_fixed_breaks_not_moved_and_meal_assist_respected():
 def test_cooking_ignored():
     items = [_it("cooking_3", "12:30")] * 3 + [_it("late", "12:30")]
     assert limit_simultaneous_breaks(items) == 0
+
+
+def test_care_counted_nurse_included():
+    items = [_it("day_pattern2", "13:00", meal_assist="12:00-13:00", staff_id=12),
+             _it("late", "12:30", staff_id=1), _it("day_pattern1", "12:30", staff_id=2)]
+    limit_simultaneous_breaks(items, care_nurse_ids={12})
+    assert items[0]["break_start"] == "13:00"
+    starts = [i["break_start"] for i in items]
+    for t in range(12 * 60, 15 * 60, 15):
+        on = sum(1 for s in starts
+                 if int(s[:2]) * 60 + int(s[3:]) <= t < int(s[:2]) * 60 + int(s[3:]) + 60)
+        assert on <= 2, starts

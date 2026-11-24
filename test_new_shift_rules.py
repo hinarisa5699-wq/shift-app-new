@@ -69,10 +69,16 @@ def test_standard_floor_team():
     for sid in outs:
         assert res[sid]["break_start"] == "12:30", "外介助は12:30休憩"
     assert res[7]["break_start"] == "13:00", "看護師は13:00休憩"
-    # 残りの介護職員(相談員含む)は12:30
+    # 残りの介護職員: 2026-11-24 依頼「休憩は2人ずつ」「14時までに行く」。
+    #   相談員は12:30のまま、ほかは同時2人までになるようにずらす（開始は14:00まで）。
     others = [s for s in range(1, 7) if s not in mids + outs]
     for sid in others:
-        assert res[sid]["break_start"] == "12:30", f"残り介護は12:30: {sid}"
+        assert res[sid]["break_start"] <= "14:00", f"14時までに休憩: {sid}"
+    floor = [res[s]["break_start"] for s in range(1, 7)]
+    for t in range(11 * 60, 15 * 60, 15):
+        on = sum(1 for b in floor
+                 if int(b[:2]) * 60 + int(b[3:]) <= t < int(b[:2]) * 60 + int(b[3:]) + 60)
+        assert on <= 2, (t, floor)
 
     # 変更4: 食事介助
     assert res[7]["meal_assist"] == "12:00-13:00", "看護師は通し食事介助"

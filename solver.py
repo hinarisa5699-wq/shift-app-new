@@ -1024,6 +1024,86 @@ def _assign_break_times(shifts_data, all_dates, fixed_break_by_staff=None):
 
 
 # ===========================================================================
+# 休憩の同時人数の上限（2026-11-24 ユーザー依頼）
+#   「休憩は2人ずつ」「フロアは1人いればいい」「休憩は14時までに行くように」。
+#   同じ時間に休憩に入る介護職員を2人までにし、開始は遅くとも14:00にする。
+# ===========================================================================
+_BREAK_MAX_AT_ONCE = 2
+_BREAK_LATEST_START = "14:00"
+_BREAK_CANDIDATES = ["12:30", "13:30", "11:30", "13:00", "12:00", "14:00"]
+
+
+def limit_simultaneous_breaks(day_items, time_ranges=None,
+                              max_at_once=_BREAK_MAX_AT_ONCE,
+                              latest_start=_BREAK_LATEST_START):
+    """1日分のシフトの休憩開始を、同時に休む人数が max_at_once 以下になるよう並べ直す。
+
+    - 中介助(11:30)・看護短時間・兼務/訪問の固定休憩は動かさず、人数にだけ数える。
+    - それ以外は今の時刻のまま入れられれば動かさない。入れられないときだけ
+      12:30 → 13:30 → 11:30 → 13:00 → 12:00 → 14:00 の順に空いている時刻へ移す。
+    - 勤務時間の外にはみ出す時刻、latest_start より遅い開始は使わない。
+    - 食事介助(12:00-12:30)の担当者はその時間に重なる休憩にしない。
+    - どこにも入れられない人は元の時刻のまま（勝手に消さない）。
+    戻り値: 休憩時刻を変えた件数
+    """
+    ranges = time_ranges or ASSIGNMENT_TIME_RANGES
+    latest = _to_minutes(latest_start)
+    # 調理と、看護（食事介助12:00-13:00通し・短時間）はフロアの人数に入れない
+    items = [it for it in day_items
+             if it.get("break_start")
+             and not str(it.get("assignment", "")).startswith("cooking")
+             and it.get("assignment") != "nurse_short"
+             and it.get("meal_assist") != "12:00-13:00"]
+    if len(items) <= max_at_once:
+        return 0
+
+    def fixed(it):
+        return (it.get("bath_role") == "中"
+                or it.get("assignment") in _FIXED_BREAK)
+
+    placed = []   # (start_min, end_min)
+
+    def fits(s):
+        for t in range(s, s + 60, 15):
+            if sum(1 for a, b in placed if a <= t < b) >= max_at_once:
+                return False
+        return True
+
+    changed = 0
+    for it in [i for i in items if fixed(i)]:
+        s = _to_minutes(it["break_start"])
+        placed.append((s, s + 60))
+    # 外介助・相談員は今の時刻(12:30)を優先して残し、ほかの人をずらす
+    def keep_first(i):
+        return 0 if (i.get("bath_role") == "外" or i.get("counselor_desk_slots")) else 1
+    for it in sorted([i for i in items if not fixed(i)],
+                     key=lambda i: (keep_first(i), _to_minutes(i["break_start"]))):
+        orig = it["break_start"]
+        span = ranges.get(it.get("assignment"), (0, 24 * 60))
+        meal = it.get("meal_assist") == "12:00-12:30"
+        choice = None
+        for cand in [orig] + [c for c in _BREAK_CANDIDATES if c != orig]:
+            s = _to_minutes(cand)
+            if cand != orig and s > latest:
+                continue
+            if s < span[0] or s + 60 > span[1]:
+                continue
+            if meal and s < 12 * 60 + 30 and s + 60 > 12 * 60:
+                continue
+            if fits(s):
+                choice = cand
+                break
+        if choice is None:
+            choice = orig
+        if choice != orig:
+            it["break_start"] = choice
+            changed += 1
+        s = _to_minutes(choice)
+        placed.append((s, s + 60))
+    return changed
+
+
+# ===========================================================================
 # 介護フロアの役割・休憩割当（後処理）— 2026年改定ルール
 # ===========================================================================
 # フルタイムで日中フロアに在籍する介護パターン（相談員・食事介助・休憩の対象）
@@ -1364,6 +1444,8 @@ def _assign_care_roles(shifts_data, care_staff, settings, all_dates, locked_shif
         for it in day_items:
             if it["assignment"] in _FIXED_BREAK and not it.get("break_start"):
                 it["break_start"] = _FIXED_BREAK[it["assignment"]]
+        # 休憩は2人ずつ・14時までに（2026-11-24 ユーザー依頼）
+        limit_simultaneous_breaks(day_items)
 
     # 依頼文40-B: 中介助/外介助 連日回避の違反（連続出勤日で同じ役割）を警告
     if bath_alt_mode in ("soft", "hard") and bath_alt_violations > 0 and all_dates:

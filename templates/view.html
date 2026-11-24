@@ -383,6 +383,14 @@ function visitSlotOf(data, dateStr, sid) {
     return row ? row.visit_slot : null;
 }
 
+// 休憩の目安（2026-11-24 ユーザー依頼: 11:30=A / 12:30=B / 13:30=C）
+const BREAK_CODES = {'11:30': 'A', '12:30': 'B', '13:30': 'C'};
+function breakLabelOf(data, dateStr, sid) {
+    const row = (data.shifts || []).find(x => x.date === dateStr && x.staff_id === sid);
+    if (!row || !row.break_start || String(row.assignment || '').indexOf('cooking') === 0) return '';
+    return '休憩' + (BREAK_CODES[row.break_start] || row.break_start);
+}
+
 // 予定も勤務も無い日（役員・事務）に出す印
 const PLAN_DASH = '<span class="text-gray-300">-</span>';
 
@@ -460,6 +468,8 @@ function cellHtml(data, sid, dateStr, assignment, visitSet, dow, withPlans) {
     } else if (slot) {
         extra += `<br><span class="text-blue-700 font-bold">訪問（${slot === 'am' ? '午前' : '午後'}）</span>`;
     }
+    const brk = breakLabelOf(data, dateStr, sid);
+    if (brk) extra += `<br><span class="text-amber-700 font-bold">${esc(brk)}</span>`;
     return `<span class="font-medium text-gray-800">${esc(label)}</span>${extra}${planHtml}`;
 }
 

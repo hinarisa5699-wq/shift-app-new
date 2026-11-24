@@ -21,7 +21,7 @@ def test_at_most_two_on_break_and_start_by_14():
             if h * 60 + m <= t < h * 60 + m + 60:
                 on += 1
         assert on <= 2, (t, starts)
-    assert all(s <= "14:00" for s in starts), starts
+    assert all(s in ("11:30", "12:30", "13:30") for s in starts), starts
 
 
 def test_fixed_breaks_not_moved_and_meal_assist_respected():
@@ -33,6 +33,7 @@ def test_fixed_breaks_not_moved_and_meal_assist_respected():
     assert items[0]["break_start"] == "11:30"
     assert items[1]["break_start"] == "12:30"
     assert items[2]["break_start"] not in ("11:30", "12:00")
+    assert items[2]["break_start"] in ("12:30", "13:30")
 
 
 def test_cooking_ignored():
@@ -72,3 +73,12 @@ def test_early_without_break_gets_one():
     items = [{"assignment": "early", "break_start": None}, _it("late", "12:30")]
     limit_simultaneous_breaks(items)
     assert items[0]["break_start"] == "11:30"
+
+
+def test_break_label_codes():
+    from export import break_label
+    assert break_label("11:30") == "休憩A"
+    assert break_label("12:30") == "休憩B"
+    assert break_label("13:30") == "休憩C"
+    assert break_label("13:00") == "休憩13:00"
+    assert break_label(None) == ""

@@ -215,6 +215,17 @@ _CARE_WORK_SET = (
 #   register_care_time_slots() が毎回入れ替える。ここに入ったコードは
 #   介護の出勤枠として人数に数え、Excel/PDF にも時刻がそのまま出る。
 _CARE_TIME_SLOT_CODES: set = set()
+
+# 休憩の目安の表示（2026-11-24 ユーザー依頼「休憩時間目安でシフトにのせる 11:30をA」）
+_BREAK_LABEL_CODES = {"11:30": "A", "12:30": "B", "13:30": "C"}
+
+
+def break_label(break_start):
+    """休憩開始 → 表示用の文字（休憩A など）。決まった3つ以外は時刻で出す。"""
+    if not break_start:
+        return ""
+    code = _BREAK_LABEL_CODES.get(break_start)
+    return f"休憩{code}" if code else f"休憩{break_start}"
 # 名前に「早番」「遅番」が入った勤務時間の札（2026-11 依頼: 12/5 早番 7:30-8:30 を前垣茜に）
 #   早番・遅番の配置チェックで、その日の早番・遅番として数える。
 _EARLY_SLOT_CODES: set = set()
@@ -564,7 +575,7 @@ def _assignment_label(code) -> str:
     return ASSIGNMENT_LABELS.get(code, "")
 
 
-def _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map):
+def _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map, break_map=None):
     """ケアスタッフ 1 セルの (assignment, 表示テキスト) を組み立てる。"""
     asgn = assignment_map.get(d_str, {}).get(sid, "")
     text = _assignment_label(asgn)
@@ -583,7 +594,10 @@ def _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map):
     if bath_role:
         text += f"\n{bath_role}介助"
 
-    # 休憩時間・食事介助ラベルは表示しない（要望により非表示）
+    # 休憩の目安（2026-11-24 依頼: A=11:30 / B=12:30 / C=13:30 で表示）
+    bl = break_label((break_map or {}).get(d_str, {}).get(sid))
+    if bl:
+        text += f"\n{bl}"
 
     # ③ 相談員事務スロット
     desk_slots = desk_slot_map.get(d_str, {}).get(sid)
@@ -737,6 +751,7 @@ def _write_group_sheet(
     fit_one_page=False,
     parking_map=None,
     title_override=None,
+    break_map=None,
 ):
     """1 グループ（介護 or 調理）を「縦＝職員名・横＝日付」で 1 シートに書き込む。
     fit_one_page=True のとき、印刷時に横もA4横1ページに収める（依頼文25・4分割向け）。
@@ -846,7 +861,7 @@ def _write_group_sheet(
                 asgn = assignment_map.get(d_str, {}).get(sid, "")
                 text = ASSIGNMENT_LABELS.get(asgn, "")
             else:
-                asgn, text = _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map)
+                asgn, text = _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map, break_map)
             if not text and _is_day_off_request(d_str, sid):
                 # 休みのセルのうち、本人が休み希望を出していた日は「希望休」と表示
                 text = "希望休"
@@ -1017,7 +1032,7 @@ def export_excel(
         summary_map=summary_map,
         phone_duty_map=phone_duty_map,
         desk_slot_map=desk_slot_map,
-        bath_map=bath_map,
+        bath_map=bath_map, break_map=break_map,
         warnings_data=warnings_data,
         is_cook=False,
         parking_map=parking_map,
@@ -1032,7 +1047,7 @@ def export_excel(
             summary_map=summary_map,
             phone_duty_map=phone_duty_map,
             desk_slot_map=desk_slot_map,
-            bath_map=bath_map,
+            bath_map=bath_map, break_map=break_map,
             warnings_data=warnings_data,
             is_cook=True,
             parking_map=parking_map,
@@ -1131,7 +1146,10 @@ def export_csv(
         bath_role = bath_map.get(d_str, {}).get(sid)
         if bath_role:
             parts.append(f"{bath_role}介助")
-        # 休憩時間・食事介助の時刻は表示しない（要望により非表示。Excel・画面と統一）
+        # 休憩の目安（A=11:30 / B=12:30 / C=13:30。Excel・画面と統一）
+        bl = break_label(break_map.get(d_str, {}).get(sid))
+        if bl:
+            parts.append(bl)
         desk_slots = desk_slot_map.get(d_str, {}).get(sid)
         if desk_slots:
             parts.append("相談（終日）" if set(desk_slots) >= {0, 1, 2, 3}
@@ -1456,7 +1474,7 @@ def export_pdf(
             asgn = assignment_map.get(d_str, {}).get(sid, "")
             text = ASSIGNMENT_LABELS.get(asgn, "")
         else:
-            asgn, text = _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map)
+            asgn, text = _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map, break_map)
         if not text and _is_day_off_request(d_str, sid):
             text = "希望休"
         text = _append_parking(text, parking_map, d_str, sid)
@@ -1561,7 +1579,7 @@ def export_pdf_individual(
             asgn = assignment_map.get(d_str, {}).get(sid, "")
             text = ASSIGNMENT_LABELS.get(asgn, "")
         else:
-            asgn, text = _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map)
+            asgn, text = _care_cell_text(d_str, sid, assignment_map, bath_map, desk_slot_map, _break_map)
         text = _append_parking(text, parking_map, d_str, sid)
         off_token = "cook_off" if is_cook else "off"
         working = asgn not in (off_token, "", "exec_off")
@@ -2148,7 +2166,7 @@ def export_excel_group_half(
         ws, gstaff, sel, year, month,
         assignment_map=assignment_map, summary_map=summary_map,
         phone_duty_map=phone_duty_map, desk_slot_map=desk_slot_map,
-        bath_map=bath_map, warnings_data=warnings_data, is_cook=is_cook,
+        bath_map=bath_map, break_map=break_map, warnings_data=warnings_data, is_cook=is_cook,
         fit_one_page=True, parking_map=_build_parking_map(shifts_data),
         title_override=title,
     )

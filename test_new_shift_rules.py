@@ -73,7 +73,7 @@ def test_standard_floor_team():
     #   相談員は12:30のまま、ほかは同時2人までになるようにずらす（開始は14:00まで）。
     others = [s for s in range(1, 7) if s not in mids + outs]
     for sid in others:
-        assert res[sid]["break_start"] <= "14:00", f"14時までに休憩: {sid}"
+        assert res[sid]["break_start"] <= "13:30", f"13:30までに休憩: {sid}"
     floor = [res[s]["break_start"] for s in range(1, 7)]
     for t in range(11 * 60, 15 * 60, 15):
         on = sum(1 for b in floor

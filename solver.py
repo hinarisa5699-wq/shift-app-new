@@ -1029,8 +1029,10 @@ def _assign_break_times(shifts_data, all_dates, fixed_break_by_staff=None):
 #   同じ時間に休憩に入る介護職員を2人までにし、開始は遅くとも14:00にする。
 # ===========================================================================
 _BREAK_MAX_AT_ONCE = 2
-_BREAK_LATEST_START = "14:00"
-_BREAK_CANDIDATES = ["12:30", "13:30", "11:30", "13:00", "12:00", "14:00"]
+# 2026-11-24 追加依頼: 休憩は A=11:30 / B=12:30 / C=13:30 の3つ（13:30までに入る）
+_BREAK_LATEST_START = "13:30"
+_BREAK_CANDIDATES = ["12:30", "13:30", "11:30"]
+BREAK_SLOT_CODES = {"11:30": "A", "12:30": "B", "13:30": "C"}
 
 
 def limit_simultaneous_breaks(day_items, time_ranges=None,
@@ -1096,12 +1098,14 @@ def limit_simultaneous_breaks(day_items, time_ranges=None,
         meal = it.get("meal_assist") == "12:00-12:30"
         choice = None
         if it.get("assignment") == "early":
-            order = ["11:30", "12:00", "12:30", "13:00", "13:30", "14:00"]
-        else:
+            order = ["11:30", "12:30", "13:30"]
+        elif orig in BREAK_SLOT_CODES:
             order = [orig] + [c for c in _BREAK_CANDIDATES if c != orig]
+        else:
+            order = list(_BREAK_CANDIDATES)
         for cand in order:
             s = _to_minutes(cand)
-            if cand != orig and s > latest:
+            if s > latest:
                 continue
             if s < span[0] or s + 60 > span[1]:
                 continue

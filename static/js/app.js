@@ -1164,6 +1164,7 @@ function renderCalendar(data, year, month) {
     const deskSlotMap = {};  // ③ {date: {staff_id: [slot_idx, ...]}}
     const bathMap = {};      // お風呂当番 {date: {staff_id: "中"/"外"}}
     const mealMap = {};      // 食事介助 {date: {staff_id: "12:00-13:00"}}
+    const breakMap = {};     // 休憩の目安 {date: {staff_id: "12:30"}}（2026-11-24 依頼）
     const visitMap = {};     // 訪問へ出る時間帯 {date: {staff_id: "am"/"pm"}}
     shifts.forEach(s => {
         if (!shiftMap[s.date]) shiftMap[s.date] = {};
@@ -1187,6 +1188,10 @@ function renderCalendar(data, year, month) {
         if (s.meal_assist) {
             if (!mealMap[s.date]) mealMap[s.date] = {};
             mealMap[s.date][s.staff_id] = s.meal_assist;
+        }
+        if (s.break_start && !String(s.assignment || '').startsWith('cooking')) {
+            if (!breakMap[s.date]) breakMap[s.date] = {};
+            breakMap[s.date][s.staff_id] = s.break_start;
         }
     });
 
@@ -1368,6 +1373,11 @@ function renderCalendar(data, year, month) {
         }
         const bathRole = bathMap[dateStr] && bathMap[dateStr][s.id];
         const bathDisplay = bathRole ? ` <span class="badge" style="background:#0ea5e9;color:#fff">${bathRole}介助</span>` : '';
+        // 休憩の目安（A=11:30 / B=12:30 / C=13:30）
+        const brk = breakMap[dateStr] && breakMap[dateStr][s.id];
+        const breakDisplay = brk
+            ? ` <span class="badge" title="休憩 ${brk}〜" style="background:#fef3c7;color:#92400e">休憩${BREAK_CODES[brk] || brk}</span>`
+            : '';
         const badge = info
             ? `<span class="badge ${info.badgeClass}"`
               + (info.title ? ` title="${info.title}"` : '')
@@ -1378,7 +1388,7 @@ function renderCalendar(data, year, month) {
         //   （早番と訪問（午前）を分けて動かせるようにするため）。
         // 訪問へ出る時間帯（明示指定）。元のシフト表示の下に付ける。
         const slot = visitMap[dateStr] && visitMap[dateStr][s.id];
-        if (slot === 'none') return `${badge}${bathDisplay}${phoneBadge}`
+        if (slot === 'none') return `${badge}${bathDisplay}${breakDisplay}${phoneBadge}`
                                   + `${parkingBadge(dateStr, s.id)}${deskLabel}`;
         const slotNote = slot
             ? `<br><span class="badge visit-chip" draggable="true" data-date="${dateStr}"`
@@ -1397,7 +1407,7 @@ function renderCalendar(data, year, month) {
             }
         }
         const visitNote = slotNote || autoVisitNote;
-        return `${badge}${bathDisplay}${phoneBadge}${parkingBadge(dateStr, s.id)}${visitNote}${deskLabel}`;
+        return `${badge}${bathDisplay}${breakDisplay}${phoneBadge}${parkingBadge(dateStr, s.id)}${visitNote}${deskLabel}`;
     }
 
     // 職員名セル（資格併記＋シフト固定トグル）
@@ -2447,6 +2457,9 @@ function escapeHtml(text) {
     div.appendChild(document.createTextNode(text));
     return div.innerHTML;
 }
+
+// 休憩の目安の記号（2026-11-24 ユーザー依頼: 11:30=A / 12:30=B / 13:30=C）
+const BREAK_CODES = {'11:30': 'A', '12:30': 'B', '13:30': 'C'};
 
 function isNurseOrPtStaff(staff) {
     // 看護師でも「介護人数に数える」にした人は数える（2026-11）

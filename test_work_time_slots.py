@@ -316,3 +316,40 @@ def test_work_time_counts_day_or_visit_by_label(tmp_path, monkeypatch):
     # カレンダーの画面データにも人数の扱いが載る
     data = client.get(f"/api/shifts/{YEAR}/{MONTH}").get_json()
     assert data["care_counts"], data.keys()
+
+
+def test_break_can_be_set_on_work_time_cell_and_is_kept(tmp_path, monkeypatch):
+    """勤務時間の札（ステーションの応援）にだけ休憩時刻を手で入れられ、並べ直しでも動かない。
+
+    2026-11-24 依頼「ステーションの休憩もデイの中の時だけだして」
+    """
+    flask_app = _make_app(tmp_path, monkeypatch)
+    staff_id = _seed_one_care_staff(flask_app)
+    client = _as_admin(flask_app)
+    slot = client.post("/api/work-times", json={
+        "start_time": "08:30", "end_time": "16:00", "label": "デイ応援"}).get_json()
+    d2 = "%d-%02d-02" % (YEAR, MONTH)
+    client.post("/api/shift/cells", json={"year": YEAR, "month": MONTH, "changes": [
+        {"date": d2, "staff_id": staff_id, "assignment": slot["code"]}]})
+
+    res = client.post("/api/shift/cells", json={"year": YEAR, "month": MONTH, "changes": [
+        {"date": d2, "staff_id": staff_id, "break_start": "11:30"}]})
+    assert res.get_json()["applied"] == 1
+    # 何も変えない保存（並べ直しが走る）でも消えない・動かない
+    client.post("/api/shift/cells", json={"year": YEAR, "month": MONTH, "changes": []})
+    data = client.get("/api/shifts/%d/%d" % (YEAR, MONTH)).get_json()
+    row = [s for s in data["shifts"] if s["date"] == d2 and s["staff_id"] == staff_id][0]
+    assert row["break_start"] == "11:30"
+
+    # 固定パターン（day_pattern1）のセルには入れられない
+    d1 = "%d-%02d-01" % (YEAR, MONTH)
+    res = client.post("/api/shift/cells", json={"year": YEAR, "month": MONTH, "changes": [
+        {"date": d1, "staff_id": staff_id, "break_start": "11:30"}]})
+    assert res.get_json()["applied"] == 0
+
+    # "" で外せる
+    client.post("/api/shift/cells", json={"year": YEAR, "month": MONTH, "changes": [
+        {"date": d2, "staff_id": staff_id, "break_start": ""}]})
+    data = client.get("/api/shifts/%d/%d" % (YEAR, MONTH)).get_json()
+    row = [s for s in data["shifts"] if s["date"] == d2 and s["staff_id"] == staff_id][0]
+    assert not row["break_start"]

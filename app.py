@@ -5244,6 +5244,21 @@ def create_app():
             code = (ch.get("assignment") or "").strip()
             row = by_key.get((sid, d))
 
+            # 休憩の時刻だけの変更（2026-11-24 依頼: ステーションの人がデイの中で休む日を表に出す）
+            #   勤務時間の札（wt_）の人だけ。"" で休憩を外す。
+            if "break_start" in ch and "assignment" not in ch:
+                if row is None or not str(row.assignment or "").startswith("wt_"):
+                    continue
+                _b = str(ch.get("break_start") or "").strip()
+                if _b and not re.fullmatch(r"\d{1,2}:\d{2}", _b):
+                    continue
+                if _b:
+                    _h, _m = _b.split(":")
+                    _b = f"{int(_h):02d}:{_m}"
+                row.break_start = _b or None
+                applied += 1
+                continue
+
             # 訪問へ出る時間帯だけの変更（シフト本体は変えない）
             #   ※ assignment が入っている変更は本体の変更として扱う。
             #     画面からは assignment="" (=休み) と visit_slot を一緒に送るため、
@@ -5343,9 +5358,11 @@ def create_app():
         for _r in _brk_rows:
             _brk_by_day.setdefault(_r.date, []).append(_r)
         for _rows in _brk_by_day.values():
+            # 勤務時間の札（ステーションの応援など）の休憩は手で入れた時刻のまま動かさない
             _items = [{"assignment": _r.assignment, "break_start": _r.break_start,
                        "bath_role": _r.bath_role, "meal_assist": _r.meal_assist,
-                       "staff_id": _r.staff_id, "_row": _r} for _r in _rows]
+                       "staff_id": _r.staff_id, "_row": _r} for _r in _rows
+                      if not str(_r.assignment or "").startswith("wt_")]
             if limit_simultaneous_breaks(_items, care_nurse_ids=_care_nurse_ids):
                 for _it in _items:
                     if _it["_row"].break_start != _it["break_start"]:

@@ -1052,13 +1052,17 @@ def limit_simultaneous_breaks(day_items, time_ranges=None,
     # 調理と、看護（食事介助12:00-13:00通し・短時間）はフロアの人数に入れない。
     #   ただし「介護人数に数える」看護師（care_nurse_ids）は数える（休憩時刻は動かさない）。
     care_nurse_ids = set(care_nurse_ids or ())
+    # 早番は休憩が付いていなくても対象にする（早番も1時間休憩を取る）
+    for it in day_items:
+        if it.get("assignment") == "early" and not it.get("break_start"):
+            it["break_start"] = "12:30"
     items = [it for it in day_items
              if it.get("break_start")
              and not str(it.get("assignment", "")).startswith("cooking")
              and (it.get("staff_id") in care_nurse_ids
                   or (it.get("assignment") != "nurse_short"
                       and it.get("meal_assist") != "12:00-13:00"))]
-    if len(items) <= max_at_once:
+    if not items:
         return 0
 
     def fixed(it):
@@ -1079,16 +1083,23 @@ def limit_simultaneous_breaks(day_items, time_ranges=None,
     for it in [i for i in items if fixed(i)]:
         s = _to_minutes(it["break_start"])
         placed.append((s, s + 60))
+    # 早番は一番に休憩（2026-11-24 ユーザー依頼「早番1番で休憩」）→ 11:30 から早い順に入れる。
     # 外介助・相談員は今の時刻(12:30)を優先して残し、ほかの人をずらす
     def keep_first(i):
-        return 0 if (i.get("bath_role") == "外" or i.get("counselor_desk_slots")) else 1
+        if i.get("assignment") == "early":
+            return 0
+        return 1 if (i.get("bath_role") == "外" or i.get("counselor_desk_slots")) else 2
     for it in sorted([i for i in items if not fixed(i)],
                      key=lambda i: (keep_first(i), _to_minutes(i["break_start"]))):
         orig = it["break_start"]
         span = ranges.get(it.get("assignment"), (0, 24 * 60))
         meal = it.get("meal_assist") == "12:00-12:30"
         choice = None
-        for cand in [orig] + [c for c in _BREAK_CANDIDATES if c != orig]:
+        if it.get("assignment") == "early":
+            order = ["11:30", "12:00", "12:30", "13:00", "13:30", "14:00"]
+        else:
+            order = [orig] + [c for c in _BREAK_CANDIDATES if c != orig]
+        for cand in order:
             s = _to_minutes(cand)
             if cand != orig and s > latest:
                 continue

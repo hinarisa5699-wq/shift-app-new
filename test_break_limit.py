@@ -50,3 +50,25 @@ def test_care_counted_nurse_included():
         on = sum(1 for s in starts
                  if int(s[:2]) * 60 + int(s[3:]) <= t < int(s[:2]) * 60 + int(s[3:]) + 60)
         assert on <= 2, starts
+
+
+def test_early_takes_break_first():
+    """2026-11-24 依頼「早番1番で休憩」。"""
+    items = [_it("late", "12:30"), _it("early", "12:30"), _it("day_pattern1", "12:30")]
+    limit_simultaneous_breaks(items)
+    assert items[1]["break_start"] == "11:30"
+    # 中介助2人が11:30なら、早番は重ならない一番早い時刻
+    items = [_it("day_pattern1", "11:30", bath_role="中"), _it("late", "11:30", bath_role="中"),
+             _it("early", "12:30"), _it("day_pattern1", "12:30")]
+    limit_simultaneous_breaks(items)
+    assert items[2]["break_start"] == "12:30"
+    # 食事介助(12:00-12:30)の早番は12:30
+    items = [_it("early", "12:30", meal_assist="12:00-12:30"), _it("late", "12:30")]
+    limit_simultaneous_breaks(items)
+    assert items[0]["break_start"] == "12:30"
+
+
+def test_early_without_break_gets_one():
+    items = [{"assignment": "early", "break_start": None}, _it("late", "12:30")]
+    limit_simultaneous_breaks(items)
+    assert items[0]["break_start"] == "11:30"

@@ -1642,10 +1642,7 @@ function importGoogleCalendar() {
         .then(res => res.json().then(j => ({ ok: res.ok, j: j })))
         .then(({ ok, j }) => {
             if (!ok) throw new Error(j.error || '取り込めませんでした。');
-            const done = (j.results || []).map(x => `${x.name}さん ${x.imported}件`
-                + (x.kiroku ? `（うちカイポケ ${x.kiroku}件）` : '')
-                + (x.private ? `（うち私用 ${x.private}件）` : ''));
-            showGcalMessage(`${month}月の予定を取り込みました：` + done.join(' / '), true);
+            showGcalMessage(importDiffMessage(month, j), true);
             loadShifts(year, month);
         })
         .catch(err => showGcalMessage(err.message, false))
@@ -2644,4 +2641,20 @@ function saveRequestDeadline() {
 
 function clearRequestDeadline() {
     putRequestDeadline('');
+}
+
+
+// 予定の取り込み結果（2026-11-24 依頼: 変わったところと新規だけ反映）を文にする
+function importDiffMessage(month, j) {
+    const parts = [];
+    (j.results || []).forEach(x => {
+        const d = [];
+        if (x.added) d.push(`新規${x.added}件`);
+        if (x.updated) d.push(`変更${x.updated}件`);
+        if (x.removed) d.push(`削除${x.removed}件`);
+        if (d.length) parts.push(`${x.name}さん ` + d.join('・'));
+    });
+    return parts.length
+        ? `${month}月の予定を取り込みました（変わったところだけ）：` + parts.join(' / ')
+        : `${month}月の予定に変わったところはありませんでした。`;
 }

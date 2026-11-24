@@ -518,11 +518,88 @@ def _normalize_plan_time(raw) -> str:
     return "{:02d}:{:02d}".format(hour, minute)
 
 
+def _sync_imported_plans(staff, first_day, last_day, source, new_rows):
+    """取り込んだ予定を、その月の取り込み済み(source)と見比べて差分だけ反映する。
+
+    ユーザー依頼（2026-11-24）「予定の取込は毎回全件やらないでいい 変わったところと新規のみでいい」。
+    - 同じ内容（日付・開始・終了・件名）の行はそのまま残す（触らない）
+    - 同じ予定ID（日付＋UID）で内容が変わった行は書き換える（＝変更）
+    - 取り込み元から消えた行だけ消す（＝削除）、新しい行だけ足す（＝新規）
+    手入力など別の source の行には触らない（commit は呼び出し側）。
+    new_rows: [{"date": date, "start_time", "end_time", "title", "uid"}, ...]（1日の上限は適用済み）
+    戻り値: {"added", "updated", "removed", "unchanged"}
+    """
+    existing = StaffPlan.query.filter(
+        StaffPlan.staff_id == staff.id,
+        StaffPlan.date >= first_day,
+        StaffPlan.date <= last_day,
+        StaffPlan.source == source,
+    ).all()
+
+    def ckey(d, st, et, ti):
+        return (d, st or "", et or "", ti or "")
+
+    unmatched = {}
+    for r in existing:
+        unmatched.setdefault(ckey(r.date, r.start_time, r.end_time, r.title), []).append(r)
+
+    order_by_day = {}
+    pending = []
+    unchanged = 0
+    for row in new_rows:
+        n = order_by_day.get(row["date"], 0)
+        order_by_day[row["date"]] = n + 1
+        k = ckey(row["date"], row["start_time"], row["end_time"], row["title"])
+        lst = unmatched.get(k)
+        if lst:
+            r = lst.pop(0)
+            if r.display_order != n:
+                r.display_order = n
+            unchanged += 1
+        else:
+            pending.append((n, row))
+
+    leftovers = [r for lst in unmatched.values() for r in lst]
+    by_uid = {}
+    for r in leftovers:
+        if r.external_uid:
+            by_uid.setdefault((r.date, r.external_uid), []).append(r)
+
+    added = updated = 0
+    used = set()
+    for n, row in pending:
+        uid = (row.get("uid") or "")[:200]
+        cand = by_uid.get((row["date"], uid)) if uid else None
+        if cand:
+            r = cand.pop(0)
+            used.add(r.id)
+            r.start_time = row["start_time"]
+            r.end_time = row["end_time"]
+            r.title = row["title"]
+            r.display_order = n
+            updated += 1
+        else:
+            db.session.add(StaffPlan(
+                staff_id=staff.id, date=row["date"],
+                start_time=row["start_time"], end_time=row["end_time"],
+                title=row["title"], display_order=n,
+                source=source, external_uid=uid,
+            ))
+            added += 1
+
+    removed = 0
+    for r in leftovers:
+        if r.id not in used:
+            db.session.delete(r)
+            removed += 1
+    return {"added": added, "updated": updated, "removed": removed, "unchanged": unchanged}
+
+
 def _import_google_plans(staff, year, month):
     """1人ぶんのGoogleカレンダーを対象月に取り込む（commit は呼び出し側）。
 
-    その月の取り込み済み(source="google")を消してから入れ直すので、
-    何度実行しても増えない。手入力(source="manual")には触らない。
+    取り込み済み(source="google")と見比べて、新規・変更・削除だけ反映する
+    （何度実行しても増えない）。手入力(source="manual")には触らない。
     URL未登録・取得失敗は gcal.GoogleCalendarError を投げる。
     """
     url = (getattr(staff, "google_ics_url", "") or "").strip()
@@ -535,33 +612,24 @@ def _import_google_plans(staff, year, month):
     last_day = date(year, month, calendar.monthrange(year, month)[1])
     rows = gcal.import_month(url, first_day, last_day)
 
-    StaffPlan.query.filter(
-        StaffPlan.staff_id == staff.id,
-        StaffPlan.date >= first_day,
-        StaffPlan.date <= last_day,
-        StaffPlan.source == "google",
-    ).delete(synchronize_session=False)
-
     per_day = {}
     added = 0
     skipped = 0
+    keep = []
     for row in rows:
         n = per_day.get(row["date"], 0)
         if n >= PLAN_MAX_PER_DAY:
             skipped += 1          # 1日の上限を超えるぶんは入れない
             continue
         per_day[row["date"]] = n + 1
-        db.session.add(StaffPlan(
-            staff_id=staff.id, date=row["date"],
-            start_time=row["start_time"], end_time=row["end_time"],
-            title=row["title"], display_order=n,
-            source="google", external_uid=(row.get("uid") or "")[:200],
-        ))
+        keep.append(row)
         added += 1
+    diff = _sync_imported_plans(staff, first_day, last_day, "google", keep)
 
     return {
         "imported": added,
         "skipped": skipped,
+        "diff": diff,
         "private": sum(1 for r in rows if r["title"] == gcal.PRIVATE_TITLE),
     }
 
@@ -576,19 +644,14 @@ def _kiroku_connection():
 def _import_kiroku_plans(staff, year, month, rows):
     """アロハハウスアプリの予定（その月の全行 rows）から1人ぶんを取り込む。
 
-    その月の取り込み済み(source="kiroku")を消してから入れ直すので、何度実行しても
-    増えない。手入力・Googleカレンダーの行には触らない（commit は呼び出し側）。
+    取り込み済み(source="kiroku")と見比べて、新規・変更・削除だけ反映する（何度実行しても
+    増えない）。手入力・Googleカレンダーの行には触らない（commit は呼び出し側）。
     """
     first_day = date(year, month, 1)
     last_day = date(year, month, calendar.monthrange(year, month)[1])
-    StaffPlan.query.filter(
-        StaffPlan.staff_id == staff.id,
-        StaffPlan.date >= first_day,
-        StaffPlan.date <= last_day,
-        StaffPlan.source == "kiroku",
-    ).delete(synchronize_session=False)
 
     per_day = {}
+    keep = []
     added = 0
     skipped = 0
     for row in kiroku.plans_for_staff(rows, staff.name):
@@ -600,14 +663,11 @@ def _import_kiroku_plans(staff, year, month, rows):
             skipped += 1
             continue
         per_day[d] = n + 1
-        db.session.add(StaffPlan(
-            staff_id=staff.id, date=d,
-            start_time=row["start_time"], end_time=row["end_time"],
-            title=row["title"], display_order=n,
-            source="kiroku", external_uid=row["uid"][:200],
-        ))
+        keep.append({"date": d, "start_time": row["start_time"], "end_time": row["end_time"],
+                     "title": row["title"], "uid": row["uid"]})
         added += 1
-    return {"imported": added, "skipped": skipped}
+    diff = _sync_imported_plans(staff, first_day, last_day, "kiroku", keep)
+    return {"imported": added, "skipped": skipped, "diff": diff}
 
 
 def _normalize_kiroku_url(raw, fallback=""):
@@ -5123,12 +5183,20 @@ def create_app():
 
         results = []
         for staff in targets:
-            res = {"imported": 0, "skipped": 0, "private": 0, "kiroku": 0}
+            res = {"imported": 0, "skipped": 0, "private": 0, "kiroku": 0,
+                   "added": 0, "updated": 0, "removed": 0}
+
+            def _add_diff(d):
+                for _k in ("added", "updated", "removed"):
+                    res[_k] += (d or {}).get(_k, 0)
             try:
                 if (getattr(staff, "google_ics_url", "") or "").strip():
-                    res.update(_import_google_plans(staff, year, month))
+                    g = _import_google_plans(staff, year, month)
+                    _add_diff(g.pop("diff", None))
+                    res.update(g)
                 if kiroku_rows is not None and getattr(staff, "kiroku_import", False):
                     k = _import_kiroku_plans(staff, year, month, kiroku_rows)
+                    _add_diff(k.get("diff"))
                     res["kiroku"] = k["imported"]
                     res["imported"] += k["imported"]
                     res["skipped"] += k["skipped"]

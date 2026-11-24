@@ -722,10 +722,17 @@ async function importGoogleCalendar() {
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || '取り込めませんでした');
         await load();
-        const done = (j.results || []).map(x => `${x.name}さん ${x.imported}件`
-            + (x.kiroku ? `（うちカイポケ ${x.kiroku}件）` : '')
-            + (x.private ? `（うち私用 ${x.private}件）` : ''));
-        showGcalMsg(`${state.month}月の予定を取り込みました：` + done.join(' / '), true);
+        const parts = [];
+        (j.results || []).forEach(x => {
+            const d = [];
+            if (x.added) d.push(`新規${x.added}件`);
+            if (x.updated) d.push(`変更${x.updated}件`);
+            if (x.removed) d.push(`削除${x.removed}件`);
+            if (d.length) parts.push(`${x.name}さん ` + d.join('・'));
+        });
+        showGcalMsg(parts.length
+            ? `${state.month}月の予定を取り込みました（変わったところだけ）：` + parts.join(' / ')
+            : `${state.month}月の予定に変わったところはありませんでした。`, true);
     } catch (e) {
         showGcalMsg(e.message, false);
     } finally {

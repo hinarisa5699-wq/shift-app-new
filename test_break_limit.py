@@ -45,7 +45,7 @@ def test_care_counted_nurse_included():
     items = [_it("day_pattern2", "13:00", meal_assist="12:00-13:00", staff_id=12),
              _it("late", "12:30", staff_id=1), _it("day_pattern1", "12:30", staff_id=2)]
     limit_simultaneous_breaks(items, care_nurse_ids={12})
-    assert items[0]["break_start"] == "13:00"
+    assert items[0]["break_start"] in ("13:00", "13:30")
     starts = [i["break_start"] for i in items]
     for t in range(12 * 60, 15 * 60, 15):
         on = sum(1 for s in starts
@@ -92,7 +92,7 @@ def test_finds_combination_where_greedy_fails():
              _it("day_pattern1", "12:30", meal_assist="12:00-12:30")]
     limit_simultaneous_breaks(items, care_nurse_ids={12})
     starts = [i["break_start"] for i in items]
-    assert all(s in ("11:30", "12:30", "13:00", "13:30") for s in starts), starts
+    assert all(s in ("11:30", "12:30", "13:30") for s in starts), starts
     for t in range(11 * 60, 15 * 60, 15):
         on = sum(1 for s in starts
                  if int(s[:2]) * 60 + int(s[3:]) <= t < int(s[:2]) * 60 + int(s[3:]) + 60)

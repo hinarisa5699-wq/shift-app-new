@@ -1068,6 +1068,8 @@ def limit_simultaneous_breaks(day_items, time_ranges=None,
         return 0
 
     def fixed(it):
+        if it.get("staff_id") in care_nurse_ids and it.get("meal_assist") == "12:00-13:00":
+            return False   # 介護人数に数える看護師は C(13:30) にもずらせる
         return (it.get("bath_role") == "中"
                 or it.get("assignment") in _FIXED_BREAK
                 or it.get("assignment") == "nurse_short"
@@ -1099,7 +1101,10 @@ def limit_simultaneous_breaks(day_items, time_ranges=None,
         orig = it["break_start"]
         span = ranges.get(it.get("assignment"), (0, 24 * 60))
         meal = it.get("meal_assist") == "12:00-12:30"
-        if it.get("assignment") == "early":
+        if it.get("meal_assist") == "12:00-13:00":
+            # 看護の食事介助(12:00-13:00通し)のあと。今の13:00か C(13:30)
+            order = [orig, "13:30"] if orig != "13:30" else ["13:30"]
+        elif it.get("assignment") == "early":
             order = ["11:30", "12:30", "13:30"]
         elif orig in BREAK_SLOT_CODES:
             order = [orig] + [c for c in _BREAK_CANDIDATES if c != orig]

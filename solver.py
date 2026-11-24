@@ -1091,36 +1091,61 @@ def limit_simultaneous_breaks(day_items, time_ranges=None,
         if i.get("assignment") == "early":
             return 0
         return 1 if (i.get("bath_role") == "外" or i.get("counselor_desk_slots")) else 2
-    for it in sorted([i for i in items if not fixed(i)],
-                     key=lambda i: (keep_first(i), _to_minutes(i["break_start"]))):
+    movable = sorted([i for i in items if not fixed(i)],
+                     key=lambda i: (keep_first(i), _to_minutes(i["break_start"])))
+
+    def options(it):
+        """その人が入れる休憩時刻（好ましい順）。"""
         orig = it["break_start"]
         span = ranges.get(it.get("assignment"), (0, 24 * 60))
         meal = it.get("meal_assist") == "12:00-12:30"
-        choice = None
         if it.get("assignment") == "early":
             order = ["11:30", "12:30", "13:30"]
         elif orig in BREAK_SLOT_CODES:
             order = [orig] + [c for c in _BREAK_CANDIDATES if c != orig]
         else:
             order = list(_BREAK_CANDIDATES)
+        out = []
         for cand in order:
-            s = _to_minutes(cand)
-            if s > latest:
+            st = _to_minutes(cand)
+            if st > latest or st < span[0] or st + 60 > span[1]:
                 continue
-            if s < span[0] or s + 60 > span[1]:
+            if meal and st < 12 * 60 + 30 and st + 60 > 12 * 60:
                 continue
-            if meal and s < 12 * 60 + 30 and s + 60 > 12 * 60:
-                continue
-            if fits(s):
-                choice = cand
-                break
-        if choice is None:
-            choice = orig
-        if choice != orig:
+            out.append(cand)
+        return out
+
+    opts = [options(it) for it in movable]
+    weights = [3 if keep_first(it) == 0 else (2 if keep_first(it) == 1 else 1)
+               for it in movable]
+    # 全員が入る組み合わせを探す（入れない人の数→好みの順位の合計 が小さい順）。
+    #   人数は1日数人なので総当たりで足りる。
+    best = {"cost": None, "pick": None}
+
+    def search(idx, pick, cost):
+        if best["cost"] is not None and cost >= best["cost"]:
+            return
+        if idx == len(movable):
+            best["cost"], best["pick"] = cost, list(pick)
+            return
+        for rank, cand in enumerate(opts[idx]):
+            st = _to_minutes(cand)
+            if fits(st):
+                placed.append((st, st + 60))
+                pick.append(cand)
+                search(idx + 1, pick, cost + rank * weights[idx])
+                pick.pop()
+                placed.pop()
+        # どこにも入れない場合は元の時刻のまま（大きな減点）
+        pick.append(None)
+        search(idx + 1, pick, cost + 1000)
+        pick.pop()
+
+    search(0, [], 0)
+    for it, choice in zip(movable, best["pick"] or [None] * len(movable)):
+        if choice and choice != it["break_start"]:
             it["break_start"] = choice
             changed += 1
-        s = _to_minutes(choice)
-        placed.append((s, s + 60))
     return changed
 
 

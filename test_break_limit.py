@@ -82,3 +82,18 @@ def test_break_label_codes():
     assert break_label("13:30") == "休憩C"
     assert break_label("13:00") == "休憩13:00"
     assert break_label(None) == ""
+
+
+def test_finds_combination_where_greedy_fails():
+    """12/1 の形: 前原B(兼務・固定)・大山13:00(看護)・早番・遅番・食事介助の日勤。"""
+    items = [_it("visit_am_day_p4", "12:30"),
+             _it("day_pattern2", "13:00", meal_assist="12:00-13:00", staff_id=12),
+             _it("early", None), _it("late", "12:30"),
+             _it("day_pattern1", "12:30", meal_assist="12:00-12:30")]
+    limit_simultaneous_breaks(items, care_nurse_ids={12})
+    starts = [i["break_start"] for i in items]
+    assert all(s in ("11:30", "12:30", "13:00", "13:30") for s in starts), starts
+    for t in range(11 * 60, 15 * 60, 15):
+        on = sum(1 for s in starts
+                 if int(s[:2]) * 60 + int(s[3:]) <= t < int(s[:2]) * 60 + int(s[3:]) + 60)
+        assert on <= 2, starts

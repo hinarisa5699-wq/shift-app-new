@@ -217,3 +217,53 @@ def test_staff_form_saves_the_checkbox(tmp_path, monkeypatch):
     client.post(f"/api/staff/{ids['大山とよみ']}", data=form)
     with flask_app.app_context():
         assert Staff.query.get(ids["大山とよみ"]).kiroku_import is False
+
+
+# ---------------------------------------------------------------- 差分だけ反映
+def test_import_only_applies_changes_and_new(tmp_path, monkeypatch):
+    """2026-11-24 依頼「予定の取込は毎回全件やらないでいい 変わったところと新規のみでいい」。
+    2回目以降は変わらない行に触らず、新規・変更・削除だけを反映して件数を返す。"""
+    app_module, flask_app = _load_app(tmp_path, monkeypatch)
+    ids = _setup(flask_app)
+    current = {"rows": [dict(r) for r in ROWS]}
+    monkeypatch.setattr(kiroku, "fetch_month_schedules",
+                        lambda url, token, ym, timeout=40: current["rows"])
+    client = flask_app.test_client()
+    _login_admin(client)
+
+    def run():
+        res = client.post("/api/staff-plans/google-import-all",
+                          json={"year": 2026, "month": 10})
+        assert res.status_code == 200, res.get_data(as_text=True)
+        return {r["name"]: r for r in res.get_json()["results"]}
+
+    first = run()
+    assert first["池田友子"]["added"] == 2
+
+    from models import StaffPlan
+    with flask_app.app_context():
+        before_ids = sorted(p.id for p in StaffPlan.query.filter_by(
+            staff_id=ids["池田友子"], source="kiroku"))
+
+    # 変わっていなければ何もしない（行IDもそのまま）
+    second = run()
+    assert (second["池田友子"]["added"], second["池田友子"]["updated"],
+            second["池田友子"]["removed"]) == (0, 0, 0)
+    with flask_app.app_context():
+        assert sorted(p.id for p in StaffPlan.query.filter_by(
+            staff_id=ids["池田友子"], source="kiroku")) == before_ids
+
+    # a の時間が変わり、b が消え、新しい f が増えた
+    rows = [dict(r) for r in ROWS if r["id"] != "b"]
+    rows[0]["開始"], rows[0]["終了"] = "16:00", "16:40"
+    rows.append({"id": "f", "日付": "2026-10-30", "氏名": "田中三郎", "種別": "訪看",
+                 "開始": "10:00", "終了": "10:30", "内容": "訪問看護", "担当": "池田友子",
+                 "出所": "訪看"})
+    current["rows"] = rows
+    third = run()
+    t = third["池田友子"]
+    assert (t["added"], t["updated"], t["removed"]) == (1, 1, 1)
+    with flask_app.app_context():
+        got = sorted((p.date.isoformat(), p.start_time, p.end_time) for p in
+                     StaffPlan.query.filter_by(staff_id=ids["池田友子"], source="kiroku"))
+    assert got == [("2026-10-02", "16:00", "16:40"), ("2026-10-30", "10:00", "10:30")]
